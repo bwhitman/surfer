@@ -13,6 +13,7 @@
 
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
+#include "driver/gpio.h"
 #include "driver/ppa.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
@@ -24,17 +25,19 @@
 #include "surfer.h"
 #include "hal_p4.h"
 #include "widget_assets.h"
-#include "font_ui16.h"
-#include "font_ui28.h"
-#include "font_mono16.h"
+#include "fonts_scene.h"
 
-/* 1 = full-screen textgrid editor scroll test (validates the CPU fast
- * text path + fb_ptr cache handling on hardware); 0 = the M2 mixer. */
-#define DEMO_EDITOR 1
+/* Which scene this image runs. */
+#define DEMO_MIXER  0   /* M2: 6 knobs + 6 sliders */
+#define DEMO_EDITOR 1   /* full-screen textgrid scroll test (CPU fast path) */
+#define DEMO_FONTS  2   /* font specimen — same scene as build/surfer_fonts */
+#define DEMO_MODE   DEMO_FONTS
+
 /* editor A/B: 1 = single-buffer direct (no flip/copy — fastest scroll,
  * possible shear as the shift races scanout); 0 = triple-buffer (51fps,
  * artifact-free) */
 #define EDITOR_SINGLE_BUFFER 1
+
 
 static const char *knob_names[6] = {"cutoff", "res", "env", "lfo", "mix", "vol"};
 
@@ -44,7 +47,57 @@ static const char *knob_names[6] = {"cutoff", "res", "env", "lfo", "mix", "vol"}
 #define LCD_H   600
 #define N       6
 
+/* Panel reset and backlight are NOT on the BSP's stock pins on our bench
+ * board. Stock is GPIO 27 (reset) and 26 (backlight, LEDC PWM), but 26/27
+ * are the Full-Speed OTG PHY D-/D+ — the port tulip5 runs USB host on, so
+ * a FS keyboard can enumerate behind a hub without a Transaction
+ * Translator. Both signals are therefore jumpered to 4/5 (dupont from the
+ * header to the display header, no solder mod); same wiring on both EV
+ * boards. Values lifted from tulip5 drivers/port_p4.c, verified there.
+ *
+ * The BSP hardcodes its pins in the header with no Kconfig override, so
+ * we reset and light the panel ourselves and skip
+ * bsp_display_backlight_on(). bsp_display_new() still toggles GPIO 27 on
+ * its own; harmless here since this firmware runs no USB host.
+ *
+ * Set to 0 for a stock, un-jumpered EV board. */
+#define BENCH_JUMPERED_PANEL 1
+#if BENCH_JUMPERED_PANEL
+#define PIN_BACKLIGHT 4   /* jumpered off 26: FS-USB D- */
+#define PIN_LCD_RST   5   /* jumpered off 27: FS-USB D+ */
+
+static void jumpered_panel_reset(void)
+{
+    /* Active low, tulip5's timings. Safe to do before bsp_display_new:
+     * the panel module has its own supply (the P4's LDO_VO3 feeds
+     * VDD_MIPI_DPHY, the SoC PHY — not the panel), so it is already
+     * powered and ready to accept a reset pulse at this point. */
+    gpio_config_t rst = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << PIN_LCD_RST,
+    };
+    ESP_ERROR_CHECK(gpio_config(&rst));
+    gpio_set_level(PIN_LCD_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(PIN_LCD_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(PIN_LCD_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(120));
+}
+
+static void jumpered_backlight_on(void)
+{
+    gpio_config_t bl = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << PIN_BACKLIGHT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&bl));
+    gpio_set_level(PIN_BACKLIGHT, 1);
+}
+#endif
+
 /* ---- phase A: bandwidth + op overhead ---- */
+#if DEMO_MODE != DEMO_FONTS
 
 static double mbps(size_t bytes, int reps, int64_t us)
 {
@@ -179,6 +232,7 @@ static void bench(void)
     heap_caps_free(b);
     heap_caps_free(f);
 }
+#endif /* DEMO_MODE != DEMO_FONTS */
 
 /* ---- phase B: panel + touch + mixer scene ---- */
 
@@ -212,12 +266,20 @@ static surf_image mk_image(const void *rodata, int16_t w, int16_t h, int bpp,
                         .format = fmt, .opaque = false};
 }
 
-static surf_font mk_font(const surf_font *baked, const surf_hal *hal)
+/* surf_font_builtin_prepare hook: the PPA can't DMA from memory-mapped
+ * flash, so every built-in atlas is copied into PSRAM once at startup and
+ * the registry keeps the prepared copy. */
+static const surf_hal *s_hal;
+
+static void psram_prepare_atlas(surf_image *img)
 {
-    surf_font f = *baked;
-    f.atlas = mk_image(baked->atlas.pixels, baked->atlas.w, baked->atlas.h, 1,
-                       SURF_FMT_A8, hal);
-    return f;
+    size_t bytes = (size_t)img->stride * img->h;
+    void *px = s_hal->alloc_image(bytes);
+    if (!px)
+        return;
+    memcpy(px, img->pixels, bytes);
+    surf_hal_p4_sync(px, bytes);
+    img->pixels = px;
 }
 
 static void bar_show(int32_t v, void *user)
@@ -225,7 +287,7 @@ static void bar_show(int32_t v, void *user)
     surf_rect_set_size(user, (int16_t)(1 + (((int64_t)v * 99) >> 16)), 8);
 }
 
-#if DEMO_EDITOR
+#if DEMO_MODE == DEMO_EDITOR
 /* ---- editor scroll test: the textgrid worst case, one line per frame,
  * every cell rewritten — the on-device answer to DESIGN.md §5.6's
  * predicted 15-20 ms/page. Finger-drag scrolls; idle resumes auto. */
@@ -364,28 +426,45 @@ static void editor_scene(const surf_hal *hal, const surf_font *mono)
         vTaskDelay(1);
     }
 }
-#endif /* DEMO_EDITOR */
+#endif /* DEMO_MODE == DEMO_EDITOR */
 
 void app_main(void)
 {
     printf("surfer M2 — ESP32-P4, %" PRIu32 " KB PSRAM free\n",
            (uint32_t)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
-    bench();
+#if DEMO_MODE != DEMO_FONTS
+    bench();  /* ~20 s of allocation and blitting; the specimen skips it */
+#endif
 
     esp_lcd_panel_handle_t panel = NULL;
     esp_lcd_panel_io_handle_t io = NULL;
+    /* phy_clk_src is deliberately left 0. On IDF >= 5.5.3
+     * MIPI_DSI_PHY_CLK_SRC_DEFAULT is a compat #define for the LEGACY
+     * PLL_F20M reference, which is not a legal PLL ref on rev v3.x
+     * ("P4X") silicon — it compiles clean and then hits default: abort()
+     * inside esp_lcd_new_dsi_bus at boot, with no message. Left at 0 the
+     * driver picks PLL_F20M for v1.x and XTAL for v3.x from the
+     * configured minimum revision, so one line is right for both. */
     bsp_display_config_t disp_cfg = {
         .dsi_bus = {
-            .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
             .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
         },
     };
+#if BENCH_JUMPERED_PANEL
+    jumpered_panel_reset();   /* before init cmds — the BSP's pin is dead */
+#endif
     if (bsp_display_new(&disp_cfg, &panel, &io) != ESP_OK) {
         printf("display init failed — headless, bench done\n");
         return;
     }
+#if BENCH_JUMPERED_PANEL
+    jumpered_backlight_on();
+    printf("panel: reset on GPIO %d, backlight on GPIO %d (jumpered)\n",
+           PIN_LCD_RST, PIN_BACKLIGHT);
+#else
     bsp_display_backlight_on();
+#endif
     void *scan_fb0 = NULL, *scan_fb1 = NULL, *scan_fb2 = NULL;
     ESP_ERROR_CHECK(
         esp_lcd_dpi_panel_get_frame_buffer(panel, 3, &scan_fb0, &scan_fb1, &scan_fb2));
@@ -412,14 +491,14 @@ void app_main(void)
         .panel = panel, .scan_fbs = {scan_fb0, scan_fb1, scan_fb2},
         .w = LCD_W, .h = LCD_H,
         .touch_poll = touch_poll,
-#if DEMO_EDITOR && EDITOR_SINGLE_BUFFER
+#if DEMO_MODE == DEMO_EDITOR && EDITOR_SINGLE_BUFFER
         .single_buffer = true,
 #endif
     };
     const surf_hal *hal = surf_hal_p4_init(&cfg);
     ESP_ERROR_CHECK(hal ? ESP_OK : ESP_FAIL);
 
-    surf_config scfg = {.max_nodes = 128, .bg = SURF_RGB(24, 26, 32)};
+    surf_config scfg = {.max_nodes = 256, .bg = SURF_RGB(24, 26, 32)};
     surf_init(hal, LCD_W, LCD_H, &scfg);
 
     surf_image knob_img = mk_image(widget_knob_px, WKNOB_STRIP_W, WKNOB_SIZE, 4,
@@ -428,15 +507,29 @@ void app_main(void)
                                     SURF_FMT_ARGB8888, hal);
     surf_image cap_img = mk_image(widget_cap_px, WCAP_W, WCAP_H, 4,
                                   SURF_FMT_ARGB8888, hal);
-    surf_font ui16 = mk_font(&surf_font_ui16, hal);
-    surf_font ui28 = mk_font(&surf_font_ui28, hal);
+    s_hal = hal;
+    surf_font_builtin_prepare(psram_prepare_atlas);
+    const surf_font *ui16 = surf_font_builtin("ui16");
+    const surf_font *ui28 = surf_font_builtin("ui28");
 
-#if DEMO_EDITOR
-    static surf_font mono16;
-    mono16 = mk_font(&surf_font_mono16, hal);
+#if DEMO_MODE == DEMO_EDITOR
     (void)ui16; (void)ui28;
     (void)knob_img; (void)track_img; (void)cap_img;
-    editor_scene(hal, &mono16);  /* never returns */
+    editor_scene(hal, surf_font_builtin("mono16"));  /* never returns */
+#elif DEMO_MODE == DEMO_FONTS
+    (void)ui16; (void)ui28;
+    (void)knob_img; (void)track_img; (void)cap_img;
+    fonts_scene_build(LCD_W, LCD_H, "ESP32-P4 - EK79007 1024x600 panel", 3);
+    printf("font specimen up: %dx%d, touch %s\n", LCD_W, LCD_H,
+           s_touch ? "on" : "off");
+
+    /* static page: the first tick paints it, later ticks find no damage.
+     * Keep ticking anyway so touch stays live and the triple buffer
+     * finishes forwarding damage into all three scan buffers. */
+    for (;;) {
+        surf_tick();
+        vTaskDelay(pdMS_TO_TICKS(16));
+    }
 #endif
     surf_knob_style kstyle = {.strip = &knob_img, .frame_w = WKNOB_SIZE,
                               .frame_h = WKNOB_SIZE, .frames = WKNOB_FRAMES};
@@ -445,7 +538,7 @@ void app_main(void)
     surf_node_add(surf_screen(), surf_rect_new(0, 0, LCD_W, 40, SURF_RGB(38, 42, 52)));
     surf_node_add(surf_screen(), surf_rect_new(0, LCD_H - 56, LCD_W, 56, SURF_RGB(38, 42, 52)));
     surf_node_add(surf_screen(),
-                  surf_text_new(&ui28, "surfer mixer", 12, 2, SURF_RGB(240, 242, 248)));
+                  surf_text_new(ui28, "surfer mixer", 12, 2, SURF_RGB(240, 242, 248)));
 
     surf_knob *knobs[N];
     surf_slider *sliders[N];
@@ -460,7 +553,7 @@ void app_main(void)
         surf_node_add(surf_screen(), kbar[i]);
         surf_node_add(surf_screen(), sbar[i]);
 
-        surf_node *name = surf_text_new(&ui16, knob_names[i], kx, 140,
+        surf_node *name = surf_text_new(ui16, knob_names[i], kx, 140,
                                         SURF_RGB(180, 186, 198));
         surf_text_set_wrap(name, WKNOB_SIZE);
         surf_text_set_align(name, SURF_ALIGN_CENTER);

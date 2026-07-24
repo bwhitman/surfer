@@ -1,0 +1,28 @@
+# Silicon: ESP32-P4 revision v3.x — the "P4X". Overlay on top of
+# sdkconfig.defaults:
+#
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.rev3" build
+#
+# v1.x and v3.x silicon CANNOT share a firmware image, and IDF < 5.5.3
+# cannot build for v3.x at all — build this overlay with the v5.5.3
+# toolchain, not the v5.4.1 one the plain board uses. Measured on tulip5's
+# board (same rev v3.2 part): compose cost at large damaged areas fell
+# 42-51%, far more than the 11% clock bump, because the PPA SRM block /
+# 2D-DMA widened 8x8 -> 32x32. The ~85 us per-op floor is unchanged, so
+# "bake at final size, avoid many small ops" still holds.
+#
+# Also required in code, not config: leave bsp_display_config_t's
+# .phy_clk_src at 0 (see the comment in main/app_main.c) or the image
+# abort()s in esp_lcd_new_dsi_bus at boot with no message.
+
+# n = target rev v3.x. If a stale sdkconfig leaves this =y the board stops
+# at "chip revision check failed".
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
+CONFIG_ESP32P4_REV_MIN_301=y
+
+# v3.x raises the HP CPU ceiling 360 -> 400 MHz. Worth taking: the
+# textgrid cell composer is our one sanctioned per-pixel path, so it
+# scales straight with the core clock. (Do not put a CPU-frequency knob
+# in sdkconfig.defaults — on IDF >= 5.5.3 the 360 MHz option is gated
+# behind ESP32P4_SELECTS_REV_LESS_V3 and would be silently dropped here.)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400=y
