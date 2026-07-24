@@ -197,4 +197,28 @@ idf.py -p <port> flash monitor
 
 ## License
 
-MIT
+surfer itself is MIT — see [LICENSE](LICENSE).
+
+Bundled fonts and art keep their own licenses. Full terms in
+[assets/fonts/LICENSE.txt](assets/fonts/LICENSE.txt) and
+[assets/kenney/LICENSE.txt](assets/kenney/LICENSE.txt):
+
+| asset | license |
+|---|---|
+| Roboto | Apache 2.0 |
+| JetBrains Mono | SIL OFL 1.1 |
+| BigBlue Terminal | **CC BY-SA 4.0 — attribution required** |
+| Kenney pixel fonts + sprite library | CC0 |
+| Adobe X11 bitmap fonts (helv/ncen/cour) | Adobe/DEC permissive |
+
+**BigBlue Terminal** is by **VileR**, released under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/):
+<https://int10h.org/blog/2015/12/bigblue-terminal-oldschool-fixed-width-font/>
+
+> I'm releasing this under the CC Attribution-ShareAlike 4.0 license (and
+> yes, "attribution" means attribution -- you're not free to pass this
+> work off as your own).
+
+Note the ShareAlike term: an atlas baked from it (`font_bigblue*.h`) is an
+adaptation of the font and carries the same licence, even though surfer's
+own code is MIT. Ship the attribution with anything that includes it.

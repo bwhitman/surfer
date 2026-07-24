@@ -3,3 +3,52 @@ https://github.com/googlefonts/roboto-2
 
 JetBrainsMono-Regular.ttf — (c) JetBrains, SIL Open Font License 1.1
 https://github.com/JetBrains/JetBrainsMono
+
+bdf/{helvR,helvB,ncenR,courR}{08,10,12,14,18,24}.bdf — the Adobe X11
+bitmap fonts (Helvetica, New Century Schoolbook, Courier), obtained from
+github.com/olikraus/u8g2 (tools/font/bdf/).
+
+  Copyright 1984-1989, 1994 Adobe Systems Incorporated.
+  Copyright 1988, 1994 Digital Equipment Corporation.
+  Permission to use, copy, modify, distribute and sell this software and
+  its documentation for any purpose and without fee is hereby granted,
+  provided that the above copyright notices appear in all copies and that
+  both those copyright notices and this permission notice appear in
+  supporting documentation, and that the names of Adobe Systems and
+  Digital Equipment Corporation not be used in advertising or publicity
+  pertaining to distribution of the software without specific, written
+  prior permission.  Adobe Systems and Digital Equipment Corporation make
+  no representations about the suitability of this software for any
+  purpose.  It is provided "as is" without express or implied warranty.
+  (Full notice retained in each .bdf; "Adobe" is a trademark, licensed
+  here only in association with these images.)
+
+These are the real thing: each size is separately drawn, so helvR10 is
+not helvR08 scaled. fontbake reads .bdf directly and copies the pixels,
+so the SIZE argument is ignored and every bake is 0.0% gray.
+
+Kenney{Mini,High,Pixel,Blocks}.ttf — by Kenney (www.kenney.nl), CC0.
+Genuine pixel-designed proportional faces: their outlines sit on a pixel
+grid, so baking with FONTBAKE_EM=1 at a grid-aligned ppem gives an atlas
+with no partial coverage at all (fontbake reports "gray 0.0%"). Grid
+sizes measured: Mini and Blocks are exact at em 8/16/24/32, High at
+16/32; Pixel is within ~3% at 16/32. Off-grid sizes (e.g. em 12, 20)
+reintroduce antialiasing and look lumpy when thresholded.
+
+BigBlue_TerminalPlus.ttf — "BigBlue Terminal" by VileR,
+CC Attribution-ShareAlike 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)
+https://int10h.org/blog/2015/12/bigblue-terminal-oldschool-fixed-width-font/
+
+  "I'm releasing this under the CC Attribution-ShareAlike 4.0 license
+   (and yes, 'attribution' means attribution -- you're not free to pass
+   this work off as your own)."   — VileR
+
+  ATTRIBUTION IS REQUIRED wherever this font or an atlas baked from it
+  ships. ShareAlike also applies: font_bigblue*.h is an adaptation of the
+  font and carries CC BY-SA 4.0, even though surfer's code is MIT. This
+  is the only asset here with a copyleft term — if that is a problem
+  downstream, drop bigblue12/bigblue24 from the bake list and use
+  courR* (Adobe, permissive) for a bitmap monospace instead.
+
+  Bake at 12px — its design size — with FONTBAKE_THRESHOLD=1 for
+  pixel-exact cells; 24px is exactly 2x.
