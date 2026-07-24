@@ -20,9 +20,6 @@
 #include "surfer.h"
 #include "surfer_port.h"
 #include "widget_assets.h"
-#include "font_ui16.h"
-#include "font_ui28.h"
-#include "font_mono16.h"
 
 /* ---- baked default style; pixels re-homed by surfer_port_prepare_image
  * at init (flash .rodata → PSRAM on device, no-op on desktop) ---- */
@@ -64,11 +61,6 @@ static surf_image arrow_img = {
     .stride = WARROW_W * 2 * 4, .format = SURF_FMT_ARGB8888,
 };
 
-/* runtime font copies so the atlases can be re-homed too */
-static surf_font fonts_rt[3];
-static const surf_font *const fonts_baked[] = {&surf_font_ui16, &surf_font_ui28,
-                                               &surf_font_mono16};
-#define NFONTS 3
 
 static void prepare_assets(void)
 {
@@ -81,10 +73,8 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&btn_img);
     surfer_port_prepare_image(&btnpr_img);
     surfer_port_prepare_image(&knobsm_img);
-    for (int i = 0; i < NFONTS; i++) {
-        fonts_rt[i] = *fonts_baked[i];
-        surfer_port_prepare_image(&fonts_rt[i].atlas);
-    }
+    /* every built-in atlas, re-homed once into DMA-able RAM */
+    surf_font_builtin_prepare(surfer_port_prepare_image);
 }
 
 /* ---- object types ---- */
@@ -110,6 +100,7 @@ extern const mp_obj_type_t surfer_pad_type;
 typedef struct {
     mp_obj_base_t base;
     surf_font *font;    /* NULL after destroy() */
+    bool owned;         /* false for built-ins: shared, never freed */
 } surfer_font_obj_t;
 extern const mp_obj_type_t surfer_font_type;
 
@@ -162,9 +153,34 @@ static surf_node *node_of(mp_obj_t o)
 
 static const surf_font *font_of(mp_int_t i)
 {
-    if (i < 0 || i >= NFONTS)
+    const surf_font *f = surf_font_builtin_at((int)i);
+    if (!f)
         mp_raise_ValueError(MP_ERROR_TEXT("bad font"));
-    return &fonts_rt[i];
+    return f;
+}
+
+/* Resolve whatever the caller passed as a font: a Font object (runtime
+ * blob or a named built-in), a name string ("helvR12"), or a legacy
+ * index. Sets *ref to the object that must stay alive for the node. */
+static const surf_font *font_arg(mp_obj_t o, mp_obj_t *ref)
+{
+    if (ref)
+        *ref = mp_const_none;
+    if (mp_obj_is_type(o, &surfer_font_type)) {
+        surfer_font_obj_t *fo = MP_OBJ_TO_PTR(o);
+        if (!fo->font)
+            mp_raise_ValueError(MP_ERROR_TEXT("font destroyed"));
+        if (ref)
+            *ref = o;                    /* anchor: node outlives the call */
+        return fo->font;
+    }
+    if (mp_obj_is_str(o)) {
+        const surf_font *f = surf_font_builtin(mp_obj_str_get_str(o));
+        if (!f)
+            mp_raise_ValueError(MP_ERROR_TEXT("no such font"));
+        return f;
+    }
+    return font_of(mp_obj_get_int(o));
 }
 
 /* ---- Node ---- */
@@ -1272,10 +1288,15 @@ static mp_obj_t mod_label(size_t n_args, const mp_obj_t *args)
 {
     surf_color c = n_args > 3 ? (surf_color)mp_obj_get_int(args[3])
                               : SURF_RGB(240, 242, 248);
-    const surf_font *f = font_of(n_args > 4 ? mp_obj_get_int(args[4]) : 0);
-    return MP_OBJ_FROM_PTR(new_node_obj(surf_text_new(
+    mp_obj_t fref = mp_const_none;
+    const surf_font *f = n_args > 4 ? font_arg(args[4], &fref)
+                                    : surf_font_builtin_at(0);
+    surfer_node_obj_t *o = new_node_obj(surf_text_new(
         f, mp_obj_str_get_str(args[0]), mp_obj_get_int(args[1]),
-        mp_obj_get_int(args[2]), c)));
+        mp_obj_get_int(args[2]), c));
+    if (o)
+        o->img_ref = fref;              /* keeps a runtime Font alive */
+    return MP_OBJ_FROM_PTR(o);
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_label_obj, 3, 5, mod_label);
 
@@ -1285,7 +1306,8 @@ static mp_obj_t font_destroy(mp_obj_t self_in)
 {
     surfer_font_obj_t *o = MP_OBJ_TO_PTR(self_in);
     if (o->font) {
-        surf_font_free(o->font);
+        if (o->owned)
+            surf_font_free(o->font);
         o->font = NULL;
     }
     return mp_const_none;
@@ -1326,6 +1348,16 @@ MP_DEFINE_CONST_OBJ_TYPE(surfer_font_type, MP_QSTR_Font, MP_TYPE_FLAG_NONE,
  * custom console font. Held alive by the grid + a GC root. */
 static mp_obj_t mod_font(mp_obj_t data_in)
 {
+    /* a name selects a built-in; bytes decode a fontbake blob */
+    if (mp_obj_is_str(data_in)) {
+        const surf_font *b = surf_font_builtin(mp_obj_str_get_str(data_in));
+        if (!b)
+            mp_raise_ValueError(MP_ERROR_TEXT("no such font"));
+        surfer_font_obj_t *bo = mp_obj_malloc(surfer_font_obj_t, &surfer_font_type);
+        bo->font = (surf_font *)b;
+        bo->owned = false;
+        return MP_OBJ_FROM_PTR(bo);
+    }
     mp_buffer_info_t buf;
     mp_get_buffer_raise(data_in, &buf, MP_BUFFER_READ);
     surf_font *f = surf_font_from_blob(buf.buf, buf.len);
@@ -1334,10 +1366,27 @@ static mp_obj_t mod_font(mp_obj_t data_in)
     surfer_port_prepare_image(&f->atlas);   /* device DMA coherence */
     surfer_font_obj_t *o = mp_obj_malloc(surfer_font_obj_t, &surfer_font_type);
     o->font = f;
+    o->owned = true;
     registry_add(MP_OBJ_FROM_PTR(o));
     return MP_OBJ_FROM_PTR(o);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mod_font_obj, mod_font);
+
+/* surfer.fonts() -> list of built-in font names. mono=True filters to the
+ * ones a textgrid will accept. */
+static mp_obj_t mod_fonts(size_t n_args, const mp_obj_t *args)
+{
+    bool mono_only = n_args > 0 && mp_obj_is_true(args[0]);
+    mp_obj_t list = mp_obj_new_list(0, NULL);
+    for (int i = 0; i < surf_font_builtin_count(); i++) {
+        if (mono_only && !surf_font_is_mono(surf_font_builtin_at(i)))
+            continue;
+        mp_obj_list_append(list, mp_obj_new_str(surf_font_builtin_name(i),
+                                                strlen(surf_font_builtin_name(i))));
+    }
+    return list;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_fonts_obj, 0, 1, mod_fonts);
 
 static mp_obj_t mod_textgrid(size_t n_args, const mp_obj_t *args)
 {
@@ -1345,14 +1394,13 @@ static mp_obj_t mod_textgrid(size_t n_args, const mp_obj_t *args)
                                : SURF_RGB(200, 205, 215);
     surf_color bg = n_args > 3 ? (surf_color)mp_obj_get_int(args[3])
                                : SURF_RGB(18, 20, 25);
-    const surf_font *f;
     mp_obj_t font_ref = mp_const_none;
-    if (n_args > 4 && mp_obj_is_type(args[4], &surfer_font_type)) {
-        f = ((surfer_font_obj_t *)MP_OBJ_TO_PTR(args[4]))->font;
-        font_ref = args[4];             /* anchor the runtime font */
-    } else {
-        f = font_of(n_args > 4 ? mp_obj_get_int(args[4]) : 2);
-    }
+    const surf_font *f = n_args > 4 ? font_arg(args[4], &font_ref)
+                                    : surf_font_builtin("mono16");
+    /* the grid sizes its cell from 'M'; a proportional face would have
+     * every wider glyph clipped, so refuse it outright */
+    if (!surf_font_is_mono(f))
+        mp_raise_ValueError(MP_ERROR_TEXT("textgrid needs a monospace font"));
     surfer_node_obj_t *o = new_node_obj(surf_textgrid_new(
         f, mp_obj_get_int(args[0]), mp_obj_get_int(args[1]), fg, bg));
     if (o)
@@ -1420,7 +1468,7 @@ static mp_obj_t mod_button(size_t n_args, const mp_obj_t *args)
         .normal = &btn_img, .pressed = &btnpr_img, .inset = WBTN_INSET,
         .text_color = SURF_RGB(240, 242, 248),
     };
-    st.font = &fonts_rt[0];
+    st.font = surf_font_builtin_at(0);
     const char *label = n_args > 4 ? mp_obj_str_get_str(args[4]) : "";
     surf_button *b = surf_button_new(surf_screen(), 0, 0,
                                      (int16_t)mp_obj_get_int(args[2]),
@@ -1461,7 +1509,7 @@ static mp_obj_t mod_dropdown(size_t n_args, const mp_obj_t *args)
         .text_color = SURF_RGB(240, 242, 248), .hi_color = SURF_RGB(60, 90, 140),
         .arrow = &arrow_img, .arrow_w = WARROW_W, .arrow_h = WARROW_H,
     };
-    st.font = &fonts_rt[0];  /* runtime copy with a device-readable atlas */
+    st.font = surf_font_builtin_at(0);  /* prepared copy: device-readable atlas */
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(args[3], &len, &items);
@@ -1538,6 +1586,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_label), MP_ROM_PTR(&mod_label_obj)},
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fonts), MP_ROM_PTR(&mod_fonts_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollview), MP_ROM_PTR(&mod_scrollview_obj)},
     {MP_ROM_QSTR(MP_QSTR_slider), MP_ROM_PTR(&mod_slider_obj)},
     {MP_ROM_QSTR(MP_QSTR_knob), MP_ROM_PTR(&mod_knob_obj)},
