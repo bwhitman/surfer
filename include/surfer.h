@@ -348,6 +348,26 @@ typedef struct {
 surf_font *surf_font_from_blob(const void *data, size_t len);
 void       surf_font_free(surf_font *f);
 
+/* True if every glyph has the same advance — the textgrid needs that,
+ * since its cell is sized from 'M' and wider glyphs would be clipped. */
+bool surf_font_is_mono(const surf_font *f);
+
+/* ---- built-in fonts ----
+ * Every font baked into this build, addressable by name ("ui16",
+ * "helvR12", "bigblue12", ...). Names are the fontbake output names.
+ * Lookups return a shared, prepared instance — do not free it. */
+const surf_font *surf_font_builtin(const char *name);
+int              surf_font_builtin_count(void);
+const char      *surf_font_builtin_name(int idx);
+const surf_font *surf_font_builtin_at(int idx);
+
+/* Backends whose blitter can't read the atlas where the linker put it
+ * (the P4's PPA can't DMA from memory-mapped flash) call this once at
+ * startup to re-home every built-in atlas; later lookups see the
+ * prepared copy. */
+typedef void (*surf_font_prepare_fn)(surf_image *atlas);
+void surf_font_builtin_prepare(surf_font_prepare_fn fn);
+
 typedef enum {
     SURF_ALIGN_LEFT   = 0,
     SURF_ALIGN_CENTER = 1,

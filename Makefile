@@ -17,7 +17,7 @@ GEN_DIR := build/gen
 .PHONY: sdl test test-sdl clean
 
 sdl: build/surfer_demo build/surfer_settings build/surfer_type build/surfer_editor \
-	build/surfer_bounce
+	build/surfer_bounce build/surfer_fonts
 
 test: build/surfer_test
 	./build/surfer_test
@@ -46,6 +46,128 @@ $(GEN_DIR)/font_mono16.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regula
 	@mkdir -p $(GEN_DIR)
 	build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ \
 		"32-126,167,181,8211,8212,8230"
+
+# ---- font-specimen bakes (demos/fonts.c): the same faces through the
+# knobs that matter — plain AA, gamma-boosted AA, 1-bit, and a true
+# bitmap face at its design size ----
+$(GEN_DIR)/font_ui12.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake ui12 12 assets/fonts/Roboto-Regular.ttf $@
+
+$(GEN_DIR)/font_ui16b.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	FONTBAKE_THRESHOLD=1 build/tools/fontbake ui16b 16 \
+		assets/fonts/Roboto-Regular.ttf $@
+
+$(GEN_DIR)/font_mono16g.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	FONTBAKE_GAMMA=0.55 build/tools/fontbake mono16g 16 \
+		assets/fonts/JetBrainsMono-Regular.ttf $@
+
+$(GEN_DIR)/font_mono16b.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96 build/tools/fontbake \
+		mono16b 16 assets/fonts/JetBrainsMono-Regular.ttf $@
+
+$(GEN_DIR)/font_mono24.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake mono24 24 assets/fonts/JetBrainsMono-Regular.ttf $@
+
+$(GEN_DIR)/font_bigblue12.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
+	@mkdir -p $(GEN_DIR)
+	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue12 12 \
+		assets/fonts/BigBlue_TerminalPlus.ttf $@
+
+$(GEN_DIR)/font_bigblue24.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
+	@mkdir -p $(GEN_DIR)
+	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue24 24 \
+		assets/fonts/BigBlue_TerminalPlus.ttf $@
+
+# Pixel-designed proportional faces (Kenney, CC0). FONTBAKE_EM=1 is not
+# optional here: these are drawn on a pixel grid defined in em units, so
+# only an exact ppem lands stems on whole pixels. At these sizes fontbake
+# reports gray 0.0% — the rasterizer produced no partial coverage at all,
+# which is what "actually a bitmap font" means. Off-grid sizes (em 12,
+# 20) come out 40-70% gray and look lumpy thresholded.
+KPIX_BAKE = FONTBAKE_EM=1 FONTBAKE_THRESHOLD=1 build/tools/fontbake
+
+$(GEN_DIR)/font_kmini16.h: build/tools/fontbake assets/fonts/KenneyMini.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kmini16 16 assets/fonts/KenneyMini.ttf $@
+
+$(GEN_DIR)/font_kmini32.h: build/tools/fontbake assets/fonts/KenneyMini.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kmini32 32 assets/fonts/KenneyMini.ttf $@
+
+$(GEN_DIR)/font_khigh32.h: build/tools/fontbake assets/fonts/KenneyHigh.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) khigh32 32 assets/fonts/KenneyHigh.ttf $@
+
+$(GEN_DIR)/font_kblocks16.h: build/tools/fontbake assets/fonts/KenneyBlocks.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kblocks16 16 assets/fonts/KenneyBlocks.ttf $@
+
+# Kenney Pixel size ramp: multiples of its em16 grid, all exact
+$(GEN_DIR)/font_kpixel16.h: build/tools/fontbake assets/fonts/KenneyPixel.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kpixel16 16 assets/fonts/KenneyPixel.ttf $@
+
+$(GEN_DIR)/font_kpixel32.h: build/tools/fontbake assets/fonts/KenneyPixel.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kpixel32 32 assets/fonts/KenneyPixel.ttf $@
+
+$(GEN_DIR)/font_kpixel48.h: build/tools/fontbake assets/fonts/KenneyPixel.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kpixel48 48 assets/fonts/KenneyPixel.ttf $@
+
+$(GEN_DIR)/font_kpixel64.h: build/tools/fontbake assets/fonts/KenneyPixel.ttf
+	@mkdir -p $(GEN_DIR)
+	$(KPIX_BAKE) kpixel64 64 assets/fonts/KenneyPixel.ttf $@
+
+# Adobe X11 bitmap fonts (BDF): fontbake copies these pixel-for-pixel, so
+# the SIZE argument is ignored — a BDF *is* one designed size. helvR10 and
+# helvR12 are separately drawn faces, not one outline scaled, which is the
+# whole reason they read better than a thresholded outline at small sizes.
+# Pattern rule: explicit rules above win for the TTF bakes.
+$(GEN_DIR)/font_%.h: assets/fonts/bdf/%.bdf build/tools/fontbake
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake $* 0 $< $@
+
+# all 24 Adobe X11 BDFs (4 families x 6 designed sizes)
+ADOBE_NAMES := $(foreach f,helvR helvB ncenR courR,\
+	$(foreach s,08 10 12 14 18 24,$(f)$(s)))
+ADOBE_GEN := $(addprefix $(GEN_DIR)/font_,$(addsuffix .h,$(ADOBE_NAMES)))
+
+# every font this build ships, by fontbake name. The registry
+# (surf_font_builtin) is generated from exactly this list.
+TTF_NAMES := ui12 ui16 ui16b ui28 mono16 mono16g mono16b mono24 \
+	bigblue12 bigblue24 kpixel16 kpixel32 kpixel48 kpixel64 \
+	kmini16 kmini32 khigh32 kblocks16
+FONT_NAMES := $(TTF_NAMES) $(ADOBE_NAMES)
+
+$(GEN_DIR)/font_registry.c: tools/gen_font_registry.py $(FONTLAB_GEN)
+	@mkdir -p $(GEN_DIR)
+	python3 tools/gen_font_registry.py $(FONT_NAMES) > $@
+
+FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
+	$(GEN_DIR)/font_ui16b.h $(GEN_DIR)/font_ui28.h \
+	$(GEN_DIR)/font_mono16.h $(GEN_DIR)/font_mono16g.h \
+	$(GEN_DIR)/font_mono16b.h $(GEN_DIR)/font_mono24.h \
+	$(GEN_DIR)/font_bigblue12.h $(GEN_DIR)/font_bigblue24.h \
+	$(GEN_DIR)/font_kpixel16.h $(GEN_DIR)/font_kpixel32.h \
+	$(GEN_DIR)/font_kpixel48.h $(GEN_DIR)/font_kpixel64.h \
+	$(GEN_DIR)/font_kmini16.h $(GEN_DIR)/font_kmini32.h \
+	$(GEN_DIR)/font_khigh32.h $(GEN_DIR)/font_kblocks16.h \
+	$(ADOBE_GEN)
+
+# the scene lives in demos/fonts_scene.c — the P4 firmware builds the very
+# same page from the same source (ports/esp32p4/main/app_main.c)
+build/surfer_fonts: $(CORE_SRCS) $(SDL_SRCS) demos/fonts.c demos/fonts_scene.c \
+		demos/fonts_scene.h $(GEN_DIR)/font_registry.c $(FONTLAB_GEN) $(HDRS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Isrc/core -Isrc/hal/sdl -I$(GEN_DIR) -Idemos \
+		-o $@ $(CORE_SRCS) $(SDL_SRCS) demos/fonts.c demos/fonts_scene.c \
+		$(GEN_DIR)/font_registry.c $(SDL_LIBS) -lm
 
 # the "desktop demo" tracks the current milestone: mixer (M1) + text labels (M3)
 build/surfer_demo: $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS) demos/mixer.c \
@@ -98,18 +220,17 @@ build/surfer_present_test: $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS) \
 		$(SDL_LIBS) -lm
 
 # static lib + generated headers for the MicroPython binding
-LIB_SRCS := $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS)
+LIB_SRCS := $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS) $(GEN_DIR)/font_registry.c
 LIB_OBJS := $(patsubst %.c,build/obj/%.o,$(LIB_SRCS))
 
 build/obj/%.o: %.c $(HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Isrc/core -Isrc/hal/sdl -c $< -o $@
 
-build/libsurfer.a: $(LIB_OBJS)
+build/libsurfer.a: gen $(LIB_OBJS)
 	ar rcs $@ $(LIB_OBJS)
 
-gen: $(GEN_DIR)/widget_assets.h $(GEN_DIR)/font_ui16.h $(GEN_DIR)/font_ui28.h \
-	$(GEN_DIR)/font_mono16.h
+gen: $(GEN_DIR)/widget_assets.h $(GEN_DIR)/font_registry.c $(FONTLAB_GEN)
 
 # ---- web (M6): the sdl backend compiled with emscripten ----
 # DESIGN.md's "zero new code" bet: demos compile unchanged; ASYNCIFY +
@@ -137,7 +258,7 @@ EMAR ?= emar
 # no SDL_SRCS here: hal_sdl.c holds an EM_ASYNC_JS whose JS body emcc
 # drops when linked out of an archive — the binding compiles it directly
 # (bindings/surfer/web/hal_sdl_web.c)
-WEB_OBJS := $(patsubst %.c,build/webobj/%.o,$(CORE_SRCS) $(WIDGET_SRCS))
+WEB_OBJS := $(patsubst %.c,build/webobj/%.o,$(CORE_SRCS) $(WIDGET_SRCS) $(GEN_DIR)/font_registry.c)
 
 build/webobj/%.o: %.c $(HDRS)
 	@mkdir -p $(dir $@)

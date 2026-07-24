@@ -66,6 +66,23 @@ const surf_glyph *surf_font_glyph(const surf_font *f, uint32_t cp)
     return NULL;
 }
 
+bool surf_font_is_mono(const surf_font *f)
+{
+    if (!f || f->nglyphs <= 0)
+        return false;
+    int16_t a0 = 0;
+    for (int32_t i = 0; i < f->nglyphs; i++) {
+        int16_t a = f->glyphs[i].adv;
+        if (a <= 0)
+            continue;          /* combining marks etc. carry no advance */
+        if (!a0)
+            a0 = a;
+        else if (a != a0)
+            return false;
+    }
+    return a0 > 0;
+}
+
 int16_t surf_font_kern(const surf_font *f, uint32_t a, uint32_t b)
 {
     if (a == 0 || f->nkerns == 0)
