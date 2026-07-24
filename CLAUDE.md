@@ -177,8 +177,8 @@ Tulip mode for the P4 is VERIFIED ON HARDWARE — REPL on the panel,
 USB keyboard typing, touch live (MICROPY_HW_ENABLE_USBDEV=0 in the
 board config is what frees the OTG PHY for host mode). Build: `make mpy-p4` — micropython v1.28.0 (`~/micropython-1.28`,
 first P4-capable release) + IDF v5.5.1 (`~/esp/esp-idf-v5.5.1`, MP's P4
-code needs 5.5 APIs; the native firmware in `ports/esp32p4/` stays on
-5.4.1). The binding is split over a tiny port layer
+code needs 5.5 APIs; the native firmware in `ports/esp32p4/` defaults to
+5.4.1 — but see the rev v3.x note below). The binding is split over a tiny port layer
 (`bindings/surfer/surfer_port.h`): `port_sdl.c` for desktop,
 `port_p4.c` for device — EK79007 DSI panel + GT911 touch brought up on
 core-IDF APIs only (no BSP/managed components; wiring constants
@@ -190,3 +190,65 @@ port. Board def `bindings/surfer/boards/SURFER_P4/` freezes tulip.py
 mode (frozen main.py) — Ctrl-C on the serial console drops to the REPL.
 Soft-reset re-inits the C scene (mod_init tears down on re-entry).
 Remaining: on-device tulip verify, M6 web build + real art.
+
+**Two P4 silicon revisions — images are NOT interchangeable.** Espressif
+split the P4 at chip rev v3.x (marketed "P4X"); IDF < 5.5.3 cannot build
+for v3.x at all, and a v1.x image will not boot on it (or vice versa).
+The bench board reports rev **v3.2**. For it, build `ports/esp32p4/`
+with IDF v5.5.3 and the rev-3 overlay:
+
+```
+source ~/esp/esp-idf-v5.5.3/export.sh
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.rev3" \
+       -p /dev/cu.usbmodem<...> flash
+```
+
+Plain `idf.py build` (IDF 5.4.1, no overlay) still targets the v1.x
+board. One code-level trap, not config: leave `bsp_display_config_t`'s
+`.phy_clk_src` at 0 — on IDF ≥ 5.5.3 `MIPI_DSI_PHY_CLK_SRC_DEFAULT` is a
+compat alias for the LEGACY PLL_F20M reference, illegal on v3.x, and the
+image compiles clean then abort()s inside `esp_lcd_new_dsi_bus` at boot
+with no message. Measured on tulip5's identical part: compose cost at
+large damaged areas fell 42–51% (wider PPA SRM block, 8×8 → 32×32); the
+~85 µs per-op floor is unchanged, so "bake at final size" still holds.
+
+## Fonts
+
+surfer ships **42 baked fonts from 31 source files**, all reachable at
+runtime by name via `surf_font_builtin("helvR12")`. `tools/fontbake.c`
+has two front ends: stb_truetype for outlines, and a BDF reader that
+copies designed bitmap fonts pixel-for-pixel (SIZE is ignored — a BDF
+*is* one size). It reports **gray %** = share of inked pixels that are
+neither 0 nor 255; 0.0% means a genuine bitmap, 78-100% means an outline
+face. Knobs: `FONTBAKE_EM=1` (ppem sizing — required for pixel-designed
+outline faces, whose grid is in em units), `FONTBAKE_GAMMA`,
+`FONTBAKE_THRESHOLD[_CUT]`.
+
+Sources: Roboto + JetBrains Mono (outline, AA), BigBlue Terminal (bitmap
+mono), 4 Kenney pixel faces (CC0), and 24 Adobe X11 BDFs — helvR/helvB/
+ncenR/courR at 08/10/12/14/18/24, each a separately *designed* size.
+`assets/fonts/LICENSE.txt` has the terms; BigBlue's provenance is still
+unpinned (TODO before shipping).
+
+**One TU owns every atlas.** `tools/gen_font_registry.py` emits
+`font_registry.c`, which includes all the font headers and implements
+`surf_font_builtin*`. Font headers declare `static const` atlases, so
+including one anywhere else silently duplicates its pixels into that
+object file — don't. Device backends call
+`surf_font_builtin_prepare(fn)` once at startup to re-home every atlas
+into DMA-able RAM. Cost: 1.25 MiB of atlas, P4 image 2.70 MiB of the
+8 MiB partition (66% free), plus the same again in PSRAM.
+
+MicroPython takes a font as a name, a `Font` object, or a legacy index
+anywhere: `surfer.label(s, x, y, c, "helvR12")`,
+`surfer.textgrid(cols, rows, fg, bg, "courR14")`, `surfer.font(name_or_blob)`,
+`surfer.fonts([mono_only])`. `surf_font_is_mono` gates the textgrid — it
+sizes its cell from 'M', so a proportional face is refused.
+
+`build/surfer_fonts` (desktop) and `DEMO_MODE = DEMO_FONTS` in
+`ports/esp32p4/main/app_main.c` render the same 3-page specimen from the
+same source (`demos/fonts_scene.c`); tap/click cycles pages. `SURF_TAP=x,y`
+injects a synthetic tap so the page flip is testable headlessly. `SURF_SCALE=N` (sdl hal) blows the
+window up N× with nearest-neighbour sampling for looking at glyph
+pixels — the scene, framebuffer and `SURF_SHOT` dumps stay at the real
+resolution; only the window grows.

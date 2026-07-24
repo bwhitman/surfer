@@ -28,6 +28,7 @@ static struct {
     bool          mouse_down;
     surf_rect     scrolled;     /* union of scroll_rect regions this frame */
     bool          has_scrolled;
+    int           scale;        /* SURF_SCALE: integer nearest-neighbour zoom */
 } S;
 
 static void push_key(uint8_t kind, bool shift, const char *utf8)
@@ -409,11 +410,14 @@ static const surf_hal hal_sdl = {
 
 /* ---- host glue ---- */
 
+/* x/y arrive in window coordinates; scene space is 1/SURF_SCALE of that. */
 static void push_touch(int16_t x, int16_t y, uint8_t phase)
 {
     int next = (S.ring_w + 1) % TOUCH_RING;
     if (next == S.ring_r)
         return;  /* full: drop; UP events still arrive next pump */
+    x = (int16_t)(x / S.scale);
+    y = (int16_t)(y / S.scale);
     S.ring[S.ring_w] = (surf_touch){x, y, phase};
     S.ring_w = next;
 }
@@ -430,8 +434,19 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
         return NULL;
     S.w = w;
     S.h = h;
+
+    /* SURF_SCALE=N blows the window up N times for inspecting glyph
+     * pixels. Nearest-neighbour is the whole point — the hint is set
+     * explicitly rather than trusting SDL's default, because a smoothed
+     * upscale invents edge pixels and makes every bake look antialiased. */
+    const char *se = getenv("SURF_SCALE");
+    S.scale = se ? atoi(se) : 1;
+    if (S.scale < 1) S.scale = 1;
+    if (S.scale > 8) S.scale = 8;
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+
     S.win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                             w, h, SDL_WINDOW_ALLOW_HIGHDPI);
+                             w * S.scale, h * S.scale, SDL_WINDOW_ALLOW_HIGHDPI);
     if (!S.win)
         goto fail;
 #ifdef SURF_HAL_SDL_NO_YIELD
