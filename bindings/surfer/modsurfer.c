@@ -1114,11 +1114,22 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
     /* p4 only, first init only: compose straight into the scan buffer —
      * the right mode for full-screen-every-frame animation */
     bool single = n_args > 2 && mp_obj_is_true(args[2]);
-    surf_config cfg = {.max_nodes = 512, .bg = SURF_RGB(18, 20, 25)};
+    /* 2048: real apps blow 512 fast — tulip5's drum machine alone holds
+     * ~1100 live nodes (8 channel strips + a 155-row sound chooser).
+     * Pool RAM is ~sizeof(surf_node)+paint per slot; at 2048 that is a
+     * few hundred KB, fine on every backend. Exhaustion raises
+     * RuntimeError mid-scene-build, which presents as a half-alive UI
+     * (everything built before the throw works, nothing after does) —
+     * found the hard way. */
+    surf_config cfg = {.max_nodes = 2048, .bg = SURF_RGB(18, 20, 25)};
     if (inited) {
         /* soft reset (or repeat init): the VM dropped every Python object,
          * so rebuild the C scene from scratch on the surviving hal —
-         * stale nodes with dangling callbacks must not outlive the VM */
+         * stale nodes with dangling callbacks must not outlive the VM.
+         * The registry list died with the old heap; drop the root pointer
+         * so registry_add rebuilds it instead of appending into freed
+         * memory (store fault on the first node after Ctrl-D otherwise). */
+        MP_STATE_VM(surfer_registry) = MP_OBJ_NULL;
         surf_deinit();
         g_scr_w = w;
         g_scr_h = h;
@@ -1534,6 +1545,24 @@ static mp_obj_t mod_dropdown(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_dropdown_obj, 4, 4, mod_dropdown);
 
+/* surfer.touches() -> ((id, x, y), ...) — the current multitouch
+ * contacts, id-stable per finger. Poll each frame and diff by id; the
+ * single-pointer on_touch dispatch is untouched (contact 0 drives it). */
+static mp_obj_t mod_touches(void)
+{
+    surf_touch_pt pts[8];
+    int n = surf_touch_points(pts, 8);
+    mp_obj_t items[8];
+    for (int i = 0; i < n; i++) {
+        mp_obj_t t[3] = {MP_OBJ_NEW_SMALL_INT(pts[i].id),
+                         MP_OBJ_NEW_SMALL_INT(pts[i].x),
+                         MP_OBJ_NEW_SMALL_INT(pts[i].y)};
+        items[i] = mp_obj_new_tuple(3, t);
+    }
+    return mp_obj_new_tuple((size_t)n, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mod_touches_obj, mod_touches);
+
 /* test/demo hooks */
 static mp_obj_t mod_touch(mp_obj_t x, mp_obj_t y, mp_obj_t phase)
 {
@@ -1601,6 +1630,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_Dropdown), MP_ROM_PTR(&mod_dropdown_obj)},
     {MP_ROM_QSTR(MP_QSTR_Button), MP_ROM_PTR(&mod_button_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch), MP_ROM_PTR(&mod_touch_obj)},
+    {MP_ROM_QSTR(MP_QSTR_touches), MP_ROM_PTR(&mod_touches_obj)},
     {MP_ROM_QSTR(MP_QSTR_screenshot), MP_ROM_PTR(&mod_screenshot_obj)},
     /* key kinds (match surf_sdl_key_kind) */
     {MP_ROM_QSTR(MP_QSTR_KEY_TEXT), MP_ROM_INT(0)},
