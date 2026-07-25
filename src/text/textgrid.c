@@ -243,57 +243,10 @@ void surf_textgrid_scroll(surf_node *n, int16_t dy_rows)
 
 /* ---- scrollback ---- */
 
-/* The bar: macOS-ish. Thin, inset from the right edge, rounded ends
- * faked by insetting the first and last pixel row — with no rounded-rect
- * primitive in the hal that is three fills instead of a new op. */
-#define SB_W      6
-#define SB_INSET  3
-#define SB_MIN_H  24
-
-static void scrollbar_geom(const surf_node *n, int16_t *y, int16_t *h)
-{
-    int32_t total = n->u.grid.hist + n->u.grid.rows;
-    int32_t bar = (int32_t)n->h * n->u.grid.rows / total;
-    if (bar < SB_MIN_H)
-        bar = SB_MIN_H;
-    /* view counts rows back from live, so a view of 0 sits at the bottom */
-    int32_t span = n->h - bar;
-    int32_t off = n->u.grid.hist ? span * (n->u.grid.hist - n->u.grid.view)
-                                       / n->u.grid.hist
-                                 : span;
-    *h = (int16_t)bar;
-    *y = (int16_t)off;
-}
-
-static void paint_scrollbar(const surf_paint_ent *e)
-{
-    const surf_node *n = e->n;
-    if (n->u.grid.hist <= 0)
-        return;
-    int16_t by, bh;
-    scrollbar_geom(n, &by, &bh);
-    int16_t x = (int16_t)(e->ax + n->w - SB_W - SB_INSET);
-    int16_t y = (int16_t)(e->ay + by);
-    surf_color c = SURF_RGB(150, 150, 155);
-    surf_rect mid = surf_rect_intersect((surf_rect){x, (int16_t)(y + 1),
-                                                    SB_W, (int16_t)(bh - 2)},
-                                        e->vis);
-    if (!surf_rect_empty(mid))
-        surf_g.hal->fill(mid, c);
-    /* the "rounded" caps: one pixel row at each end, inset by one */
-    surf_rect cap0 = surf_rect_intersect(
-        (surf_rect){(int16_t)(x + 1), y, (int16_t)(SB_W - 2), 1}, e->vis);
-    surf_rect cap1 = surf_rect_intersect(
-        (surf_rect){(int16_t)(x + 1), (int16_t)(y + bh - 1),
-                    (int16_t)(SB_W - 2), 1}, e->vis);
-    if (!surf_rect_empty(cap0))
-        surf_g.hal->fill(cap0, c);
-    if (!surf_rect_empty(cap1))
-        surf_g.hal->fill(cap1, c);
-}
-
-/* Drag anywhere on the grid scrolls the view — the bar is thin, and a
- * terminal has nothing else to do with a drag. */
+/* Drag anywhere on the grid scrolls the view. The visible bar is a
+ * separate surf_scrollbar the caller places and keeps in step (poll
+ * surf_textgrid_view); this handler exists so the TEXT is draggable too,
+ * which is what a touchscreen wants. */
 static void grid_touch(surf_node *n, const surf_touch *t, void *user)
 {
     (void)user;
@@ -466,5 +419,4 @@ void surf_textgrid_paint(const surf_paint_ent *e)
             }
         }
     }
-    paint_scrollbar(e);
 }

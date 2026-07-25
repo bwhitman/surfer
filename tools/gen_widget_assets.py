@@ -143,9 +143,27 @@ def cap():
 
 
 CHECK = 28
+
+# scrollbar: a 6px capsule, 9-patched to any length (ends stay round)
+SBAR_W = 6
+SBAR_H = 9
+SBAR_INSET = 4
 PANEL = 24
 PANEL_INSET = 8
 ARROW_W, ARROW_H = 12, 8
+
+
+def sbar(w, h, radius, col, alpha):
+    """A scrollbar piece: a rounded capsule, stretched vertically by the
+    9-patch. Two of these make the widget — a faint track and a solid
+    thumb — so both keep rounded ends at any length."""
+    out = []
+    for y in range(h):
+        for x in range(w):
+            _d, a = rounded_alpha(x + 0.5, y + 0.5, w, h, radius)
+            out.append((clamp(a * alpha) << 24) | (col[0] << 16) |
+                       (col[1] << 8) | col[2])
+    return out
 
 
 def checkbox_strip():
@@ -228,6 +246,9 @@ def main():
     print(f"#define WARROW_H {ARROW_H}")
     print(f"#define WKNOBSM_SIZE {KNOB_SM}")
     print(f"#define WKNOBSM_STRIP_W {KNOB_SM * KNOB_FRAMES}")
+    print(f"#define WSBAR_W {SBAR_W}")
+    print(f"#define WSBAR_H {SBAR_H}")
+    print(f"#define WSBAR_INSET {SBAR_INSET}")
     print("#define WBTN_SIZE 18")
     print("#define WBTN_INSET 6")
     emit("widget_knob_px", knob_strip())
@@ -240,6 +261,8 @@ def main():
     emit("widget_check_px", checkbox_strip())
     emit("widget_panel_px", panel())
     emit("widget_arrow_px", arrow_strip())
+    emit("widget_sbar_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (150, 150, 158), 255))
+    emit("widget_sbtrack_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (255, 255, 255), 40))
 
 
 if __name__ == "__main__":

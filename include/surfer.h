@@ -414,6 +414,31 @@ void        surf_textinput_move(surf_node *n, int32_t delta_cp, bool extend);
 int32_t     surf_textinput_index_from_x(const surf_node *n, int16_t local_x);
 void        surf_textinput_set_focused(surf_node *n, bool focused);
 
+/* Scrollbar: a thumb on a track, driven by a content model the CALLER
+ * owns. It knows nothing about what is scrolling — hand it total, visible
+ * and pos in any unit (console rows, editor lines, panel pixels) and it
+ * reports a new pos when dragged. Hides itself while total <= visible, so
+ * a caller can set the range unconditionally. */
+typedef struct surf_scrollbar surf_scrollbar;
+
+typedef struct {
+    const surf_image *thumb;   /* 9-patch capsule; its w is the thickness */
+    const surf_image *track;   /* optional, same art fainter */
+    int16_t           inset;   /* 9-patch inset along the axis */
+} surf_scrollbar_style;
+
+surf_scrollbar *surf_scrollbar_new(surf_node *parent, int16_t x, int16_t y,
+                                   int16_t len, bool vertical,
+                                   const surf_scrollbar_style *style);
+void      surf_scrollbar_destroy(surf_scrollbar *s);
+surf_node *surf_scrollbar_node(surf_scrollbar *s);
+void      surf_scrollbar_set_range(surf_scrollbar *s, int32_t total,
+                                   int32_t visible, int32_t pos);
+void      surf_scrollbar_set_pos(surf_scrollbar *s, int32_t pos);
+int32_t   surf_scrollbar_pos(const surf_scrollbar *s);
+void      surf_scrollbar_on_change(surf_scrollbar *s, surf_change_cb cb,
+                                   void *user);
+
 /* textgrid: the fast fixed-width text mode (terminals, code editors).
  * A cols×rows grid of opaque cells (codepoint + fg + bg), composed by
  * the CPU straight into the framebuffer — full-screen text scrolls at

@@ -23,7 +23,7 @@ ask rather than silently diverging.
   All device allocations go through `hal->alloc_image`; never raw
   `heap_caps_malloc` in core code.
 - **The widget set stays small** (knob, slider, button, checkbox, dropdown,
-  label, textinput, scrollview). Do not add widgets, node types, or hal ops
+  label, textinput, scrollview, scrollbar). Do not add widgets, node types, or hal ops
   without asking first.
 - **No new dependencies without asking.** Currently allowed: stb_truetype,
   stb_image (build tools only), SDL2, ESP-IDF, MicroPython headers.
@@ -218,13 +218,32 @@ with no message. Measured on tulip5's identical part: compose cost at
 large damaged areas fell 42–51% (wider PPA SRM block, 8×8 → 32×32); the
 ~85 µs per-op floor is unchanged, so "bake at final size" still holds.
 
+## Scrollbar
+
+`surf_scrollbar_new(parent, x, y, len, vertical, style)` is a thumb on a
+track that knows **nothing about what it scrolls**. The caller owns the
+content model — `set_range(total, visible, pos)` in whatever unit suits
+it — and the widget only does ratios, reporting a new `pos` through
+`on_change` when dragged. It hides itself while `total <= visible`, so a
+caller can set the range unconditionally and the bar appears when there
+is somewhere to go. Both pieces are 9-patched capsules, so the ends stay
+round at any length and nothing is drawn at frame time.
+
+Three consumers in tulip5, deliberately in three different units: the
+console (rows of scrollback), the editor (lines of a document), and
+gamma9001's sound chooser (pixels of scrollview offset).
+
 ## Textgrid scrollback
 
 `surf_textgrid_set_scrollback(n, mult)` keeps `mult` screens of rows so
 lines that scroll off the top stay reachable: drag the grid to look back,
 a thin macOS-style bar appears on the right while there is history, and
 any write snaps the view to the bottom the way a terminal does.
-`surf_textgrid_view/set_view/history` drive it programmatically.
+`surf_textgrid_view/set_view/history` drive it programmatically, and the
+visible bar is a separate `surf_scrollbar` the caller places and keeps in
+step — the grid draws no chrome of its own. Dragging the TEXT still
+scrolls (a touchscreen wants that), so a caller that shows a bar should
+poll `surf_textgrid_view` to follow it.
 
 The cells become a **ring** of `total_rows`, with `head` the ring row at
 screen row 0 and `view` how far back the display is. Scrolling then moves

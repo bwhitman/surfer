@@ -283,8 +283,57 @@ static void test_button(void)
     surf_button_destroy(b);
 }
 
+/* Scrollbar: the widget owns no content, only ratios — check the thumb
+ * geometry, the hide-when-nothing-to-scroll rule, and that a drag reports
+ * a position in the caller's units. */
+static int32_t sb_reported;
+static void sb_cb(int32_t v, void *user) { (void)user; sb_reported = v; }
+
+static void test_scrollbar(void)
+{
+    fresh(400, 300, 32);
+    surf_image thumb = {.pixels = NULL, .w = 6, .h = 9, .stride = 24,
+                        .format = SURF_FMT_ARGB8888};
+    surf_scrollbar_style st = {.thumb = &thumb, .track = NULL, .inset = 4};
+    surf_scrollbar *sb = surf_scrollbar_new(surf_screen(), 100, 0, 200, true, &st);
+    OK(sb != NULL);
+    surf_node *root = surf_scrollbar_node(sb);
+
+    /* nothing to scroll: hidden, and a touch does nothing */
+    surf_scrollbar_set_range(sb, 10, 10, 0);
+    OK(root->flags & SURF_NF_HIDDEN);
+
+    /* 100 rows, 20 visible -> thumb is a fifth of the track */
+    surf_scrollbar_on_change(sb, sb_cb, NULL);
+    surf_scrollbar_set_range(sb, 100, 20, 0);
+    OK(!(root->flags & SURF_NF_HIDDEN));
+    OK(surf_scrollbar_pos(sb) == 0);
+
+    /* drag the thumb to the far end: pos saturates at total - visible */
+    sb_reported = -1;
+    surf_touch down = {.x = 103, .y = 5, .phase = SURF_TOUCH_DOWN};
+    surf_touch move = {.x = 103, .y = 400, .phase = SURF_TOUCH_MOVE};
+    surf_inject_touch(&down);
+    surf_inject_touch(&move);
+    OK(surf_scrollbar_pos(sb) == 80);
+    OK(sb_reported == 80);
+
+    /* and back to the top */
+    surf_touch up = {.x = 103, .y = -50, .phase = SURF_TOUCH_MOVE};
+    surf_inject_touch(&up);
+    OK(surf_scrollbar_pos(sb) == 0);
+
+    /* set_pos is clamped, and does NOT fire the callback (it is the
+     * caller telling the bar where things are, not the user moving it) */
+    sb_reported = -1;
+    surf_scrollbar_set_pos(sb, 999);
+    OK(surf_scrollbar_pos(sb) == 80 && sb_reported == -1);
+    surf_scrollbar_destroy(sb);
+}
+
 void run_widget_tests(void)
 {
+    test_scrollbar();
     test_filmstrip();
     test_ninepatch();
     test_input_capture();

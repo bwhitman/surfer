@@ -40,6 +40,14 @@ static surf_image check_img = {
     .pixels = (void *)widget_check_px, .w = WCHECK_SIZE * 2, .h = WCHECK_SIZE,
     .stride = WCHECK_SIZE * 2 * 4, .format = SURF_FMT_ARGB8888,
 };
+static surf_image sbar_img = {
+    .pixels = (void *)widget_sbar_px, .w = WSBAR_W, .h = WSBAR_H,
+    .stride = WSBAR_W * 4, .format = SURF_FMT_ARGB8888,
+};
+static surf_image sbtrack_img = {
+    .pixels = (void *)widget_sbtrack_px, .w = WSBAR_W, .h = WSBAR_H,
+    .stride = WSBAR_W * 4, .format = SURF_FMT_ARGB8888,
+};
 static surf_image panel_img = {
     .pixels = (void *)widget_panel_px, .w = WPANEL_SIZE, .h = WPANEL_SIZE,
     .stride = WPANEL_SIZE * 4, .format = SURF_FMT_ARGB8888,
@@ -67,6 +75,8 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&knob_img);
     surfer_port_prepare_image(&track_img);
     surfer_port_prepare_image(&cap_img);
+    surfer_port_prepare_image(&sbar_img);
+    surfer_port_prepare_image(&sbtrack_img);
     surfer_port_prepare_image(&check_img);
     surfer_port_prepare_image(&panel_img);
     surfer_port_prepare_image(&arrow_img);
@@ -104,7 +114,7 @@ typedef struct {
 } surfer_font_obj_t;
 extern const mp_obj_type_t surfer_font_type;
 
-enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON };
+enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON, W_SCROLLBAR };
 
 typedef struct {
     mp_obj_base_t base;
@@ -805,6 +815,8 @@ static void widget_idx_cb(int32_t idx, void *user)
 static mp_obj_t widget_get_value(surfer_widget_obj_t *o)
 {
     switch (o->kind) {
+    case W_SCROLLBAR:
+        return mp_obj_new_int(surf_scrollbar_pos(o->w));
     case W_SLIDER:
         return mp_obj_new_float(
             (mp_float_t)surf_slider_value(o->w) / SURF_ONE);
@@ -822,6 +834,9 @@ static mp_obj_t widget_get_value(surfer_widget_obj_t *o)
 static void widget_set_value(surfer_widget_obj_t *o, mp_obj_t v)
 {
     switch (o->kind) {
+    case W_SCROLLBAR:
+        surf_scrollbar_set_pos(o->w, mp_obj_get_int(v));
+        break;
     case W_SLIDER:
         surf_slider_set_value(o->w, (int32_t)(mp_obj_get_float(v) * SURF_ONE));
         break;
@@ -838,6 +853,19 @@ static void widget_set_value(surfer_widget_obj_t *o, mp_obj_t v)
         break;
     }
 }
+
+/* bar.set_range(total, visible, pos): what the content looks like now. */
+static mp_obj_t widget_set_range(size_t n_args, const mp_obj_t *args)
+{
+    surfer_widget_obj_t *o = MP_OBJ_TO_PTR(args[0]);
+    if (o->kind != W_SCROLLBAR)
+        mp_raise_TypeError(MP_ERROR_TEXT("not a scrollbar"));
+    surf_scrollbar_set_range(o->w, mp_obj_get_int(args[1]), mp_obj_get_int(args[2]),
+                             n_args > 3 ? mp_obj_get_int(args[3]) : 0);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(widget_set_range_obj, 3, 4,
+                                           widget_set_range);
 
 static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
 {
@@ -888,6 +916,7 @@ static MP_DEFINE_CONST_FUN_OBJ_1(widget_detach_obj, widget_detach);
 
 static const mp_rom_map_elem_t widget_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_detach), MP_ROM_PTR(&widget_detach_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_range), MP_ROM_PTR(&widget_set_range_obj)},
 };
 static MP_DEFINE_CONST_DICT(widget_locals_dict, widget_locals_table);
 
@@ -1471,6 +1500,30 @@ static mp_obj_t mod_textgrid(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_textgrid_obj, 2, 5, mod_textgrid);
 
+/* surfer.scrollbar(x, y, len, vertical=True) -> Widget.
+ * .set_range(total, visible, pos) in whatever unit you like; .value is
+ * the position, and .callback fires with a new one when it is dragged. */
+static mp_obj_t mod_scrollbar(size_t n_args, const mp_obj_t *args)
+{
+    static const surf_scrollbar_style st = {
+        .thumb = &sbar_img, .track = &sbtrack_img, .inset = WSBAR_INSET,
+    };
+    bool vertical = n_args > 3 ? mp_obj_is_true(args[3]) : true;
+    surf_scrollbar *sb = surf_scrollbar_new(surf_screen(), 0, 0,
+                                            (int16_t)mp_obj_get_int(args[2]),
+                                            vertical, &st);
+    if (!sb)
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("scrollbar create failed"));
+    surf_node *node = surf_scrollbar_node(sb);
+    surf_node_detach(node);           /* caller parents it via .add() */
+    surf_node_set_pos(node, (int16_t)mp_obj_get_int(args[0]),
+                      (int16_t)mp_obj_get_int(args[1]));
+    surfer_widget_obj_t *o = new_widget_obj(W_SCROLLBAR, sb, node);
+    surf_scrollbar_on_change(sb, widget_cb, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_scrollbar_obj, 3, 4, mod_scrollbar);
+
 static mp_obj_t mod_scrollview(size_t n_args, const mp_obj_t *args)
 {
     (void)n_args;
@@ -1668,6 +1721,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_fonts), MP_ROM_PTR(&mod_fonts_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollview), MP_ROM_PTR(&mod_scrollview_obj)},
+    {MP_ROM_QSTR(MP_QSTR_scrollbar), MP_ROM_PTR(&mod_scrollbar_obj)},
     {MP_ROM_QSTR(MP_QSTR_slider), MP_ROM_PTR(&mod_slider_obj)},
     {MP_ROM_QSTR(MP_QSTR_knob), MP_ROM_PTR(&mod_knob_obj)},
     {MP_ROM_QSTR(MP_QSTR_checkbox), MP_ROM_PTR(&mod_checkbox_obj)},
