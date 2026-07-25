@@ -133,9 +133,55 @@ static void test_grid_fast_scroll(void)
     surf_node_destroy(g);
 }
 
+/* the ring arithmetic textgrid.c uses, so the test reads what the paint
+ * path would read */
+static uint32_t grid_cp(surf_node *g, int16_t col, int16_t row)
+{
+    int16_t t = g->u.grid.total_rows;
+    int16_t r = (int16_t)((g->u.grid.head + row - g->u.grid.view) % t);
+    if (r < 0)
+        r = (int16_t)(r + t);
+    return g->u.grid.cells[r * g->u.grid.cols + col].cp;
+}
+
+/* Scrollback: lines that leave the top stay reachable, the view snaps
+ * back on a write, and history is capped at the multiplier. */
+static void test_grid_scrollback(void)
+{
+    fresh(400, 200, 32);
+    surf_node *g = surf_textgrid_new(&tfont, 8, 4, 0xffff, 0);
+    surf_node_add(surf_screen(), g);
+    OK(surf_textgrid_set_scrollback(g, 3));      /* 4 rows -> 12 */
+    OK(surf_textgrid_history(g) == 0);           /* nothing scrolled yet */
+
+    surf_textgrid_set_row(g, 0, "first");
+    for (int i = 0; i < 4; i++)
+        surf_textgrid_scroll(g, 1);
+    OK(surf_textgrid_history(g) == 4);           /* four rows pushed up */
+
+    /* look back: "first" is 4 rows above the live window */
+    surf_textgrid_set_view(g, 4);
+    OK(surf_textgrid_view(g) == 4);
+    OK(grid_cp(g, 0, 0) == 'f');
+
+    /* a write snaps to live, as a terminal does */
+    surf_textgrid_set_row(g, 3, "typed");
+    OK(surf_textgrid_view(g) == 0);
+
+    /* history saturates at (total - rows), never grows past the ring */
+    for (int i = 0; i < 40; i++)
+        surf_textgrid_scroll(g, 1);
+    OK(surf_textgrid_history(g) == 8);           /* 12 total - 4 visible */
+    surf_textgrid_set_view(g, 999);              /* clamped, not wild */
+    OK(surf_textgrid_view(g) == 8);
+
+    surf_node_destroy(g);
+}
+
 void run_grid_tests(void)
 {
     test_grid_model();
     test_grid_pixels();
     test_grid_fast_scroll();
+    test_grid_scrollback();
 }

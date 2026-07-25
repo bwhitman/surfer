@@ -16,9 +16,37 @@ static bool is_grid(const surf_node *n)
     return n && n->type == SURF_NODE_TEXTGRID;
 }
 
+/* screen row -> ring row. Without scrollback head/view are 0 and
+ * total_rows == rows, so this is the identity it always was. */
+static int16_t ring_row(const surf_node *n, int16_t row)
+{
+    int16_t t = n->u.grid.total_rows;
+    int16_t r = (int16_t)((n->u.grid.head + row - n->u.grid.view) % t);
+    return r < 0 ? (int16_t)(r + t) : r;
+}
+
 static surf_textcell *cell(surf_node *n, int16_t col, int16_t row)
 {
-    return &n->u.grid.cells[row * n->u.grid.cols + col];
+    return &n->u.grid.cells[ring_row(n, row) * n->u.grid.cols + col];
+}
+
+/* Writing anything, or scrolling, means the user is doing something live:
+ * snap the view back to the bottom the way a terminal does. Returns true
+ * when the view actually moved, so the caller can repaint the lot. */
+static bool snap_live(surf_node *n)
+{
+    if (n->u.grid.view == 0)
+        return false;
+    n->u.grid.view = 0;
+    surf_damage_subtree(n);
+    return true;
+}
+
+static void blank_ring_row(surf_node *n, int16_t rr)
+{
+    surf_textcell *row = &n->u.grid.cells[rr * n->u.grid.cols];
+    for (int16_t c = 0; c < n->u.grid.cols; c++)
+        row[c] = (surf_textcell){' ', n->u.grid.fg, n->u.grid.bg};
 }
 
 surf_node *surf_textgrid_new(const surf_font *f, int16_t cols, int16_t rows,
@@ -32,6 +60,7 @@ surf_node *surf_textgrid_new(const surf_font *f, int16_t cols, int16_t rows,
     surf_node *n = surf_node_alloc(SURF_NODE_TEXTGRID);
     if (!n)
         return NULL;
+    n->u.grid.total_rows = rows;   /* set_scrollback grows this */
     n->u.grid.cells = calloc((size_t)cols * rows, sizeof(surf_textcell));
     if (!n->u.grid.cells) {
         surf_node_destroy(n);
@@ -73,9 +102,13 @@ static void damage_cells(surf_node *n, int16_t col, int16_t row,
     n->x = ox; n->y = oy; n->w = ow; n->h = oh;
 }
 
+/* set_cell/set_row snap to live first: text arriving while you are
+ * scrolled back would otherwise land off-screen, invisibly. */
 void surf_textgrid_set_cell(surf_node *n, int16_t col, int16_t row, uint32_t cp,
                             surf_color fg, surf_color bg)
 {
+    if (is_grid(n))
+        snap_live(n);
     if (!is_grid(n) || col < 0 || col >= n->u.grid.cols || row < 0 ||
         row >= n->u.grid.rows)
         return;
@@ -88,6 +121,8 @@ void surf_textgrid_set_cell(surf_node *n, int16_t col, int16_t row, uint32_t cp,
 
 void surf_textgrid_set_row(surf_node *n, int16_t row, const char *utf8)
 {
+    if (is_grid(n))
+        snap_live(n);
     if (!is_grid(n) || row < 0 || row >= n->u.grid.rows)
         return;
     const char *s = utf8 ? utf8 : "";
@@ -149,7 +184,41 @@ void surf_textgrid_scroll(surf_node *n, int16_t dy_rows)
         return;
     int16_t rows = n->u.grid.rows, cols = n->u.grid.cols;
     int16_t ady = dy_rows < 0 ? (int16_t)-dy_rows : dy_rows;
-    bool shifted = grid_shift_pixels(n, dy_rows, ady);
+    bool snapped = snap_live(n);
+    bool shifted = !snapped && grid_shift_pixels(n, dy_rows, ady);
+
+    if (n->u.grid.total_rows > rows) {
+        /* Scrollback: don't move any cells, move the window. The rows
+         * that leave the top stay in the ring and become history — which
+         * is the whole point — and the cost is O(exposed rows) instead of
+         * O(screen). */
+        int16_t t = n->u.grid.total_rows;
+        if (ady >= rows) {
+            for (int16_t i = 0; i < rows; i++)
+                blank_ring_row(n, ring_row(n, i));
+            n->u.grid.hist = 0;
+        } else if (dy_rows > 0) {
+            for (int16_t i = 0; i < ady; i++) {
+                n->u.grid.head = (int16_t)((n->u.grid.head + 1) % t);
+                blank_ring_row(n, ring_row(n, (int16_t)(rows - 1)));
+                if (n->u.grid.hist < t - rows)
+                    n->u.grid.hist++;
+            }
+        } else {
+            for (int16_t i = 0; i < ady; i++) {
+                n->u.grid.head = (int16_t)((n->u.grid.head - 1 + t) % t);
+                blank_ring_row(n, ring_row(n, 0));
+                if (n->u.grid.hist > 0)
+                    n->u.grid.hist--;
+            }
+        }
+        if (shifted)
+            damage_cells(n, 0, dy_rows > 0 ? (int16_t)(rows - ady) : 0, cols, ady);
+        else
+            surf_damage_subtree(n);
+        return;
+    }
+
     if (ady >= rows) {
         for (int32_t i = 0; i < (int32_t)cols * rows; i++)
             n->u.grid.cells[i] = (surf_textcell){' ', n->u.grid.fg, n->u.grid.bg};
@@ -168,6 +237,137 @@ void surf_textgrid_scroll(surf_node *n, int16_t dy_rows)
         /* the hal moved the surviving pixels; repaint only the exposure */
         damage_cells(n, 0, dy_rows > 0 ? (int16_t)(rows - ady) : 0, cols, ady);
     } else {
+        surf_damage_subtree(n);
+    }
+}
+
+/* ---- scrollback ---- */
+
+/* The bar: macOS-ish. Thin, inset from the right edge, rounded ends
+ * faked by insetting the first and last pixel row — with no rounded-rect
+ * primitive in the hal that is three fills instead of a new op. */
+#define SB_W      6
+#define SB_INSET  3
+#define SB_MIN_H  24
+
+static void scrollbar_geom(const surf_node *n, int16_t *y, int16_t *h)
+{
+    int32_t total = n->u.grid.hist + n->u.grid.rows;
+    int32_t bar = (int32_t)n->h * n->u.grid.rows / total;
+    if (bar < SB_MIN_H)
+        bar = SB_MIN_H;
+    /* view counts rows back from live, so a view of 0 sits at the bottom */
+    int32_t span = n->h - bar;
+    int32_t off = n->u.grid.hist ? span * (n->u.grid.hist - n->u.grid.view)
+                                       / n->u.grid.hist
+                                 : span;
+    *h = (int16_t)bar;
+    *y = (int16_t)off;
+}
+
+static void paint_scrollbar(const surf_paint_ent *e)
+{
+    const surf_node *n = e->n;
+    if (n->u.grid.hist <= 0)
+        return;
+    int16_t by, bh;
+    scrollbar_geom(n, &by, &bh);
+    int16_t x = (int16_t)(e->ax + n->w - SB_W - SB_INSET);
+    int16_t y = (int16_t)(e->ay + by);
+    surf_color c = SURF_RGB(150, 150, 155);
+    surf_rect mid = surf_rect_intersect((surf_rect){x, (int16_t)(y + 1),
+                                                    SB_W, (int16_t)(bh - 2)},
+                                        e->vis);
+    if (!surf_rect_empty(mid))
+        surf_g.hal->fill(mid, c);
+    /* the "rounded" caps: one pixel row at each end, inset by one */
+    surf_rect cap0 = surf_rect_intersect(
+        (surf_rect){(int16_t)(x + 1), y, (int16_t)(SB_W - 2), 1}, e->vis);
+    surf_rect cap1 = surf_rect_intersect(
+        (surf_rect){(int16_t)(x + 1), (int16_t)(y + bh - 1),
+                    (int16_t)(SB_W - 2), 1}, e->vis);
+    if (!surf_rect_empty(cap0))
+        surf_g.hal->fill(cap0, c);
+    if (!surf_rect_empty(cap1))
+        surf_g.hal->fill(cap1, c);
+}
+
+/* Drag anywhere on the grid scrolls the view — the bar is thin, and a
+ * terminal has nothing else to do with a drag. */
+static void grid_touch(surf_node *n, const surf_touch *t, void *user)
+{
+    (void)user;
+    if (n->u.grid.hist <= 0)
+        return;
+    int16_t ax, ay;
+    surf_node_abs_pos(n, &ax, &ay);
+    int16_t ly = (int16_t)(t->y - ay);
+    if (t->phase == SURF_TOUCH_DOWN) {
+        n->u.grid.drag_from = n->u.grid.view;
+        n->u.grid.drag_y = ly;
+        return;
+    }
+    if (t->phase != SURF_TOUCH_MOVE)
+        return;
+    /* dragging DOWN reveals older lines, like flicking a page down */
+    int32_t dy = ly - n->u.grid.drag_y;
+    int32_t rows = dy / (n->u.grid.cell_h ? n->u.grid.cell_h : 1);
+    int32_t v = n->u.grid.drag_from + rows;
+    if (v < 0)
+        v = 0;
+    if (v > n->u.grid.hist)
+        v = n->u.grid.hist;
+    if (v != n->u.grid.view) {
+        n->u.grid.view = (int16_t)v;
+        surf_damage_subtree(n);
+    }
+}
+
+bool surf_textgrid_set_scrollback(surf_node *n, int16_t mult)
+{
+    if (!is_grid(n) || mult < 1)
+        return false;
+    int32_t total = (int32_t)n->u.grid.rows * mult;
+    if (total > 32000)                 /* int16 row indices */
+        return false;
+    surf_textcell *cells = calloc((size_t)n->u.grid.cols * total,
+                                  sizeof(surf_textcell));
+    if (!cells)
+        return false;
+    /* keep what is on screen: it lands at ring rows 0..rows-1 */
+    memcpy(cells, n->u.grid.cells,
+           (size_t)n->u.grid.cols * n->u.grid.rows * sizeof(surf_textcell));
+    for (int32_t i = (int32_t)n->u.grid.cols * n->u.grid.rows;
+         i < (int32_t)n->u.grid.cols * total; i++)
+        cells[i] = (surf_textcell){' ', n->u.grid.fg, n->u.grid.bg};
+    free(n->u.grid.cells);
+    n->u.grid.cells = cells;
+    n->u.grid.total_rows = (int16_t)total;
+    n->u.grid.head = n->u.grid.hist = n->u.grid.view = 0;
+    surf_node_set_on_touch(n, grid_touch, NULL);
+    return true;
+}
+
+int16_t surf_textgrid_history(const surf_node *n)
+{
+    return is_grid(n) ? n->u.grid.hist : 0;
+}
+
+int16_t surf_textgrid_view(const surf_node *n)
+{
+    return is_grid(n) ? n->u.grid.view : 0;
+}
+
+void surf_textgrid_set_view(surf_node *n, int16_t back)
+{
+    if (!is_grid(n))
+        return;
+    if (back < 0)
+        back = 0;
+    if (back > n->u.grid.hist)
+        back = n->u.grid.hist;
+    if (back != n->u.grid.view) {
+        n->u.grid.view = back;
         surf_damage_subtree(n);
     }
 }
@@ -266,4 +466,5 @@ void surf_textgrid_paint(const surf_paint_ent *e)
             }
         }
     }
+    paint_scrollbar(e);
 }

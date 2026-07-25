@@ -435,6 +435,18 @@ surf_point surf_textgrid_cell_size(const surf_node *n);
  * scroll_rect. */
 void surf_textgrid_set_fast_scroll(surf_node *n, bool on);
 
+/* Scrollback (opt-in): keep mult x the visible rows, so lines that scroll
+ * off the top stay reachable. Drag the grid to look back — a thin bar
+ * appears on the right while there is history — and any write snaps the
+ * view to the bottom again, the way a terminal does. Costs
+ * cols*rows*mult*sizeof(surf_textcell); a 128x50 console at 10x is
+ * ~500 KB, which is why it is not the default. Enabling it installs the
+ * grid's own touch handler, so do not also set on_touch on that node. */
+bool    surf_textgrid_set_scrollback(surf_node *n, int16_t mult);
+int16_t surf_textgrid_history(const surf_node *n);  /* rows above the view */
+int16_t surf_textgrid_view(const surf_node *n);     /* rows scrolled back */
+void    surf_textgrid_set_view(surf_node *n, int16_t back);
+
 typedef struct {
     const surf_image *strip;  /* 2 frames: unchecked, checked */
     int16_t           frame_w, frame_h;

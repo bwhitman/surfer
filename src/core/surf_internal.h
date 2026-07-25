@@ -100,11 +100,21 @@ struct surf_node {
         } scroll;
         struct {
             const surf_font *font;
-            surf_textcell   *cells;  /* malloc, cols*rows */
+            surf_textcell   *cells;  /* malloc, cols*total_rows */
             int16_t          cols, rows;
             int16_t          cell_w, cell_h;
             surf_color       fg, bg;
             bool             fast;   /* hal-assisted pixel scroll */
+            /* Scrollback (opt-in, surf_textgrid_set_scrollback). cells is
+             * a RING of total_rows: head is the ring row shown at screen
+             * row 0 when live, hist counts the rows pushed above it, and
+             * view is how far back the display is scrolled (0 = live).
+             * Without scrollback total_rows == rows, head/hist/view stay
+             * 0, and every path below reduces to the old arithmetic. */
+            int16_t          total_rows;
+            int16_t          head, hist, view;
+            int16_t          drag_from;   /* view when a drag started */
+            int16_t          drag_y;      /* and where it grabbed */
         } grid;
     } u;
 };
