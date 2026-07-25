@@ -42,6 +42,19 @@ $(GEN_DIR)/font_ui28.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
 	build/tools/fontbake ui28 28 assets/fonts/Roboto-Regular.ttf $@
 
+# Roboto at display sizes. Plain AA, no threshold: at 36 and 48 px the
+# curves carry enough pixels that partial coverage reads as a smooth edge
+# rather than the lumpiness thresholding an off-grid outline produces —
+# the opposite of the small-size case (see ui16b). fontbake's gray% on
+# these is expected to be high and is not a warning here.
+$(GEN_DIR)/font_ui36.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake ui36 36 assets/fonts/Roboto-Regular.ttf $@
+
+$(GEN_DIR)/font_ui48.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake ui48 48 assets/fonts/Roboto-Regular.ttf $@
+
 $(GEN_DIR)/font_mono16.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
 	build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ \
@@ -140,17 +153,14 @@ ADOBE_GEN := $(addprefix $(GEN_DIR)/font_,$(addsuffix .h,$(ADOBE_NAMES)))
 
 # every font this build ships, by fontbake name. The registry
 # (surf_font_builtin) is generated from exactly this list.
-TTF_NAMES := ui12 ui16 ui16b ui28 mono16 mono16g mono16b mono24 \
+TTF_NAMES := ui12 ui16 ui16b ui28 ui36 ui48 mono16 mono16g mono16b mono24 \
 	bigblue12 bigblue24 kpixel16 kpixel32 kpixel48 kpixel64 \
 	kmini16 kmini32 khigh32 kblocks16
 FONT_NAMES := $(TTF_NAMES) $(ADOBE_NAMES)
 
-$(GEN_DIR)/font_registry.c: tools/gen_font_registry.py $(FONTLAB_GEN)
-	@mkdir -p $(GEN_DIR)
-	python3 tools/gen_font_registry.py $(FONT_NAMES) > $@
-
 FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 	$(GEN_DIR)/font_ui16b.h $(GEN_DIR)/font_ui28.h \
+	$(GEN_DIR)/font_ui36.h $(GEN_DIR)/font_ui48.h \
 	$(GEN_DIR)/font_mono16.h $(GEN_DIR)/font_mono16g.h \
 	$(GEN_DIR)/font_mono16b.h $(GEN_DIR)/font_mono24.h \
 	$(GEN_DIR)/font_bigblue12.h $(GEN_DIR)/font_bigblue24.h \
@@ -159,6 +169,15 @@ FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 	$(GEN_DIR)/font_kmini16.h $(GEN_DIR)/font_kmini32.h \
 	$(GEN_DIR)/font_khigh32.h $(GEN_DIR)/font_kblocks16.h \
 	$(ADOBE_GEN)
+
+# NOTE this rule must come AFTER FONTLAB_GEN is defined: make expands a
+# rule's prerequisites when it parses the rule, so with the definition
+# below it $(FONTLAB_GEN) was empty and the registry never rebuilt when
+# the font list changed — adding a name to TTF_NAMES baked the new atlas
+# and then silently kept the old registry.
+$(GEN_DIR)/font_registry.c: tools/gen_font_registry.py $(FONTLAB_GEN)
+	@mkdir -p $(GEN_DIR)
+	python3 tools/gen_font_registry.py $(FONT_NAMES) > $@
 
 # the scene lives in demos/fonts_scene.c — the P4 firmware builds the very
 # same page from the same source (ports/esp32p4/main/app_main.c)
