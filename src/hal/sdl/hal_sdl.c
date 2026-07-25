@@ -30,7 +30,13 @@ static struct {
     surf_rect     scrolled;     /* union of scroll_rect regions this frame */
     bool          has_scrolled;
     int           scale;        /* SURF_SCALE: integer nearest-neighbour zoom */
+    void (*on_interrupt)(void); /* Ctrl-C hook; NULL = ignore the key */
 } S;
+
+void surf_hal_sdl_on_interrupt(void (*fn)(void))
+{
+    S.on_interrupt = fn;
+}
 
 static void push_key(uint8_t kind, bool shift, const char *utf8)
 {
@@ -580,6 +586,43 @@ bool surf_hal_sdl_pump(void)
             return false;
         case SDL_KEYDOWN: {
             bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+            if (e.key.keysym.mod & KMOD_CTRL) {
+                bool chord = true;
+                switch (e.key.keysym.sym) {
+                /* Ctrl-C is the universal interrupt, not a keystroke: it
+                 * has to reach the host even when the host is inside a
+                 * loop that never reads the key queue — that IS the case
+                 * it exists for. Swallowed either way, so no app ever
+                 * sees a ^C. */
+                case SDLK_c:
+                    if (S.on_interrupt)
+                        S.on_interrupt();
+                    break;
+                /* readline's line editing, which every terminal has and
+                 * laptops without Home/End keys depend on. Delivered AS
+                 * Home/End so nothing downstream needs chord handling:
+                 * the REPL, textinput and any consumer already handle
+                 * those. */
+                case SDLK_a: push_key(SURF_KEY_HOME, shift, NULL); break;
+                case SDLK_e: push_key(SURF_KEY_END, shift, NULL); break;
+                default:
+                    /* Every other ctrl+letter becomes its control
+                     * character, which is what a terminal puts on the
+                     * wire: ^S is 0x13, ^Q 0x11. Consumers that want
+                     * terminal semantics (the editor's commands, an ssh
+                     * session) get them for free; consumers that don't
+                     * were dropping these keystrokes entirely before. */
+                    if (e.key.keysym.sym >= SDLK_a && e.key.keysym.sym <= SDLK_z) {
+                        char ctl[2] = {(char)(e.key.keysym.sym - SDLK_a + 1), 0};
+                        push_key(SURF_KEY_TEXT, false, ctl);
+                    } else {
+                        chord = false;   /* ctrl+arrow still arrows */
+                    }
+                    break;
+                }
+                if (chord)
+                    break;
+            }
             switch (e.key.keysym.sym) {
             case SDLK_ESCAPE:    return false;
             case SDLK_LEFT:      push_key(SURF_KEY_LEFT, shift, NULL); break;
@@ -593,11 +636,21 @@ bool surf_hal_sdl_pump(void)
             case SDLK_BACKSPACE: push_key(SURF_KEY_BACKSPACE, shift, NULL); break;
             case SDLK_DELETE:    push_key(SURF_KEY_DELETE, shift, NULL); break;
             case SDLK_RETURN:    push_key(SURF_KEY_ENTER, shift, NULL); break;
+            /* Tab as text, the way a terminal delivers it. SDL_TEXTINPUT
+             * does emit 0x09 on some platforms and not others, and the
+             * control-character filter drops it either way — so it has to
+             * come from here to arrive at all. */
+            case SDLK_TAB:       push_key(SURF_KEY_TEXT, shift, "\t"); break;
             }
             break;
         }
         case SDL_TEXTINPUT:
-            push_key(SURF_KEY_TEXT, false, e.text.text);
+            /* Drop control characters: some platforms deliver a text
+             * event alongside a Ctrl-chord, and a raw ^C landing in an
+             * edited line is a stray glyph nobody typed. UTF-8 lead
+             * bytes are all >= 0xc2, so this only ever cuts ASCII. */
+            if ((unsigned char)e.text.text[0] >= 0x20)
+                push_key(SURF_KEY_TEXT, false, e.text.text);
             break;
         case SDL_MOUSEBUTTONDOWN:
             if (e.button.button == SDL_BUTTON_LEFT) {

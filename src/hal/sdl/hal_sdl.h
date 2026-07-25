@@ -33,6 +33,14 @@ typedef struct {
     char    utf8[8];
 } surf_sdl_key;
 
+/* Ctrl-C in the window. The hal can't know what interrupting means to
+ * its host — a C demo might want to exit, a MicroPython host wants a
+ * KeyboardInterrupt scheduled in the VM — so it calls this hook and
+ * swallows the keystroke; the key never reaches the queue, exactly as on
+ * device. NULL (the default) makes Ctrl-C a no-op, which is what every
+ * host got before this existed. */
+void surf_hal_sdl_on_interrupt(void (*fn)(void));
+
 bool surf_hal_sdl_poll_key(surf_sdl_key *out);
 /* keys currently down (state, not events) — up to max entries */
 int  surf_hal_sdl_keys_held(surf_sdl_key *out, int max);

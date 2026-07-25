@@ -7,6 +7,8 @@
 
 #include <SDL.h>
 
+#include "py/runtime.h"    /* mp_sched_keyboard_interrupt */
+
 #include "surfer_port.h"
 #include "hal_sdl.h"
 
@@ -17,6 +19,13 @@ const surf_hal *surfer_port_init(int16_t w, int16_t h, bool single_buffer)
     /* the desktop's gamepad "driver": SDL's game-controller API feeds the
      * same abstract pad the device's USB driver does */
     SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
+    /* Ctrl-C in the window == Ctrl-C on the serial console: schedule a
+     * KeyboardInterrupt in the VM. Without this the desktop had no way
+     * out of an app's own `while surfer.tick()` loop — the key queue is
+     * useless there, since a loop that ignores keys is exactly what you
+     * are trying to escape. The device reaches the same call from the
+     * USB HID path. */
+    surf_hal_sdl_on_interrupt(mp_sched_keyboard_interrupt);
     return hal;
 }
 
