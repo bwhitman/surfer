@@ -159,6 +159,28 @@ static const surf_font *font_of(mp_int_t i)
     return f;
 }
 
+/* The two faces this binding picks when the caller names none.
+ *
+ * Both go through a NAME, never surf_font_builtin_at(0): index 0 is
+ * merely whatever comes first in the Makefile's font list, so reordering
+ * that list silently restyled every default label and every widget.
+ *
+ * WIDGET_FONT is Adobe X11 Helvetica at its designed 8pt size — a drawn
+ * bitmap rather than a thresholded outline, so chrome stays crisp with
+ * no antialiasing at the small size chrome actually renders at. */
+#define DEFAULT_FONT "ui12"
+#define WIDGET_FONT  "helvR08"
+
+/* The registry hands back the prepared copy, so this is safe on backends
+ * whose blitter can't read the atlas where the linker put it. The
+ * fallback covers a build that trims the named face out of the registry
+ * — a NULL style font would draw nothing at all. */
+static const surf_font *font_named(const char *name)
+{
+    const surf_font *f = surf_font_builtin(name);
+    return f ? f : surf_font_builtin_at(0);
+}
+
 /* Resolve whatever the caller passed as a font: a Font object (runtime
  * blob or a named built-in), a name string ("helvR12"), or a legacy
  * index. Sets *ref to the object that must stay alive for the node. */
@@ -297,6 +319,32 @@ static mp_obj_t node_set_offset(mp_obj_t self_in, mp_obj_t off)
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_set_offset_obj, node_set_offset);
 
+/* grid.scrollback(mult) -> bool: keep mult screens of history and let a
+ * drag look back through it. See surf_textgrid_set_scrollback. */
+static mp_obj_t node_scrollback(mp_obj_t self_in, mp_obj_t mult_in)
+{
+    return mp_obj_new_bool(surf_textgrid_set_scrollback(
+        node_of(self_in), (int16_t)mp_obj_get_int(mult_in)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(node_scrollback_obj, node_scrollback);
+
+/* grid.view() -> rows scrolled back; grid.view(n) to set it. 0 = live. */
+static mp_obj_t node_view(size_t n_args, const mp_obj_t *args)
+{
+    surf_node *n = node_of(args[0]);
+    if (n_args > 1)
+        surf_textgrid_set_view(n, (int16_t)mp_obj_get_int(args[1]));
+    return MP_OBJ_NEW_SMALL_INT(surf_textgrid_view(n));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_view_obj, 1, 2, node_view);
+
+/* grid.history() -> rows of scrollback above the current view */
+static mp_obj_t node_history(mp_obj_t self_in)
+{
+    return MP_OBJ_NEW_SMALL_INT(surf_textgrid_history(node_of(self_in)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(node_history_obj, node_history);
+
 static mp_obj_t node_grid_scroll(mp_obj_t self_in, mp_obj_t rows)
 {
     surf_textgrid_scroll(node_of(self_in), mp_obj_get_int(rows));
@@ -350,6 +398,9 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_set_row), MP_ROM_PTR(&node_set_row_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_cell), MP_ROM_PTR(&node_set_cell_obj)},
     {MP_ROM_QSTR(MP_QSTR_grid_scroll), MP_ROM_PTR(&node_grid_scroll_obj)},
+    {MP_ROM_QSTR(MP_QSTR_scrollback), MP_ROM_PTR(&node_scrollback_obj)},
+    {MP_ROM_QSTR(MP_QSTR_view), MP_ROM_PTR(&node_view_obj)},
+    {MP_ROM_QSTR(MP_QSTR_history), MP_ROM_PTR(&node_history_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_offset), MP_ROM_PTR(&node_set_offset_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_src), MP_ROM_PTR(&node_set_src_obj)},
     {MP_ROM_QSTR(MP_QSTR_fast_scroll), MP_ROM_PTR(&node_fast_scroll_obj)},
@@ -1301,7 +1352,7 @@ static mp_obj_t mod_label(size_t n_args, const mp_obj_t *args)
                               : SURF_RGB(240, 242, 248);
     mp_obj_t fref = mp_const_none;
     const surf_font *f = n_args > 4 ? font_arg(args[4], &fref)
-                                    : surf_font_builtin_at(0);
+                                    : font_named(DEFAULT_FONT);
     surfer_node_obj_t *o = new_node_obj(surf_text_new(
         f, mp_obj_str_get_str(args[0]), mp_obj_get_int(args[1]),
         mp_obj_get_int(args[2]), c));
@@ -1479,7 +1530,7 @@ static mp_obj_t mod_button(size_t n_args, const mp_obj_t *args)
         .normal = &btn_img, .pressed = &btnpr_img, .inset = WBTN_INSET,
         .text_color = SURF_RGB(240, 242, 248),
     };
-    st.font = surf_font_builtin_at(0);
+    st.font = font_named(WIDGET_FONT);
     const char *label = n_args > 4 ? mp_obj_str_get_str(args[4]) : "";
     surf_button *b = surf_button_new(surf_screen(), 0, 0,
                                      (int16_t)mp_obj_get_int(args[2]),
@@ -1520,7 +1571,7 @@ static mp_obj_t mod_dropdown(size_t n_args, const mp_obj_t *args)
         .text_color = SURF_RGB(240, 242, 248), .hi_color = SURF_RGB(60, 90, 140),
         .arrow = &arrow_img, .arrow_w = WARROW_W, .arrow_h = WARROW_H,
     };
-    st.font = surf_font_builtin_at(0);  /* prepared copy: device-readable atlas */
+    st.font = font_named(WIDGET_FONT);
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(args[3], &len, &items);

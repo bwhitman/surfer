@@ -110,7 +110,13 @@ ellipsize; label + textinput nodes with caret/selection/scroll-into-view;
 byte-offset indices). A8 images carry a `tint`; SDL blends in software,
 P4 uses PPA `PPA_BLEND_COLOR_MODE_A8` + `fg_fix_rgb_val`. Desktop
 keyboard feeds textinput via `surf_hal_sdl_poll_key` (hal-adjacent, not
-in the vtable — the device path is the M-later OSK widget).
+in the vtable — the device path is the M-later OSK widget). Ctrl-C is
+the exception to that queue: it goes to the `surf_hal_sdl_on_interrupt`
+hook and is swallowed, because the case it exists for is escaping a host
+loop that never reads keys. `port_sdl.c` points the hook at
+`mp_sched_keyboard_interrupt`, matching what a device USB driver does
+with ctrl+C — without it the desktop had no way out of an app's own
+`while surfer.tick()` loop.
 `build/surfer_type` is the text demo; `SURF_SHOT=x.ppm` dumps any demo's
 framebuffer.
 
@@ -212,9 +218,33 @@ with no message. Measured on tulip5's identical part: compose cost at
 large damaged areas fell 42–51% (wider PPA SRM block, 8×8 → 32×32); the
 ~85 µs per-op floor is unchanged, so "bake at final size" still holds.
 
+## Textgrid scrollback
+
+`surf_textgrid_set_scrollback(n, mult)` keeps `mult` screens of rows so
+lines that scroll off the top stay reachable: drag the grid to look back,
+a thin macOS-style bar appears on the right while there is history, and
+any write snaps the view to the bottom the way a terminal does.
+`surf_textgrid_view/set_view/history` drive it programmatically.
+
+The cells become a **ring** of `total_rows`, with `head` the ring row at
+screen row 0 and `view` how far back the display is. Scrolling then moves
+the window instead of the contents — O(exposed rows), not O(screen), and
+the rows leaving the top become the history rather than being discarded.
+Without scrollback `total_rows == rows`, head/view stay 0, and every path
+reduces to the old arithmetic, so a plain grid is untouched.
+
+Opt-in because it costs `cols*rows*mult*sizeof(surf_textcell)` — a 128x50
+console at 10x is ~500 KB. That is a plain `calloc`, which on a PSRAM board reaches external RAM
+(IDF's SPIRAM_USE choice defaults to SPIRAM_USE_MALLOC, and allocations
+over SPIRAM_MALLOC_ALWAYSINTERNAL — 16 KB by default — prefer it). It
+returns false rather than trapping if the heap cannot serve it, so a
+caller can fall back (tulip5 tries 10, 4, 2 screens).
+Enabling it installs the grid's own touch handler, so a node with
+scrollback must not also have `on_touch` set.
+
 ## Fonts
 
-surfer ships **42 baked fonts from 31 source files**, all reachable at
+surfer ships **44 baked fonts from 31 source files**, all reachable at
 runtime by name via `surf_font_builtin("helvR12")`. `tools/fontbake.c`
 has two front ends: stb_truetype for outlines, and a BDF reader that
 copies designed bitmap fonts pixel-for-pixel (SIZE is ignored — a BDF
@@ -224,7 +254,10 @@ face. Knobs: `FONTBAKE_EM=1` (ppem sizing — required for pixel-designed
 outline faces, whose grid is in em units), `FONTBAKE_GAMMA`,
 `FONTBAKE_THRESHOLD[_CUT]`.
 
-Sources: Roboto + JetBrains Mono (outline, AA), BigBlue Terminal (bitmap
+Sources: Roboto (ui12/16/16b/28/36/48 — the 36 and 48 are display sizes,
+plain AA, where partial coverage reads as a smooth curve rather than the
+lumpiness thresholding an off-grid outline gives at small sizes) +
+JetBrains Mono (outline, AA), BigBlue Terminal (bitmap
 mono), 4 Kenney pixel faces (CC0), and 24 Adobe X11 BDFs — helvR/helvB/
 ncenR/courR at 08/10/12/14/18/24, each a separately *designed* size.
 `assets/fonts/LICENSE.txt` has the terms; BigBlue's provenance is still
@@ -238,6 +271,14 @@ object file — don't. Device backends call
 `surf_font_builtin_prepare(fn)` once at startup to re-home every atlas
 into DMA-able RAM. Cost: 1.25 MiB of atlas, P4 image 2.70 MiB of the
 8 MiB partition (66% free), plus the same again in PSRAM.
+
+The binding's two unnamed defaults are `DEFAULT_FONT` (`ui12`, what
+`surfer.label` uses with no font argument) and `WIDGET_FONT` (`helvR08`
+— button labels and dropdown items: a drawn bitmap, so chrome stays
+crisp at the size chrome renders at). Both resolve by NAME through
+`font_named()`; never `surf_font_builtin_at(0)`, since index 0 is only
+whatever comes first in the Makefile list and reordering it would
+silently restyle every widget.
 
 MicroPython takes a font as a name, a `Font` object, or a legacy index
 anywhere: `surfer.label(s, x, y, c, "helvR12")`,
