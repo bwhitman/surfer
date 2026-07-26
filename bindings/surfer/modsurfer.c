@@ -431,6 +431,17 @@ static mp_obj_t node_set_colors(mp_obj_t self_in, mp_obj_t fg, mp_obj_t bg)
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(node_set_colors_obj, node_set_colors);
 
+/* g.set_clip(w, h): give a GROUP a size — which is also what makes it
+ * hittable, and what lets a handler on it stand for everything inside.
+ * 0x0 turns clipping off again. */
+static mp_obj_t node_set_clip(mp_obj_t self_in, mp_obj_t w, mp_obj_t h)
+{
+    surf_group_set_clip(node_of(self_in), (int16_t)mp_obj_get_int(w),
+                        (int16_t)mp_obj_get_int(h));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(node_set_clip_obj, node_set_clip);
+
 static mp_obj_t node_grid_scroll(mp_obj_t self_in, mp_obj_t rows)
 {
     surf_textgrid_scroll(node_of(self_in), mp_obj_get_int(rows));
@@ -570,6 +581,7 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_set_cell), MP_ROM_PTR(&node_set_cell_obj)},
     {MP_ROM_QSTR(MP_QSTR_grid_scroll), MP_ROM_PTR(&node_grid_scroll_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_colors), MP_ROM_PTR(&node_set_colors_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_clip), MP_ROM_PTR(&node_set_clip_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollback), MP_ROM_PTR(&node_scrollback_obj)},
     {MP_ROM_QSTR(MP_QSTR_view), MP_ROM_PTR(&node_view_obj)},
     {MP_ROM_QSTR(MP_QSTR_history), MP_ROM_PTR(&node_history_obj)},
