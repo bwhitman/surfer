@@ -202,11 +202,18 @@ static const surf_font *font_of(mp_int_t i)
  * merely whatever comes first in the Makefile's font list, so reordering
  * that list silently restyled every default label and every widget.
  *
- * WIDGET_FONT is Adobe X11 Helvetica at its designed 8pt size — a drawn
- * bitmap rather than a thresholded outline, so chrome stays crisp with
- * no antialiasing at the small size chrome actually renders at. */
+ * WIDGET_FONT is what button and dropdown labels draw with, and it is
+ * `ui12` — the same face `surfer.label` defaults to, so chrome matches
+ * the text beside it. It used to be a drawn bitmap (helvR08) because a
+ * thresholded outline smears at chrome sizes; that was true right up
+ * until fontbake started sizing in ppem and hinting through FreeType,
+ * which is what made small antialiased text hold together at all.
+ *
+ * `surfer.widget_font(name_or_font)` overrides it for widgets made AFTER
+ * the call — a button bakes its label node at construction, so this is
+ * naturally "from here on" rather than retroactive. */
 #define DEFAULT_FONT "ui12"
-#define WIDGET_FONT  "helvR08"
+#define WIDGET_FONT  "ui12"
 
 /* The registry hands back the prepared copy, so this is safe on backends
  * whose blitter can't read the atlas where the linker put it. The
@@ -221,6 +228,20 @@ static const surf_font *font_named(const char *name)
 /* Resolve whatever the caller passed as a font: a Font object (runtime
  * blob or a named built-in), a name string ("helvR12"), or a legacy
  * index. Sets *ref to the object that must stay alive for the node. */
+/* What widget chrome draws with. Resolved lazily, because the registry
+ * is not up yet when this file's statics are initialised. */
+static const surf_font *widget_font_cache;
+static mp_obj_t widget_font_spec;         /* the name/Font the caller gave */
+
+static const surf_font *font_arg(mp_obj_t o, mp_obj_t *ref);
+
+static const surf_font *widget_font(void)
+{
+    if (!widget_font_cache)
+        widget_font_cache = font_named(WIDGET_FONT);
+    return widget_font_cache;
+}
+
 static const surf_font *font_arg(mp_obj_t o, mp_obj_t *ref)
 {
     if (ref)
@@ -1760,6 +1781,30 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_scrollview_obj, 4, 4, mod_scrollv
  * no callback. .value takes True/False or a brightness 0..1, and .color
  * is settable — the art is A8, so a retint costs a repaint and no
  * pixels. */
+/* surfer.widget_font([name_or_font]) -> the current one.
+ *
+ * Buttons and dropdowns draw their labels in this. It applies to widgets
+ * created AFTER the call — a button builds its label node at
+ * construction, so nothing already on screen changes face under it — and
+ * with no argument it just reports what is in force. */
+static mp_obj_t mod_widget_font(size_t n_args, const mp_obj_t *args)
+{
+    if (n_args) {
+        mp_obj_t ref = mp_const_none;
+        const surf_font *f = font_arg(args[0], &ref);
+        widget_font_cache = f;
+        widget_font_spec = args[0];
+        if (ref != mp_const_none)
+            registry_add(ref);     /* a runtime Font must outlive the call */
+        registry_add(args[0]);
+    }
+    if (widget_font_spec)
+        return widget_font_spec;
+    return mp_obj_new_str(WIDGET_FONT, strlen(WIDGET_FONT));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_widget_font_obj, 0, 1,
+                                           mod_widget_font);
+
 static mp_obj_t mod_led(size_t n_args, const mp_obj_t *args)
 {
     surf_led_style st = {
@@ -1852,7 +1897,7 @@ static mp_obj_t mod_button(size_t n_args, const mp_obj_t *args)
         .normal = &btn_img, .pressed = &btnpr_img, .inset = WBTN_INSET,
         .text_color = SURF_RGB(240, 242, 248),
     };
-    st.font = font_named(WIDGET_FONT);
+    st.font = widget_font();
     const char *label = n_args > 4 ? mp_obj_str_get_str(args[4]) : "";
     surf_button *b = surf_button_new(surf_screen(), 0, 0,
                                      (int16_t)mp_obj_get_int(args[2]),
@@ -1893,7 +1938,7 @@ static mp_obj_t mod_dropdown(size_t n_args, const mp_obj_t *args)
         .text_color = SURF_RGB(240, 242, 248), .hi_color = SURF_RGB(60, 90, 140),
         .arrow = &arrow_img, .arrow_w = WARROW_W, .arrow_h = WARROW_H,
     };
-    st.font = font_named(WIDGET_FONT);
+    st.font = widget_font();
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(args[3], &len, &items);
@@ -2010,6 +2055,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_fonts), MP_ROM_PTR(&mod_fonts_obj)},
+    {MP_ROM_QSTR(MP_QSTR_widget_font), MP_ROM_PTR(&mod_widget_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollview), MP_ROM_PTR(&mod_scrollview_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollbar), MP_ROM_PTR(&mod_scrollbar_obj)},
     {MP_ROM_QSTR(MP_QSTR_slider), MP_ROM_PTR(&mod_slider_obj)},

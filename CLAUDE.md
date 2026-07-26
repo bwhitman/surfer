@@ -427,13 +427,23 @@ object file — don't. Device backends call
 into DMA-able RAM. Cost: 1.25 MiB of atlas, P4 image 2.70 MiB of the
 8 MiB partition (66% free), plus the same again in PSRAM.
 
-The binding's two unnamed defaults are `DEFAULT_FONT` (`ui12`, what
-`surfer.label` uses with no font argument) and `WIDGET_FONT` (`helvR08`
-— button labels and dropdown items: a drawn bitmap, so chrome stays
-crisp at the size chrome renders at). Both resolve by NAME through
-`font_named()`; never `surf_font_builtin_at(0)`, since index 0 is only
-whatever comes first in the Makefile list and reordering it would
-silently restyle every widget.
+The binding's two unnamed defaults are `DEFAULT_FONT` (what
+`surfer.label` uses with no font argument) and `WIDGET_FONT` (button
+labels and dropdown items). **Both are `ui12`**, so chrome matches the
+text beside it. WIDGET_FONT used to be `helvR08`, a drawn bitmap, on the
+argument that a thresholded outline smears at the size chrome renders at
+— which was true right up until fontbake started sizing in ppem and
+hinting through FreeType. Both resolve by NAME through `font_named()`;
+never `surf_font_builtin_at(0)`, since index 0 is only whatever comes
+first in the Makefile list and reordering it would silently restyle every
+widget.
+
+`surfer.widget_font(name_or_font)` overrides the chrome face and returns
+what is in force (call it with no argument to just ask). It applies to
+widgets built AFTER the call — a button bakes its label node at
+construction — which is why a host sets it once at import rather than
+expecting the screen to change under it. tulip5 does exactly that, from
+its own house style in `ui.py`.
 
 MicroPython takes a font as a name, a `Font` object, or a legacy index
 anywhere: `surfer.label(s, x, y, c, "helvR12")`,
