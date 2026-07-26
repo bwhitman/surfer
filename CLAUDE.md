@@ -38,6 +38,8 @@ make sdl        # builds desktop demo → build/surfer_demo
 make test       # unit tests (dirty-rect coalescing, wrap, hit test)
 make test-sdl   # present-coherence regression (opens an SDL window):
                 # fb vs presented texture must match after fast scroll
+make test-aspect # ... the window snaps back to the fb's aspect after a
+                # resize, keeping the axis that was dragged
 make web        # emscripten C demos → build/web/{mixer,settings}.html
 make mpy-web    # tulip mode in the browser → build/web/index.html
 idf.py build    # from ports/esp32p4/
@@ -306,6 +308,34 @@ travelled under 6px, decided at UP.
 
 Both are bound: `surfer.led(x, y, color)` and `surfer.selector(x, y, n)`,
 with `.value` a brightness (or True/False) and an index respectively.
+
+## The desktop window
+
+`update_view` fits the drawable, preserving aspect: an exact multiple
+when the window is one (within ~2.5%, so a hair off 2x IS 2x), the
+largest aspect-preserving fit otherwise, centred and letterboxed. Whole
+multiples ONLY is the tempting rule — every surfer pixel then covers the
+same count of screen pixels — but it means a window dragged to 1.8x
+still draws at 1x inside bars, which nobody reads as "not a whole
+multiple yet". They read it as the view having collapsed.
+
+**The window itself is held to the framebuffer's aspect.** SDL2 has no
+aspect constraint (SDL3 added one), so the backend puts the window back
+on shape after a resize, keeping the axis that was dragged and deriving
+the other — drag the bottom edge down and it gets wider to match. Two
+things make it feel right rather than fight the mouse:
+
+- it happens on a DELAY, once the resize events have gone quiet, because
+  SDL's Cocoa driver reports every intermediate size of a live drag and
+  resizing from inside that stream jitters;
+- and not while a mouse button is down, or pausing mid-drag would yank
+  the window out from under the pointer.
+
+The delta is measured against the size the drag STARTED from. Against the
+current size it reads as "nothing moved" — the events have already been
+folded in — and the snap then undoes the drag instead of following it.
+`SURF_FREE_ASPECT=1` turns the whole thing off; `SURF_VIEW_DEBUG=1`
+prints drawable/fb/view on every resize.
 
 ## Scrollbar
 

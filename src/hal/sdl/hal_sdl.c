@@ -37,6 +37,9 @@ static struct {
     int           out_w, out_h; /* renderer output (drawable) in real pixels */
     SDL_Rect      view;         /* where the fb lands inside the drawable */
     void (*on_interrupt)(void); /* Ctrl-C hook; NULL = ignore the key */
+    bool          free_aspect;  /* SURF_FREE_ASPECT: let the window be any shape */
+    uint64_t      snap_at;      /* when to put the window back on aspect; 0 = idle */
+    int16_t       snap_w, snap_h;  /* the size BEFORE this drag started */
 } S;
 
 /* The window is resizable, so the framebuffer rarely covers the drawable
@@ -87,6 +90,46 @@ static void update_view(void)
     S.win_w = (int16_t)ww;
     S.win_h = (int16_t)wh;
 }
+
+/* SDL2 has no aspect-ratio constraint — SDL3 added one — so the window
+ * can be dragged to any shape and the view just letterboxes inside it.
+ * Dragging the bottom edge alone then grows a band of black rather than
+ * the picture, which reads as the app being out of shape.
+ *
+ * So put the window back on the framebuffer's aspect after a resize,
+ * keeping the axis the user actually dragged and deriving the other. It
+ * happens on a short DELAY, once the drag has gone quiet: SDL's Cocoa
+ * driver reports every intermediate size of a live drag, and resizing the
+ * window from inside that stream fights the mouse and jitters. Waiting
+ * for the stream to stop gives a single snap when you let go.
+ *
+ * SURF_FREE_ASPECT=1 turns it off for anyone who wants the bars. */
+#define SNAP_QUIET_US 180000
+
+static void snap_aspect(void)
+{
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(S.win, &ww, &wh);
+    if (ww <= 0 || wh <= 0)
+        return;
+    /* Against the size the drag STARTED from, not the current one: the
+     * resize events have already been folded into win_w/win_h by
+     * update_view, so comparing with those says "nothing moved" and the
+     * snap undoes the drag instead of following it. */
+    int dw = ww > S.snap_w ? ww - S.snap_w : S.snap_w - ww;
+    int dh = wh > S.snap_h ? wh - S.snap_h : S.snap_h - wh;
+    int want_w = ww, want_h = wh;
+    if (dh > dw)                                  /* they dragged vertically */
+        want_w = (int)(((int64_t)wh * S.w + S.h / 2) / S.h);
+    else
+        want_h = (int)(((int64_t)ww * S.h + S.w / 2) / S.w);
+    if (want_w < 64) want_w = 64;
+    if (want_h < 48) want_h = 48;
+    if (want_w != ww || want_h != wh)
+        SDL_SetWindowSize(S.win, want_w, want_h);
+}
+
+struct SDL_Window *surf_hal_sdl_window(void) { return S.win; }
 
 void surf_hal_sdl_on_interrupt(void (*fn)(void))
 {
@@ -525,6 +568,7 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
      * Nearest-neighbour is the whole point — the hint is set explicitly
      * rather than trusting SDL's default, because a smoothed upscale
      * invents edge pixels and makes every bake look antialiased. */
+    S.free_aspect = getenv("SURF_FREE_ASPECT") != NULL;
     const char *se = getenv("SURF_SCALE");
     S.scale = se ? atoi(se) : 1;
     if (S.scale < 1) S.scale = 1;
@@ -708,6 +752,18 @@ bool surf_hal_sdl_pump(void)
      * frames from JS and every call into the VM stays synchronous. */
     surf_web_raf_yield();
 #endif
+    /* The drag has gone quiet: put the window back on aspect. Not while a
+     * mouse button is still down, though — pausing mid-drag would other-
+     * wise yank the window out from under the pointer. */
+    if (S.snap_at && h_now_us() >= S.snap_at) {
+        if (SDL_GetGlobalMouseState(NULL, NULL) &
+            (SDL_BUTTON_LMASK | SDL_BUTTON_RMASK | SDL_BUTTON_MMASK)) {
+            S.snap_at = h_now_us() + SNAP_QUIET_US;
+        } else {
+            S.snap_at = 0;
+            snap_aspect();
+        }
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
@@ -717,8 +773,15 @@ bool surf_hal_sdl_pump(void)
             /* SIZE_CHANGED covers both a drag and the hidpi backing
              * changing under us (dragging to a 1x monitor), which is the
              * case a plain RESIZED would miss. */
-            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                if (!S.snap_at) {           /* first event of this drag */
+                    S.snap_w = S.win_w;
+                    S.snap_h = S.win_h;
+                }
                 update_view();
+                if (!S.free_aspect)
+                    S.snap_at = h_now_us() + SNAP_QUIET_US;
+            }
             break;
         case SDL_KEYDOWN: {
             bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;

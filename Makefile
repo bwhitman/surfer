@@ -257,7 +257,9 @@ build/surfer_bounce: $(CORE_SRCS) $(SDL_SRCS) demos/bounce.c \
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Isrc/core -Isrc/hal/sdl -I$(GEN_DIR) \
 		-o $@ $(CORE_SRCS) $(SDL_SRCS) demos/bounce.c $(SDL_LIBS)
 
-TEST_SRCS := $(filter-out tests/sdl_present_test.c,$(wildcard tests/*.c))
+# the SDL tests open a real window and link SDL; the unit suite is the
+# mock hal only, so they are named sdl_* and filtered out here
+TEST_SRCS := $(filter-out tests/sdl_%.c,$(wildcard tests/*.c))
 
 build/surfer_test: $(CORE_SRCS) $(WIDGET_SRCS) $(TEST_SRCS) tests/mock_hal.h $(HDRS)
 	@mkdir -p build
@@ -268,6 +270,17 @@ build/surfer_test: $(CORE_SRCS) $(WIDGET_SRCS) $(TEST_SRCS) tests/mock_hal.h $(H
 # scroll). Opens a real SDL window, so it's not part of plain `make test`.
 test-sdl: build/surfer_present_test
 	./build/surfer_present_test
+
+build/surfer_aspect_test: $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS) \
+		tests/sdl_aspect_test.c $(HDRS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Isrc/core -Isrc/hal/sdl -I$(GEN_DIR) \
+		-o $@ $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS) tests/sdl_aspect_test.c \
+		$(SDL_LIBS) -lm
+
+.PHONY: test-aspect
+test-aspect: build/surfer_aspect_test
+	./build/surfer_aspect_test
 
 build/surfer_present_test: $(CORE_SRCS) $(WIDGET_SRCS) $(SDL_SRCS) \
 		tests/sdl_present_test.c $(GEN_DIR)/font_mono16.h $(HDRS)

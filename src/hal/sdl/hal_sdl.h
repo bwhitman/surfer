@@ -6,6 +6,11 @@
 #include "surfer.h"
 
 const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title);
+/* The SDL window, for the handful of things a host legitimately wants to
+ * do to it that are none of this backend's business — a title, an icon,
+ * a position — and for tests that need to drive a real resize. NULL
+ * before init. */
+struct SDL_Window *surf_hal_sdl_window(void);
 void            surf_hal_sdl_quit(void);
 bool            surf_hal_sdl_pump(void);  /* process events; false on quit */
 
