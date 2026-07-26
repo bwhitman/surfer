@@ -105,6 +105,7 @@ typedef struct {
     surf_node *node;
     mp_obj_t touch_cb;  /* node.on_touch: fn(phase, x, y) or None */
     mp_obj_t img_ref;   /* sprites: keeps the Image object alive */
+    bool     is_input;  /* textinput: taps place the caret (see ti_touch) */
 } surfer_node_obj_t;
 
 typedef struct {
@@ -158,6 +159,7 @@ static surfer_node_obj_t *new_node_obj(surf_node *n)
     o->node = n;
     o->touch_cb = mp_const_none;
     o->img_ref = mp_const_none;
+    o->is_input = false;
     registry_add(MP_OBJ_FROM_PTR(o));
     return o;
 }
@@ -253,7 +255,15 @@ static MP_DEFINE_CONST_FUN_OBJ_1(node_destroy_obj, node_destroy);
 
 static mp_obj_t node_set_text(mp_obj_t self_in, mp_obj_t s)
 {
-    surf_text_set(node_of(self_in), mp_obj_str_get_str(s));
+    surfer_node_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    const char *str = mp_obj_str_get_str(s);
+    /* both node types spell it set_text here; the C calls are separate
+     * and each ignores the other's node, so without this a set_text on a
+     * text field would silently do nothing */
+    if (o->is_input)
+        surf_textinput_set_text(node_of(self_in), str);
+    else
+        surf_text_set(node_of(self_in), str);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_set_text_obj, node_set_text);
@@ -406,6 +416,91 @@ static mp_obj_t node_hits(mp_obj_t self_in, mp_obj_t other_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_hits_obj, node_hits);
 
+/* ---- textinput methods (safe no-ops on any other node: every
+   surf_textinput_* entry point guards on the node type) ---- */
+
+static mp_obj_t node_insert(mp_obj_t self_in, mp_obj_t s)
+{
+    surf_textinput_insert(node_of(self_in), mp_obj_str_get_str(s));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(node_insert_obj, node_insert);
+
+static mp_obj_t node_backspace(mp_obj_t self_in)
+{
+    surf_textinput_backspace(node_of(self_in));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(node_backspace_obj, node_backspace);
+
+static mp_obj_t node_delete(mp_obj_t self_in)
+{
+    surf_textinput_delete(node_of(self_in));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(node_delete_obj, node_delete);
+
+/* move(delta_codepoints, extend=False) — big deltas are home/end */
+static mp_obj_t node_move(size_t n_args, const mp_obj_t *args)
+{
+    surf_textinput_move(node_of(args[0]), mp_obj_get_int(args[1]),
+                        n_args > 2 && mp_obj_is_true(args[2]));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_move_obj, 2, 3, node_move);
+
+static mp_obj_t node_focus(size_t n_args, const mp_obj_t *args)
+{
+    surf_textinput_set_focused(node_of(args[0]),
+                               n_args < 2 || mp_obj_is_true(args[1]));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_focus_obj, 1, 2, node_focus);
+
+static mp_obj_t node_index_from_x(mp_obj_t self_in, mp_obj_t x)
+{
+    return MP_OBJ_NEW_SMALL_INT(
+        surf_textinput_index_from_x(node_of(self_in),
+                                    (int16_t)mp_obj_get_int(x)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(node_index_from_x_obj, node_index_from_x);
+
+/* key(k): apply ONE event from surfer.keys() — the (kind, text, shift)
+ * tuple — and say whether it was consumed. Editing is a fixed mapping
+ * from key to edit, so it lives here rather than being retyped as a
+ * dispatch table in every app:
+ *
+ *     for k in surfer.keys():
+ *         if not ti.key(k):
+ *             ...                      # not ours: hotkeys, Enter, ...
+ */
+static mp_obj_t node_key(mp_obj_t self_in, mp_obj_t k)
+{
+    surf_node *n = node_of(self_in);
+    size_t len;
+    mp_obj_t *item;
+    mp_obj_get_array(k, &len, &item);
+    if (len < 2)
+        mp_raise_ValueError(MP_ERROR_TEXT("not a key event"));
+    int kind = mp_obj_get_int(item[0]);
+    bool shift = len > 2 && mp_obj_is_true(item[2]);
+    switch (kind) {
+    case SURFER_KEY_TEXT:
+        surf_textinput_insert(n, mp_obj_str_get_str(item[1]));
+        break;
+    case SURFER_KEY_LEFT:      surf_textinput_move(n, -1, shift); break;
+    case SURFER_KEY_RIGHT:     surf_textinput_move(n, 1, shift); break;
+    case SURFER_KEY_HOME:      surf_textinput_move(n, -99999, shift); break;
+    case SURFER_KEY_END:       surf_textinput_move(n, 99999, shift); break;
+    case SURFER_KEY_BACKSPACE: surf_textinput_backspace(n); break;
+    case SURFER_KEY_DELETE:    surf_textinput_delete(n); break;
+    default:
+        return mp_const_false;   /* Enter, PgUp/Dn, arrows up/down: yours */
+    }
+    return mp_const_true;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(node_key_obj, node_key);
+
 static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_add), MP_ROM_PTR(&node_add_obj)},
     {MP_ROM_QSTR(MP_QSTR_damage), MP_ROM_PTR(&node_damage_obj)},
@@ -427,6 +522,13 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_fast_scroll), MP_ROM_PTR(&node_fast_scroll_obj)},
     {MP_ROM_QSTR(MP_QSTR_scroll_to), MP_ROM_PTR(&node_scroll_to_obj)},
     {MP_ROM_QSTR(MP_QSTR_scroll_offset), MP_ROM_PTR(&node_scroll_offset_obj)},
+    {MP_ROM_QSTR(MP_QSTR_insert), MP_ROM_PTR(&node_insert_obj)},
+    {MP_ROM_QSTR(MP_QSTR_backspace), MP_ROM_PTR(&node_backspace_obj)},
+    {MP_ROM_QSTR(MP_QSTR_delete), MP_ROM_PTR(&node_delete_obj)},
+    {MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&node_move_obj)},
+    {MP_ROM_QSTR(MP_QSTR_focus), MP_ROM_PTR(&node_focus_obj)},
+    {MP_ROM_QSTR(MP_QSTR_index_from_x), MP_ROM_PTR(&node_index_from_x_obj)},
+    {MP_ROM_QSTR(MP_QSTR_key), MP_ROM_PTR(&node_key_obj)},
 };
 static MP_DEFINE_CONST_DICT(node_locals_dict, node_locals_table);
 
@@ -473,6 +575,24 @@ static void node_touch_tramp(surf_node *n, const surf_touch *t, void *user)
     mp_call_function_n_kw(o->touch_cb, 3, 0, args);
 }
 
+/* A tap in a text field puts the caret where the finger landed, and a
+ * drag extends the selection — that is what a text field IS, so the
+ * binding wires it at creation rather than making every caller write it.
+ * A Python on_touch still fires, after the caret has moved. */
+static void ti_touch(surf_node *n, const surf_touch *t, void *user)
+{
+    surfer_node_obj_t *o = user;
+    if (t->phase != SURF_TOUCH_UP) {
+        int16_t ax, ay;
+        surf_node_abs_pos(n, &ax, &ay);
+        surf_textinput_set_caret(n,
+                                 surf_textinput_index_from_x(n, (int16_t)(t->x - ax)),
+                                 t->phase == SURF_TOUCH_MOVE);
+    }
+    if (o->touch_cb != mp_const_none)
+        node_touch_tramp(n, t, user);
+}
+
 static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
 {
     surfer_node_obj_t *o = MP_OBJ_TO_PTR(self_in);
@@ -487,8 +607,29 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
     }
     if (dest[0] != MP_OBJ_NULL && attr == MP_QSTR_on_touch) {
         o->touch_cb = dest[1];
-        surf_node_set_on_touch(o->node, node_touch_tramp, o);
+        surf_node_set_on_touch(o->node,
+                               o->is_input ? ti_touch : node_touch_tramp, o);
         dest[0] = MP_OBJ_NULL;
+        return;
+    }
+    /* textinput: .text and .caret are the two things you read back */
+    if (o->is_input && attr == MP_QSTR_text) {
+        if (dest[0] == MP_OBJ_NULL) {
+            const char *t = surf_textinput_text(o->node);
+            dest[0] = mp_obj_new_str(t, strlen(t));
+        } else {
+            surf_textinput_set_text(o->node, mp_obj_str_get_str(dest[1]));
+            dest[0] = MP_OBJ_NULL;
+        }
+        return;
+    }
+    if (o->is_input && attr == MP_QSTR_caret) {
+        if (dest[0] == MP_OBJ_NULL) {
+            dest[0] = MP_OBJ_NEW_SMALL_INT(surf_textinput_caret(o->node));
+        } else {
+            surf_textinput_set_caret(o->node, mp_obj_get_int(dest[1]), false);
+            dest[0] = MP_OBJ_NULL;
+        }
         return;
     }
     /* sprite transform: scale (float, 1.0 = 1:1), rot (degrees CCW,
@@ -1407,6 +1548,29 @@ static mp_obj_t mod_label(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_label_obj, 3, 5, mod_label);
 
+/* surfer.textinput(x, y, w, color, font) -> Node
+ *
+ * One line of editable text with a caret and a selection. It draws the
+ * TEXT only — no box, no border, no keyboard: those are the caller's
+ * (DESIGN.md §2.5), which is why a field is usually a rect with one of
+ * these on top. Taps place the caret; feed it keys with .key(). */
+static mp_obj_t mod_textinput(size_t n_args, const mp_obj_t *args)
+{
+    surf_color c = n_args > 3 ? (surf_color)mp_obj_get_int(args[3])
+                              : SURF_RGB(240, 242, 248);
+    mp_obj_t fref = mp_const_none;
+    const surf_font *f = n_args > 4 ? font_arg(args[4], &fref)
+                                    : font_named(DEFAULT_FONT);
+    surfer_node_obj_t *o = new_node_obj(surf_textinput_new(
+        f, mp_obj_get_int(args[0]), mp_obj_get_int(args[1]),
+        mp_obj_get_int(args[2]), c));
+    o->img_ref = fref;                  /* keeps a runtime Font alive */
+    o->is_input = true;
+    surf_node_set_on_touch(o->node, ti_touch, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_textinput_obj, 3, 5, mod_textinput);
+
 /* ---- Font (runtime textgrid font) ---- */
 
 static mp_obj_t font_destroy(mp_obj_t self_in)
@@ -1694,6 +1858,26 @@ static mp_obj_t mod_touch(mp_obj_t x, mp_obj_t y, mp_obj_t phase)
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(mod_touch_obj, mod_touch);
 
+/* surfer._key(kind, text="", shift=False): push one key into the same
+ * queue a driver feeds, so surfer.keys() returns it. The counterpart of
+ * _touch — it exists for headless tests, which otherwise cannot reach
+ * anything that reads the keyboard. */
+static mp_obj_t mod_key(size_t n_args, const mp_obj_t *args)
+{
+    surfer_key k = {.kind = (uint8_t)mp_obj_get_int(args[0]),
+                    .shift = n_args > 2 && mp_obj_is_true(args[2])};
+    if (n_args > 1) {
+        const char *t = mp_obj_str_get_str(args[1]);
+        size_t n = strlen(t);
+        if (n > sizeof k.utf8 - 1)
+            n = sizeof k.utf8 - 1;
+        memcpy(k.utf8, t, n);
+    }
+    surf_key_event(&k);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_key_obj, 1, 3, mod_key);
+
 static mp_obj_t mod_screenshot(mp_obj_t path)
 {
     return mp_obj_new_bool(surfer_port_screenshot(mp_obj_str_get_str(path)));
@@ -1734,6 +1918,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR__touch_info), MP_ROM_PTR(&mod_touch_info_obj)},
     {MP_ROM_QSTR(MP_QSTR_sprite), MP_ROM_PTR(&mod_sprite_obj)},
     {MP_ROM_QSTR(MP_QSTR_label), MP_ROM_PTR(&mod_label_obj)},
+    {MP_ROM_QSTR(MP_QSTR_textinput), MP_ROM_PTR(&mod_textinput_obj)},
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_fonts), MP_ROM_PTR(&mod_fonts_obj)},
@@ -1746,12 +1931,14 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_button), MP_ROM_PTR(&mod_button_obj)},
     /* capitalized aliases, DESIGN.md §3 taste */
     {MP_ROM_QSTR(MP_QSTR_Group), MP_ROM_PTR(&mod_group_obj)},
+    {MP_ROM_QSTR(MP_QSTR_TextInput), MP_ROM_PTR(&mod_textinput_obj)},
     {MP_ROM_QSTR(MP_QSTR_Slider), MP_ROM_PTR(&mod_slider_obj)},
     {MP_ROM_QSTR(MP_QSTR_Knob), MP_ROM_PTR(&mod_knob_obj)},
     {MP_ROM_QSTR(MP_QSTR_Checkbox), MP_ROM_PTR(&mod_checkbox_obj)},
     {MP_ROM_QSTR(MP_QSTR_Dropdown), MP_ROM_PTR(&mod_dropdown_obj)},
     {MP_ROM_QSTR(MP_QSTR_Button), MP_ROM_PTR(&mod_button_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch), MP_ROM_PTR(&mod_touch_obj)},
+    {MP_ROM_QSTR(MP_QSTR__key), MP_ROM_PTR(&mod_key_obj)},
     {MP_ROM_QSTR(MP_QSTR_touches), MP_ROM_PTR(&mod_touches_obj)},
     {MP_ROM_QSTR(MP_QSTR_screenshot), MP_ROM_PTR(&mod_screenshot_obj)},
     /* key kinds (match surf_sdl_key_kind) */

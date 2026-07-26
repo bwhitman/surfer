@@ -246,6 +246,41 @@ the paragraph it has to read. Its test needs an **opaque** image: fast
 pan is gated on `img->opaque`, and with a transparent one the slow path
 runs, damages everything, and the test passes with the bug in place.
 
+## Textinput, from MicroPython
+
+`surfer.textinput(x, y, w, color, font)` is the editable-text node, and
+it draws the TEXT and nothing else — no box, no border, no keyboard, per
+DESIGN.md §2.5 — so a field in practice is a `rect` with one of these on
+top of it.
+
+Two things the binding adds over a literal wrapping of the C calls,
+because every caller would otherwise write them:
+
+- **A tap places the caret, a drag extends the selection.** That is what
+  a text field *is*, so `ti_touch` is installed at creation. Setting
+  `.on_touch` from Python does not lose it: the setter installs the same
+  handler, which moves the caret and then calls the Python callback.
+- **`.key(k)` applies ONE event from `surfer.keys()`** — the
+  `(kind, text, shift)` tuple — and returns whether it consumed it, so
+  Enter and hotkeys fall through to the app:
+
+  ```python
+  for k in surfer.keys():
+      if not field.key(k):
+          ...     # yours
+  ```
+
+Everything else is a thin pass: `.text`, `.caret`, `.focus(on)`,
+`.insert()`, `.backspace()`, `.delete()`, `.move(delta, extend)`,
+`.index_from_x(local_x)`. Every `surf_textinput_*` entry point guards on
+the node type, so these are safe no-ops on any other node — except
+`set_text`, which the binding routes explicitly, since the two node types
+have separate C setters that each ignore the other's node.
+
+`surfer._key(kind, text, shift)` pushes one event into the queue a driver
+feeds — the counterpart of `_touch`, and the only way a headless test can
+reach anything that reads the keyboard.
+
 ## Scrollbar
 
 `surf_scrollbar_new(parent, x, y, len, vertical, style)` is a thumb on a

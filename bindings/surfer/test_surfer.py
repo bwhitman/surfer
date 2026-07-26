@@ -81,6 +81,46 @@ tg.set_row(0, "hello grid")
 tg.grid_scroll(1)
 tg.set_cell(0, 3, "X")
 
+# textinput: one line of editable text. It draws the TEXT only — the box
+# is the caller's rect — and it takes keys one event at a time from
+# surfer.keys(), so an app never has to retype the edit dispatch.
+ti = surfer.textinput(20, 340, 300)
+screen_node.add(ti)
+ti.focus()
+ti.text = "hello"
+ok(ti.text == "hello" and ti.caret == 5, "textinput text + caret")
+ok(ti.key((surfer.KEY_TEXT, "!", False)) is True, "key() consumed text")
+ok(ti.text == "hello!", "typed at the caret")
+ti.key((surfer.KEY_BACKSPACE, "", False))
+ti.key((surfer.KEY_HOME, "", False))
+ok(ti.text == "hello" and ti.caret == 0, "backspace + home")
+ok(ti.key((surfer.KEY_ENTER, "", False)) is False, "enter is the app's")
+ti.insert("say ")
+ok(ti.text == "say hello", "insert at caret")
+
+# a tap places the caret where the finger landed — the binding wires
+# that at creation, since it is what a text field IS
+surfer.tick()
+want = ti.index_from_x(24)
+surfer._touch(20 + 24, 346, surfer.TOUCH_DOWN)
+surfer._touch(20 + 24, 346, surfer.TOUCH_UP)
+surfer.tick()
+ok(ti.caret == want and want > 0, "tap placed the caret")
+
+# ...and a Python on_touch still fires, after the caret has moved
+taps = []
+ti.on_touch = lambda ph, x, y: taps.append(ph)
+surfer._touch(20 + 60, 346, surfer.TOUCH_DOWN)
+surfer._touch(20 + 60, 346, surfer.TOUCH_UP)
+surfer.tick()
+ok(len(taps) == 2 and ti.caret != want, "on_touch survives the caret wiring")
+
+# the same methods on a node that is not a field do nothing at all
+lbl = surfer.label("plain", 0, 0)
+lbl.insert("x")
+lbl.key((surfer.KEY_TEXT, "x", False))
+ok(True, "textinput methods are safe on other nodes")
+
 # detach keeps state (the multitasking primitive)
 g.detach()
 screen_node.add(g)
