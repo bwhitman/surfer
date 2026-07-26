@@ -414,6 +414,28 @@ void        surf_textinput_move(surf_node *n, int32_t delta_cp, bool extend);
 int32_t     surf_textinput_index_from_x(const surf_node *n, int16_t local_x);
 void        surf_textinput_set_focused(surf_node *n, bool focused);
 
+/* LED: an indicator lamp — the one widget that reports nothing, because a
+ * lamp is an output. The art is A8, so one asset is any color: each LED
+ * keeps its own copy of the image struct (shared pixels, its own tint),
+ * which on the P4 is a palette register the PPA applies at blend time.
+ * Brightness is a level, not a bool, so a blink can fade. */
+typedef struct surf_led surf_led;
+
+typedef struct {
+    const surf_image *strip;   /* A8 filmstrip, dark..lit */
+    int16_t           frame_w, frame_h, frames;
+    surf_color        color;
+} surf_led_style;
+
+surf_led  *surf_led_new(surf_node *parent, int16_t x, int16_t y,
+                        const surf_led_style *style);
+void       surf_led_destroy(surf_led *l);
+surf_node *surf_led_node(surf_led *l);
+void       surf_led_set(surf_led *l, bool on);
+void       surf_led_set_level(surf_led *l, int32_t level_q16);
+int32_t    surf_led_level(const surf_led *l);
+void       surf_led_set_color(surf_led *l, surf_color c);
+
 /* Scrollbar: a thumb on a track, driven by a content model the CALLER
  * owns. It knows nothing about what is scrolling — hand it total, visible
  * and pos in any unit (console rows, editor lines, panel pixels) and it
@@ -573,6 +595,25 @@ void       surf_knob_set_mode(surf_knob *k, surf_knob_mode mode);
 void       surf_knob_set_value(surf_knob *k, int32_t value_q16);  /* no cb */
 int32_t    surf_knob_value(const surf_knob *k);
 void       surf_knob_on_change(surf_knob *k, surf_change_cb cb, void *user);
+
+/* Selector: a knob with DETENTS. It chooses among N fixed options and
+ * reports an index — a mode switch, a bank, a waveform — sharing the
+ * knob's filmstrip so N stays a runtime number. Drag snaps as it goes;
+ * a tap advances one position and wraps, which is how a 4-position
+ * switch gets nudged on a touchscreen. */
+typedef struct surf_selector surf_selector;
+
+surf_selector *surf_selector_new(surf_node *parent, int16_t x, int16_t y,
+                                 const surf_knob_style *style,
+                                 int32_t positions);
+void       surf_selector_destroy(surf_selector *s);
+surf_node *surf_selector_node(surf_selector *s);
+int32_t    surf_selector_index(const surf_selector *s);
+int32_t    surf_selector_positions(const surf_selector *s);
+void       surf_selector_set_index(surf_selector *s, int32_t idx);  /* no cb */
+void       surf_selector_on_change(surf_selector *s, surf_index_cb cb,
+                                   void *user);
+
 
 #ifdef __cplusplus
 }

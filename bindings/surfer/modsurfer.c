@@ -57,6 +57,15 @@ static surf_image sbtrackh_img = {
     .pixels = (void *)widget_sbtrackh_px, .w = WSBAR_H, .h = WSBAR_W,
     .stride = WSBAR_H * 4, .format = SURF_FMT_ARGB8888,
 };
+static const surf_image led_img = {
+    .pixels = (void *)widget_led_px, .w = WLED_SIZE * WLED_FRAMES,
+    .h = WLED_SIZE, .stride = WLED_SIZE * WLED_FRAMES, .format = SURF_FMT_A8,
+};
+static surf_image sel_img = {
+    .pixels = (void *)widget_sel_px, .w = WSEL_SIZE * WKNOB_FRAMES,
+    .h = WSEL_SIZE, .stride = WSEL_SIZE * WKNOB_FRAMES * 4,
+    .format = SURF_FMT_ARGB8888,
+};
 static surf_image panel_img = {
     .pixels = (void *)widget_panel_px, .w = WPANEL_SIZE, .h = WPANEL_SIZE,
     .stride = WPANEL_SIZE * 4, .format = SURF_FMT_ARGB8888,
@@ -94,6 +103,10 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&btn_img);
     surfer_port_prepare_image(&btnpr_img);
     surfer_port_prepare_image(&knobsm_img);
+    surfer_port_prepare_image(&sel_img);
+    /* led_img stays const: every LED copies the struct and re-homing a
+     * shared const would be re-homing it once per copy anyway. Its pixels
+     * are 1 byte deep and small, so the P4 blends them from flash. */
     /* every built-in atlas, re-homed once into DMA-able RAM */
     surf_font_builtin_prepare(surfer_port_prepare_image);
 }
@@ -126,7 +139,8 @@ typedef struct {
 } surfer_font_obj_t;
 extern const mp_obj_type_t surfer_font_type;
 
-enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON, W_SCROLLBAR };
+enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON, W_SCROLLBAR,
+       W_LED, W_SELECTOR };
 
 typedef struct {
     mp_obj_base_t base;
@@ -949,17 +963,25 @@ static void widget_cb(int32_t value, void *user)
     surfer_widget_obj_t *o = user;
     if (o->callback == mp_const_none || o->callback == MP_OBJ_NULL)
         return;
+    /* EVERY kind is listed on purpose. Only the knob and the slider
+     * report a Q16 fraction; a scrollbar reports the caller's own unit
+     * (rows, lines, pixels) and a selector an index. When those two rode
+     * a `default:` that divided by SURF_ONE they reported ~0 and every
+     * `int(pos)` handler snapped to zero — twice, a year apart. So the
+     * fraction is now the special case and the default is the raw int:
+     * a new widget that forgets to add itself here gets a plausible
+     * number instead of silently getting nothing. */
     mp_obj_t arg;
     switch (o->kind) {
-    case W_CHECKBOX: arg = mp_obj_new_bool(value != 0); break;
-    case W_DROPDOWN: arg = MP_OBJ_NEW_SMALL_INT(value); break;
-    case W_BUTTON:   arg = mp_const_true; break;
-    /* a scrollbar's position is in the CALLER's unit (rows, lines,
-     * pixels) — not a Q16 fraction like a knob's. Dividing it by
-     * SURF_ONE made every drag report ~0, so `int(pos)` handlers
-     * snapped to the top instead of where the thumb was dropped. */
-    case W_SCROLLBAR: arg = mp_obj_new_int(value); break;
-    default: arg = mp_obj_new_float((mp_float_t)value / SURF_ONE); break;
+    case W_SLIDER:
+    case W_KNOB:      arg = mp_obj_new_float((mp_float_t)value / SURF_ONE); break;
+    case W_CHECKBOX:  arg = mp_obj_new_bool(value != 0); break;
+    case W_BUTTON:    arg = mp_const_true; break;
+    case W_DROPDOWN:
+    case W_SCROLLBAR:
+    case W_SELECTOR:
+    case W_LED:       /* has no callback, but be consistent */
+    default:          arg = mp_obj_new_int(value); break;
     }
     mp_call_function_1(o->callback, arg);
 }
@@ -981,6 +1003,10 @@ static mp_obj_t widget_get_value(surfer_widget_obj_t *o)
         return mp_obj_new_float((mp_float_t)surf_knob_value(o->w) / SURF_ONE);
     case W_CHECKBOX:
         return mp_obj_new_bool(surf_checkbox_checked(o->w));
+    case W_LED:   /* a level, so a blink can fade; True/False also work */
+        return mp_obj_new_float((mp_float_t)surf_led_level(o->w) / SURF_ONE);
+    case W_SELECTOR:
+        return MP_OBJ_NEW_SMALL_INT(surf_selector_index(o->w));
     case W_BUTTON:
         return mp_const_none;
     default:
@@ -1002,6 +1028,17 @@ static void widget_set_value(surfer_widget_obj_t *o, mp_obj_t v)
         break;
     case W_CHECKBOX:
         surf_checkbox_set_checked(o->w, mp_obj_is_true(v));
+        break;
+    case W_LED:
+        /* led.value = True/False is the common case and reads better than
+         * 1.0/0.0; anything else is a brightness */
+        if (v == mp_const_true || v == mp_const_false)
+            surf_led_set(o->w, v == mp_const_true);
+        else
+            surf_led_set_level(o->w, (int32_t)(mp_obj_get_float(v) * SURF_ONE));
+        break;
+    case W_SELECTOR:
+        surf_selector_set_index(o->w, mp_obj_get_int(v));
         break;
     case W_BUTTON:
         break;
@@ -1049,6 +1086,11 @@ static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
         }
         if (attr == MP_QSTR_callback) {
             o->callback = dest[1];
+            dest[0] = MP_OBJ_NULL;
+            return;
+        }
+        if (attr == MP_QSTR_color && o->kind == W_LED) {
+            surf_led_set_color(o->w, (surf_color)mp_obj_get_int(dest[1]));
             dest[0] = MP_OBJ_NULL;
             return;
         }
@@ -1714,6 +1756,52 @@ static mp_obj_t mod_scrollview(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_scrollview_obj, 4, 4, mod_scrollview);
 
+/* surfer.led(x, y, color) -> Widget. An indicator, not a control: it has
+ * no callback. .value takes True/False or a brightness 0..1, and .color
+ * is settable — the art is A8, so a retint costs a repaint and no
+ * pixels. */
+static mp_obj_t mod_led(size_t n_args, const mp_obj_t *args)
+{
+    surf_led_style st = {
+        .strip = &led_img, .frame_w = WLED_SIZE, .frame_h = WLED_SIZE,
+        .frames = WLED_FRAMES,
+        .color = n_args > 2 ? (surf_color)mp_obj_get_int(args[2])
+                            : SURF_RGB(255, 60, 40),   /* panel-lamp red */
+    };
+    surf_led *l = surf_led_new(surf_screen(), 0, 0, &st);
+    if (!l)
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("led create failed"));
+    surf_node *node = surf_led_node(l);
+    surf_node_detach(node);           /* caller parents it via .add() */
+    surf_node_set_pos(node, (int16_t)mp_obj_get_int(args[0]),
+                      (int16_t)mp_obj_get_int(args[1]));
+    return MP_OBJ_FROM_PTR(new_widget_obj(W_LED, l, node));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_led_obj, 2, 3, mod_led);
+
+/* surfer.selector(x, y, positions) -> Widget. A knob with detents:
+ * .value is an INDEX, the callback reports an index, a drag snaps and a
+ * tap advances one position. */
+static mp_obj_t mod_selector(mp_obj_t x, mp_obj_t y, mp_obj_t positions)
+{
+    static const surf_knob_style st = {.strip = &sel_img,
+                                       .frame_w = WSEL_SIZE,
+                                       .frame_h = WSEL_SIZE,
+                                       .frames = WKNOB_FRAMES};
+    surf_selector *sel = surf_selector_new(surf_screen(), 0, 0, &st,
+                                           mp_obj_get_int(positions));
+    if (!sel)
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("selector create failed"));
+    surf_node *node = surf_selector_node(sel);
+    surf_node_detach(node);
+    surf_node_set_pos(node, (int16_t)mp_obj_get_int(x),
+                      (int16_t)mp_obj_get_int(y));
+    surfer_widget_obj_t *o = new_widget_obj(W_SELECTOR, sel, node);
+    surf_selector_on_change(sel, widget_idx_cb, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(mod_selector_obj, mod_selector);
+
 static mp_obj_t mod_slider(size_t n_args, const mp_obj_t *args)
 {
     static const surf_slider_style st = {.track = &track_img,
@@ -1929,6 +2017,8 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_checkbox), MP_ROM_PTR(&mod_checkbox_obj)},
     {MP_ROM_QSTR(MP_QSTR_dropdown), MP_ROM_PTR(&mod_dropdown_obj)},
     {MP_ROM_QSTR(MP_QSTR_button), MP_ROM_PTR(&mod_button_obj)},
+    {MP_ROM_QSTR(MP_QSTR_led), MP_ROM_PTR(&mod_led_obj)},
+    {MP_ROM_QSTR(MP_QSTR_selector), MP_ROM_PTR(&mod_selector_obj)},
     /* capitalized aliases, DESIGN.md §3 taste */
     {MP_ROM_QSTR(MP_QSTR_Group), MP_ROM_PTR(&mod_group_obj)},
     {MP_ROM_QSTR(MP_QSTR_TextInput), MP_ROM_PTR(&mod_textinput_obj)},
@@ -1937,6 +2027,8 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_Checkbox), MP_ROM_PTR(&mod_checkbox_obj)},
     {MP_ROM_QSTR(MP_QSTR_Dropdown), MP_ROM_PTR(&mod_dropdown_obj)},
     {MP_ROM_QSTR(MP_QSTR_Button), MP_ROM_PTR(&mod_button_obj)},
+    {MP_ROM_QSTR(MP_QSTR_Led), MP_ROM_PTR(&mod_led_obj)},
+    {MP_ROM_QSTR(MP_QSTR_Selector), MP_ROM_PTR(&mod_selector_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch), MP_ROM_PTR(&mod_touch_obj)},
     {MP_ROM_QSTR(MP_QSTR__key), MP_ROM_PTR(&mod_key_obj)},
     {MP_ROM_QSTR(MP_QSTR_touches), MP_ROM_PTR(&mod_touches_obj)},

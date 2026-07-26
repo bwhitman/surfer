@@ -220,6 +220,101 @@ def arrow_strip():
     return out
 
 
+# ---- LED and selector knob (added for the TB-303 panel) ----
+
+LED = 16          # lens+halo box; the lens itself is much smaller
+LED_FRAMES = 6    # off .. full, so a blink can also fade
+
+
+def led_strip():
+    """An indicator lamp, A8 so ONE asset is any color: each LED owns a
+    copy of the surf_image with its own tint, which on the P4 is a single
+    palette register the PPA applies at blend time.
+
+    Alpha carries the whole look. Frame 0 is the UNLIT lens - not blank,
+    because a dead LED is a visible dark bead, not a hole - and later
+    frames add a core and a halo. The specular dot stays put across
+    frames so the lens reads as glass, not as a disc that grows."""
+    c = LED / 2.0
+    lens_r = LED * 0.28
+    out = []
+    for f in range(LED_FRAMES):
+        t = f / (LED_FRAMES - 1)
+        for y in range(LED):
+            for x in range(LED):
+                px, py = x + 0.5, y + 0.5
+                d = math.hypot(px - c, py - c)
+                edge = max(0.0, min(1.0, (lens_r - d) * 1.6 + 0.5))
+                # 0.55 unlit, not 0.2: these sit on white piano keys as
+                # well as black panels, and a faint tint over white reads
+                # as pink rather than as a dead lamp
+                a = edge * (0.55 + 0.45 * t)
+                if d > lens_r:      # halo, only when lit
+                    glow = math.exp(-(d - lens_r) / (LED * 0.14))
+                    a = max(a, glow * t * 0.55)
+                hl = math.hypot(px - (c - lens_r * 0.32), py - (c - lens_r * 0.34))
+                a = max(a, max(0.0, 1.0 - hl / (lens_r * 0.42)) ** 2 *
+                            (0.45 + 0.4 * t))
+                out.append(clamp(a * 255))
+    px = [0] * (LED * LED_FRAMES * LED)
+    i = 0
+    for f in range(LED_FRAMES):
+        for y in range(LED):
+            for x in range(LED):
+                px[y * LED * LED_FRAMES + f * LED + x] = out[i]
+                i += 1
+    return px
+
+
+SEL = 56          # selector knob: the big ones on a 303's middle row
+
+
+def selector_strip(size=SEL):
+    """A light chrome knob with a hard-edged wedge, for the detented
+    selector. Same 64-frame filmstrip as the knob - the widget just picks
+    the frame nearest a detent - but bright, because these sit on a pale
+    panel, and with a WEDGE rather than a hairline: at a detent you want
+    to read the position from across the room."""
+    c = size / 2.0
+    body_r = c - 2.0
+    out = [0] * (size * KNOB_FRAMES * size)
+    for f in range(KNOB_FRAMES):
+        ang = math.radians(-135.0 + 270.0 * f / (KNOB_FRAMES - 1))
+        ca, sa = math.cos(-ang), math.sin(-ang)
+        for y in range(size):
+            for x in range(size):
+                px, py = x + 0.5, y + 0.5
+                dx, dy = px - c, py - c
+                r = math.hypot(dx, dy)
+                a = max(0.0, min(1.0, (body_r - r) * 1.6 + 0.5))
+                if a == 0.0:
+                    continue
+                sh = 0.72 + 0.42 * (-(dx + dy) / (2.0 * body_r) + 0.5)
+                col = tuple(clamp(v * sh) for v in (196, 198, 206))
+                if r > body_r - 2.0:
+                    col = tuple(clamp(v * 0.55) for v in col)
+                wx, wy = dx * ca - dy * sa, dx * sa + dy * ca
+                # one bright wedge, widening toward the rim, and a dark
+                # spindle at the middle: two tones inside the wedge read
+                # as a chip out of the knob rather than a pointer
+                if wy < 0 and abs(wx) < (-wy) * 0.24 + 1.0 and r < body_r - 2.5:
+                    col = (252, 252, 254)
+                if r < body_r * 0.17:
+                    col = tuple(clamp(v * 0.42) for v in (196, 198, 206))
+                word = (clamp(a * 255) << 24) | (col[0] << 16) | (col[1] << 8) | col[2]
+                out[y * size * KNOB_FRAMES + f * size + x] = word
+    return out
+
+
+def emit8(name, values, per_line=24):
+    """A8 art is one BYTE per pixel - emitting it as uint32 would quadruple
+    a strip that is already 1.5 KB and lie about the stride."""
+    print(f"static const uint8_t {name}[{len(values)}] = {{")
+    for i in range(0, len(values), per_line):
+        print("    " + ", ".join(str(v) for v in values[i:i + per_line]) + ",")
+    print("};")
+
+
 def emit(name, values, per_line=12):
     # const → flash .rodata on device; RAM can't hold the big strips
     print(f"static const uint32_t {name}[{len(values)}] = {{")
@@ -249,6 +344,9 @@ def main():
     print(f"#define WSBAR_W {SBAR_W}")
     print(f"#define WSBAR_H {SBAR_H}")
     print(f"#define WSBAR_INSET {SBAR_INSET}")
+    print(f"#define WLED_SIZE {LED}")
+    print(f"#define WLED_FRAMES {LED_FRAMES}")
+    print(f"#define WSEL_SIZE {SEL}")
     print("#define WBTN_SIZE 18")
     print("#define WBTN_INSET 6")
     emit("widget_knob_px", knob_strip())
@@ -261,6 +359,8 @@ def main():
     emit("widget_check_px", checkbox_strip())
     emit("widget_panel_px", panel())
     emit("widget_arrow_px", arrow_strip())
+    emit8("widget_led_px", led_strip())
+    emit("widget_sel_px", selector_strip())
     emit("widget_sbar_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (150, 150, 158), 255))
     emit("widget_sbtrack_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (255, 255, 255), 40))
     # ...and the same capsules lying down. A 9-patch slices along fixed

@@ -23,8 +23,8 @@ ask rather than silently diverging.
   All device allocations go through `hal->alloc_image`; never raw
   `heap_caps_malloc` in core code.
 - **The widget set stays small** (knob, slider, button, checkbox, dropdown,
-  label, textinput, scrollview, scrollbar). Do not add widgets, node types, or hal ops
-  without asking first.
+  label, textinput, scrollview, scrollbar, led, selector). Do not add
+  widgets, node types, or hal ops without asking first.
 - **No new dependencies without asking.** Currently allowed: stb_truetype,
   stb_image (build tools only), SDL2, ESP-IDF, MicroPython headers.
 
@@ -280,6 +280,32 @@ have separate C setters that each ignore the other's node.
 `surfer._key(kind, text, shift)` pushes one event into the queue a driver
 feeds — the counterpart of `_touch`, and the only way a headless test can
 reach anything that reads the keyboard.
+
+## LED and selector
+
+Two panel controls, added together for tulip5's TB-303.
+
+`surf_led` is the only widget that **reports nothing** — a lamp is an
+output, so it has no callback. The art is A8, and each LED keeps its own
+COPY of the `surf_image` struct (shared pixels, its own `tint`), which is
+how one asset serves every colour: on the P4 the tint is a palette
+register the PPA applies at blend time, so `set_color` costs a repaint
+and no pixels. Brightness is a **level, not a bool**, so a blink can
+fade, and frame 0 is the unlit lens rather than nothing — a dead LED is a
+visible dark bead. Its unlit alpha is 0.55 because these sit on white
+piano keys as well as black panels, and a faint red over white reads as
+pink rather than as an off lamp.
+
+`surf_selector` is a knob with **detents**: N fixed positions, reporting
+an index. It shares the knob's filmstrip and lands on the frame nearest a
+detent, so N is a runtime number needing no art of its own. Two gestures,
+because a panel control wants both — a vertical DRAG that snaps as it
+goes, and a TAP that advances one position and wraps, which is how you
+nudge a 4-position mode switch with a finger. A tap is a press that
+travelled under 6px, decided at UP.
+
+Both are bound: `surfer.led(x, y, color)` and `surfer.selector(x, y, n)`,
+with `.value` a brightness (or True/False) and an index respectively.
 
 ## Scrollbar
 

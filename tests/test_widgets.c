@@ -358,8 +358,89 @@ static void test_scrollbar(void)
     surf_scrollbar_destroy(hb);
 }
 
+static int32_t sel_reported;
+static void sel_cb(int32_t v, void *user) { (void)user; sel_reported = v; }
+
+/* An LED reports nothing (it is an output) and a selector reports an
+ * INDEX. Both were added for the TB-303 panel. */
+static void test_led_and_selector(void)
+{
+    fresh(400, 300, 32);
+    surf_image strip = {.pixels = NULL, .w = 16 * 6, .h = 16, .stride = 96,
+                        .format = SURF_FMT_A8};
+    surf_led_style ls = {.strip = &strip, .frame_w = 16, .frame_h = 16,
+                         .frames = 6, .color = SURF_RGB(255, 0, 0)};
+    surf_led *l = surf_led_new(surf_screen(), 10, 10, &ls);
+    OK(l != NULL);
+    OK(surf_led_level(l) == 0);
+    surf_led_set(l, true);
+    OK(surf_led_level(l) == SURF_ONE);
+    surf_led_set_level(l, SURF_ONE / 2);
+    OK(surf_led_level(l) == SURF_ONE / 2);
+    surf_led_set_level(l, SURF_ONE * 4);          /* clamps */
+    OK(surf_led_level(l) == SURF_ONE);
+    /* the tint is PER LED — the style's image is shared and must not be
+     * touched, or every lamp on the panel would change colour together */
+    surf_led *l2 = surf_led_new(surf_screen(), 40, 10, &ls);
+    surf_led_set_color(l2, SURF_RGB(0, 255, 0));
+    OK(strip.tint == 0);                          /* the shared art is clean */
+    surf_led_destroy(l2);
+    surf_led_destroy(l);
+
+    surf_image knob = {.pixels = NULL, .w = 56 * 64, .h = 56,
+                       .stride = 56 * 64 * 4, .format = SURF_FMT_ARGB8888};
+    surf_knob_style ks = {.strip = &knob, .frame_w = 56, .frame_h = 56,
+                          .frames = 64};
+    surf_selector *sel = surf_selector_new(surf_screen(), 100, 100, &ks, 4);
+    OK(sel != NULL);
+    OK(surf_selector_index(sel) == 0 && surf_selector_positions(sel) == 4);
+    surf_selector_on_change(sel, sel_cb, NULL);
+
+    /* a TAP (press and release without travel) advances one and wraps */
+    sel_reported = -1;
+    for (int i = 1; i <= 4; i++) {
+        surf_touch d = {.x = 120, .y = 120, .phase = SURF_TOUCH_DOWN};
+        surf_touch u = {.x = 120, .y = 120, .phase = SURF_TOUCH_UP};
+        surf_inject_touch(&d);
+        surf_inject_touch(&u);
+        OK(surf_selector_index(sel) == i % 4);
+    }
+    OK(sel_reported == 0);                        /* wrapped back to 0 */
+
+    /* a DRAG snaps through positions and never lands between them. The
+     * sweep is SEL_DRAG_RANGE (160px) for the whole span, so 160px up
+     * from position 0 is position 3 — a shorter drag lands proportionally
+     * short, which is the thing a detent is for. */
+    surf_selector_set_index(sel, 0);
+    /* the press has to LAND on the widget (100,100 56x56) — capture then
+     * keeps the drag alive off the top of the screen */
+    surf_touch d = {.x = 120, .y = 150, .phase = SURF_TOUCH_DOWN};
+    surf_inject_touch(&d);
+    bool saw_middle = false;
+    for (int y = 145; y >= -10; y -= 5) {
+        surf_touch m = {.x = 120, .y = (int16_t)y, .phase = SURF_TOUCH_MOVE};
+        surf_inject_touch(&m);
+        int32_t i = surf_selector_index(sel);
+        OK(i >= 0 && i <= 3);
+        if (i == 1 || i == 2)
+            saw_middle = true;
+    }
+    OK(saw_middle);                               /* it stepped, not jumped */
+    OK(surf_selector_index(sel) == 3);            /* and saturates at the top */
+    surf_touch u2 = {.x = 120, .y = -10, .phase = SURF_TOUCH_UP};
+    surf_inject_touch(&u2);
+    OK(surf_selector_index(sel) == 3);            /* a drag is not a tap */
+
+    /* set_index is the caller talking: no callback, same as every widget */
+    sel_reported = -1;
+    surf_selector_set_index(sel, 1);
+    OK(surf_selector_index(sel) == 1 && sel_reported == -1);
+    surf_selector_destroy(sel);
+}
+
 void run_widget_tests(void)
 {
+    test_led_and_selector();
     test_scrollbar();
     test_filmstrip();
     test_ninepatch();
