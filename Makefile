@@ -30,17 +30,47 @@ $(GEN_DIR)/widget_assets.h: tools/gen_widget_assets.py
 	@mkdir -p $(GEN_DIR)
 	python3 tools/gen_widget_assets.py > $@
 
+# fontbake is a host tool, so FreeType here is a BUILD dependency only —
+# nothing links it at runtime, the device still blits the baked A8 atlas.
+# Optional on purpose: without it the build still works, it just bakes
+# unhinted (fuzzier) outlines and says so.
+FT_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null)
+FT_LIBS   := $(shell pkg-config --libs freetype2 2>/dev/null)
+ifneq ($(FT_LIBS),)
+FT_DEF := -DSURF_FONTBAKE_FT
+# Full autohinting, not "light": light grid-fits vertically only, and the
+# problem at UI sizes is horizontal — a stem narrower than a pixel spread
+# over two columns at 30-50% each. Roboto's 'l' at 15 ppem goes from
+# `220 128` to `68 255 24` under full.
+HINT := FONTBAKE_HINT=full
+else
+HINT :=
+endif
+
 build/tools/fontbake: tools/fontbake.c tools/stb/stb_truetype.h
 	@mkdir -p build/tools
-	$(CC) -O2 -Itools -o $@ tools/fontbake.c -lm
+	$(CC) -O2 -Itools $(FT_DEF) $(FT_CFLAGS) -o $@ tools/fontbake.c $(FT_LIBS) -lm
+ifeq ($(FT_LIBS),)
+	@echo "NOTE: no freetype2 via pkg-config — baking unhinted. Small text"
+	@echo "      will be fuzzy; 'brew install freetype' and rebuild to fix."
+endif
 
+# ---- the UI ramp. fontbake's SIZE is ppem, so these names finally mean
+# what they say; ui16 is ~10pt at the desktop window's 110-140dpi (which
+# varies with the display-scaling setting) and ui23 is the same PHYSICAL
+# size on the P4's 1024x600 7" panel (169dpi), which is why both exist
+# rather than one being scaled to the other. ----
 $(GEN_DIR)/font_ui16.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake ui16 16 assets/fonts/Roboto-Regular.ttf $@
+	$(HINT) build/tools/fontbake ui16 16 assets/fonts/Roboto-Regular.ttf $@
+
+$(GEN_DIR)/font_ui23.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
+	@mkdir -p $(GEN_DIR)
+	$(HINT) build/tools/fontbake ui23 23 assets/fonts/Roboto-Regular.ttf $@
 
 $(GEN_DIR)/font_ui28.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake ui28 28 assets/fonts/Roboto-Regular.ttf $@
+	$(HINT) build/tools/fontbake ui28 28 assets/fonts/Roboto-Regular.ttf $@
 
 # Roboto at display sizes. Plain AA, no threshold: at 36 and 48 px the
 # curves carry enough pixels that partial coverage reads as a smooth edge
@@ -49,23 +79,26 @@ $(GEN_DIR)/font_ui28.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 # these is expected to be high and is not a warning here.
 $(GEN_DIR)/font_ui36.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake ui36 36 assets/fonts/Roboto-Regular.ttf $@
+	$(HINT) build/tools/fontbake ui36 36 assets/fonts/Roboto-Regular.ttf $@
 
 $(GEN_DIR)/font_ui48.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake ui48 48 assets/fonts/Roboto-Regular.ttf $@
+	$(HINT) build/tools/fontbake ui48 48 assets/fonts/Roboto-Regular.ttf $@
 
 $(GEN_DIR)/font_mono16.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ \
+	$(HINT) build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ \
 		"32-126,167,181,8211,8212,8230"
 
 # ---- font-specimen bakes (demos/fonts.c): the same faces through the
 # knobs that matter — plain AA, gamma-boosted AA, 1-bit, and a true
-# bitmap face at its design size ----
+# bitmap face at its design size. These deliberately stay UNHINTED: each
+# one exists to show what its knob does to a raw outline, and hinting
+# them would change what the specimen demonstrates. ui12 is the exception
+# — it is a real UI size (dense chrome), not a specimen. ----
 $(GEN_DIR)/font_ui12.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake ui12 12 assets/fonts/Roboto-Regular.ttf $@
+	$(HINT) build/tools/fontbake ui12 12 assets/fonts/Roboto-Regular.ttf $@
 
 $(GEN_DIR)/font_ui16b.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
@@ -82,9 +115,11 @@ $(GEN_DIR)/font_mono16b.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regul
 	FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96 build/tools/fontbake \
 		mono16b 16 assets/fonts/JetBrainsMono-Regular.ttf $@
 
+# mono16 is code at desktop density, mono24 the same physical size on the
+# P4 panel — the mono pair to ui16/ui23.
 $(GEN_DIR)/font_mono24.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake mono24 24 assets/fonts/JetBrainsMono-Regular.ttf $@
+	$(HINT) build/tools/fontbake mono24 24 assets/fonts/JetBrainsMono-Regular.ttf $@
 
 $(GEN_DIR)/font_bigblue12.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
 	@mkdir -p $(GEN_DIR)
@@ -96,13 +131,16 @@ $(GEN_DIR)/font_bigblue24.h: build/tools/fontbake assets/fonts/BigBlue_TerminalP
 	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue24 24 \
 		assets/fonts/BigBlue_TerminalPlus.ttf $@
 
-# Pixel-designed proportional faces (Kenney, CC0). FONTBAKE_EM=1 is not
-# optional here: these are drawn on a pixel grid defined in em units, so
-# only an exact ppem lands stems on whole pixels. At these sizes fontbake
-# reports gray 0.0% — the rasterizer produced no partial coverage at all,
-# which is what "actually a bitmap font" means. Off-grid sizes (em 12,
-# 20) come out 40-70% gray and look lumpy thresholded.
-KPIX_BAKE = FONTBAKE_EM=1 FONTBAKE_THRESHOLD=1 build/tools/fontbake
+# Pixel-designed proportional faces (Kenney, CC0). These are drawn on a
+# pixel grid defined in em units, so only an exact ppem lands stems on
+# whole pixels — which is now what SIZE means, so there is no flag to
+# set. (This case is why the default flipped: these bakes had to opt in
+# to the sane sizing while everything else silently got the other one.)
+# At these sizes fontbake reports gray 0.0% — no partial coverage at all,
+# which is what "actually a bitmap font" means. Off-grid sizes (12, 20)
+# come out 40-70% gray and look lumpy thresholded. Never hinted: the
+# grid-fit they want is the one they were drawn on.
+KPIX_BAKE = FONTBAKE_THRESHOLD=1 build/tools/fontbake
 
 $(GEN_DIR)/font_kmini16.h: build/tools/fontbake assets/fonts/KenneyMini.ttf
 	@mkdir -p $(GEN_DIR)
@@ -153,13 +191,13 @@ ADOBE_GEN := $(addprefix $(GEN_DIR)/font_,$(addsuffix .h,$(ADOBE_NAMES)))
 
 # every font this build ships, by fontbake name. The registry
 # (surf_font_builtin) is generated from exactly this list.
-TTF_NAMES := ui12 ui16 ui16b ui28 ui36 ui48 mono16 mono16g mono16b mono24 \
+TTF_NAMES := ui12 ui16 ui16b ui23 ui28 ui36 ui48 mono16 mono16g mono16b mono24 \
 	bigblue12 bigblue24 kpixel16 kpixel32 kpixel48 kpixel64 \
 	kmini16 kmini32 khigh32 kblocks16
 FONT_NAMES := $(TTF_NAMES) $(ADOBE_NAMES)
 
 FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
-	$(GEN_DIR)/font_ui16b.h $(GEN_DIR)/font_ui28.h \
+	$(GEN_DIR)/font_ui16b.h $(GEN_DIR)/font_ui23.h $(GEN_DIR)/font_ui28.h \
 	$(GEN_DIR)/font_ui36.h $(GEN_DIR)/font_ui48.h \
 	$(GEN_DIR)/font_mono16.h $(GEN_DIR)/font_mono16g.h \
 	$(GEN_DIR)/font_mono16b.h $(GEN_DIR)/font_mono24.h \

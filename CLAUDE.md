@@ -341,24 +341,56 @@ scrollback must not also have `on_touch` set.
 
 ## Fonts
 
-surfer ships **44 baked fonts from 31 source files**, all reachable at
+surfer ships **45 baked fonts from 31 source files**, all reachable at
 runtime by name via `surf_font_builtin("helvR12")`. `tools/fontbake.c`
-has two front ends: stb_truetype for outlines, and a BDF reader that
-copies designed bitmap fonts pixel-for-pixel (SIZE is ignored — a BDF
-*is* one size). It reports **gray %** = share of inked pixels that are
-neither 0 nor 255; 0.0% means a genuine bitmap, 78-100% means an outline
-face. Knobs: `FONTBAKE_EM=1` (ppem sizing — required for pixel-designed
-outline faces, whose grid is in em units), `FONTBAKE_GAMMA`,
-`FONTBAKE_THRESHOLD[_CUT]`.
+has three front ends: stb_truetype for outlines, FreeType for *hinted*
+outlines, and a BDF reader that copies designed bitmap fonts
+pixel-for-pixel (SIZE is ignored — a BDF *is* one size).
 
-Sources: Roboto (ui12/16/16b/28/36/48 — the 36 and 48 are display sizes,
-plain AA, where partial coverage reads as a smooth curve rather than the
-lumpiness thresholding an off-grid outline gives at small sizes) +
-JetBrains Mono (outline, AA), BigBlue Terminal (bitmap
-mono), 4 Kenney pixel faces (CC0), and 24 Adobe X11 BDFs — helvR/helvB/
+**fontbake's SIZE is ppem.** It used to mean ascent−descent, which made
+every name in the build a lie by ~32%: `ui12` was a 9.1 ppem bake with a
+5-pixel x-height — about 6pt on a 110dpi screen, and the actual reason
+small text looked fuzzy. `FONTBAKE_LINE=1` restores the old meaning;
+`FONTBAKE_EM=1` is now a no-op kept so old command lines still run.
+
+Two numbers in the summary line, both measured before gamma/threshold:
+**gray %** (partial coverage — 0.0% means a genuine bitmap) and
+**solid %** (≥7/8 coverage — actual ink). On an outline face watch
+*solid*: hinting barely moves gray, because the stems go solid while
+their AA sidebands stay partial. Unhinted Roboto at 9 ppem is solid
+0.0% — not one pixel of real ink in the atlas.
+
+`FONTBAKE_HINT=full` grid-fits through FreeType's autohinter, which is
+the single biggest lever on small text and the thing stb_truetype cannot
+do (it interprets no hints and has no autohinter). Roboto's `l` at 15
+ppem goes from `220 128` — a 1.4px gray smear that never reaches ink —
+to `68 255 24`, a solid column. `=light` grid-fits vertically only, so it
+does *not* help here: the problem at UI sizes is horizontal. `=bytecode`
+runs the font's own hints instead. **FreeType is a host build dependency
+of fontbake only** — nothing links it at runtime, the device still blits
+the same A8 atlas. Both the Makefile and `ports/esp32p4/main/CMakeLists.txt`
+detect it with pkg-config and fall back to unhinted with a warning; keep
+the two in step or the panel gets fuzzier text than the SDL preview did.
+Other knobs: `FONTBAKE_GAMMA`, `FONTBAKE_THRESHOLD[_CUT]`.
+
+Sources: Roboto (ui12/16/16b/23/28/36/48 — the 36 and 48 are display
+sizes, plain AA, where partial coverage reads as a smooth curve rather
+than the lumpiness thresholding an off-grid outline gives at small
+sizes) + JetBrains Mono (outline, AA), BigBlue Terminal (bitmap mono),
+4 Kenney pixel faces (CC0), and 24 Adobe X11 BDFs — helvR/helvB/
 ncenR/courR at 08/10/12/14/18/24, each a separately *designed* size.
 `assets/fonts/LICENSE.txt` has the terms; BigBlue's provenance is still
-unpinned (TODO before shipping).
+unpinned (TODO before shipping). The UI ramp is hinted; the *specimen*
+bakes (ui16b, mono16g, mono16b) deliberately are not — each exists to
+show what its knob does to a raw outline. The pixel faces never are: the
+grid-fit they want is the one they were drawn on.
+
+**ui16 and ui23 are the same physical size on different screens**, which
+is why the ramp carries both rather than scaling one. The desktop window
+puts a framebuffer pixel on a 110-140dpi point (it varies with the
+display-scaling setting); the P4's 7" 1024x600 panel
+is 169dpi. So ui16/mono16 are the desktop body sizes (~10pt) and
+ui23/mono24 the panel's.
 
 **One TU owns every atlas.** `tools/gen_font_registry.py` emits
 `font_registry.c`, which includes all the font headers and implements
@@ -386,7 +418,37 @@ sizes its cell from 'M', so a proportional face is refused.
 `build/surfer_fonts` (desktop) and `DEMO_MODE = DEMO_FONTS` in
 `ports/esp32p4/main/app_main.c` render the same 3-page specimen from the
 same source (`demos/fonts_scene.c`); tap/click cycles pages. `SURF_TAP=x,y`
-injects a synthetic tap so the page flip is testable headlessly. `SURF_SCALE=N` (sdl hal) blows the
-window up N× with nearest-neighbour sampling for looking at glyph
-pixels — the scene, framebuffer and `SURF_SHOT` dumps stay at the real
-resolution; only the window grows.
+injects a synthetic tap so the page flip is testable headlessly.
+
+## Looking at the sdl window
+
+The scene, framebuffer and `SURF_SHOT` dumps are always 1024x600. Only
+how big that lands on screen changes, and it is always an **exact whole
+multiple** — the window is resizable and the view snaps to the largest
+integer zoom that fits, centred, letterboxed. Nothing is ever resampled;
+a smoothed upscale would invent edge pixels and make every bake look
+antialiased, which for this backend is the one unforgivable bug.
+
+- **default**: a 1024x600pt window, one framebuffer pixel per point. This
+  is the baseline and stays put — the two knobs below are for looking
+  closer, not for moving it. Drag the window instead if you just want it
+  bigger; the view re-snaps to the next whole multiple that fits.
+- **`SURF_SCALE=N`** asks for an N× window in points, clamped to the
+  usable desktop — a zoom the display cannot hold is worse than no zoom,
+  since the window runs off screen and takes the part you wanted with it.
+  The clamp bites early: 2× of 1024x600 is 2048x1200pt, more than a
+  laptop desktop has, so `SURF_SCALE=2` gets you the biggest exact zoom
+  there is room for instead (1.5× on a 1710x1107pt desktop — a 3× view in
+  real pixels on a 2× display).
+- **`SURF_NATIVE=1`** goes the other way: one framebuffer pixel per
+  **physical** display pixel, which on a 2× laptop is ~220dpi. It is an
+  absolute density, not a multiplier, so it *overrides* SURF_SCALE.
+
+Why SURF_NATIVE exists: the P4's 7" 1024x600 panel is **169dpi**, and a
+surfer pixel drawn one-per-point on a laptop is 110-140dpi depending on
+the display-scaling setting — i.e. always coarser than the device, often
+by 1.5×. Every jaggy and AA fringe in the window is therefore bigger than
+anything the panel will ever show, which is most of why bitmap faces look
+worse here than on hardware. SURF_NATIVE lands *denser* than the panel
+rather than coarser, so it errs the other way; the truth is between the
+two and neither is reachable exactly.

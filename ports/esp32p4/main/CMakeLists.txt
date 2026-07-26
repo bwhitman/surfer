@@ -12,7 +12,7 @@ file(GLOB SURFER_CORE_SRCS
     ${SURFER_ROOT}/src/widgets/*.c)
 
 set(GENDIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
-set(TTF_NAMES ui12 ui16 ui16b ui28 mono16 mono16g mono16b mono24
+set(TTF_NAMES ui12 ui16 ui16b ui23 ui28 mono16 mono16g mono16b mono24
     bigblue12 bigblue24 kpixel16 kpixel32 kpixel48 kpixel64
     kmini16 kmini32 khigh32 kblocks16)
 set(ADOBE_NAMES "")
@@ -57,11 +57,36 @@ add_custom_command(
     DEPENDS ${SURFER_ROOT}/tools/gen_widget_assets.py
     VERBATIM
 )
+# FreeType is a HOST build dependency of fontbake only — nothing links it
+# into the firmware, the device still blits a baked A8 atlas. Optional, but
+# the desktop Makefile does the same detection, and the two must agree or
+# the panel gets fuzzier text than the SDL preview did. See the FONTBAKE_HINT
+# block in tools/fontbake.c.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(HOST_FREETYPE QUIET freetype2)
+endif()
+if(HOST_FREETYPE_FOUND)
+    set(FT_DEF -DSURF_FONTBAKE_FT)
+    foreach(d ${HOST_FREETYPE_INCLUDE_DIRS})
+        list(APPEND FT_DEF -I${d})
+    endforeach()
+    set(FT_LINK "-L${HOST_FREETYPE_LIBRARY_DIRS}" "-lfreetype")
+    set(FONT_HINT FONTBAKE_HINT=full)
+else()
+    set(FT_DEF "")
+    set(FT_LINK "")
+    set(FONT_HINT "")
+    message(WARNING "no host freetype2: baking unhinted fonts, small text "
+                    "will be fuzzy on the panel")
+endif()
+
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen/fontbake
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
-    COMMAND cc -O2 -I${SURFER_ROOT}/tools -o ${CMAKE_CURRENT_BINARY_DIR}/gen/fontbake
-            ${SURFER_ROOT}/tools/fontbake.c -lm
+    COMMAND cc -O2 -I${SURFER_ROOT}/tools ${FT_DEF}
+            -o ${CMAKE_CURRENT_BINARY_DIR}/gen/fontbake
+            ${SURFER_ROOT}/tools/fontbake.c ${FT_LINK} -lm
     DEPENDS ${SURFER_ROOT}/tools/fontbake.c
     VERBATIM
 )
@@ -86,26 +111,34 @@ macro(surfer_font name size ttf)
     list(APPEND SURFER_FONT_HEADERS ${CMAKE_CURRENT_BINARY_DIR}/gen/font_${name}.h)
 endmacro()
 
-surfer_font(ui16 16 ${ROBOTO})
-surfer_font(ui28 28 ${ROBOTO})
-surfer_font(mono16 16 ${JBMONO} RANGES "32-126,167,181,8211,8212,8230")
-# specimen-only bakes: the same faces through each knob that matters
-surfer_font(ui12 12 ${ROBOTO})
+# SIZE is ppem. ui23/mono24 are the panel's body sizes — the same PHYSICAL
+# size as ui16/mono16 in the 1024x600 desktop window, because this 7" panel
+# is 169dpi against the window's 110-140.
+surfer_font(ui16 16 ${ROBOTO} ENV ${FONT_HINT})
+surfer_font(ui23 23 ${ROBOTO} ENV ${FONT_HINT})
+surfer_font(ui28 28 ${ROBOTO} ENV ${FONT_HINT})
+surfer_font(mono16 16 ${JBMONO} RANGES "32-126,167,181,8211,8212,8230"
+    ENV ${FONT_HINT})
+surfer_font(ui12 12 ${ROBOTO} ENV ${FONT_HINT})
+surfer_font(mono24 24 ${JBMONO} ENV ${FONT_HINT})
+# specimen-only bakes: the same faces through each knob that matters, so
+# these stay UNHINTED — each shows what its knob does to a raw outline
 surfer_font(ui16b 16 ${ROBOTO} ENV FONTBAKE_THRESHOLD=1)
 surfer_font(mono16g 16 ${JBMONO} ENV FONTBAKE_GAMMA=0.55)
 surfer_font(mono16b 16 ${JBMONO} ENV FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96)
-surfer_font(mono24 24 ${JBMONO})
 surfer_font(bigblue12 12 ${BIGBLUE} ENV FONTBAKE_THRESHOLD=1)
 surfer_font(bigblue24 24 ${BIGBLUE} ENV FONTBAKE_THRESHOLD=1)
 
-# page 2: pixel-designed proportional faces (Kenney, CC0). FONTBAKE_EM=1
-# is required — their grid is defined in em units, so only an exact ppem
-# lands stems on whole pixels (fontbake reports gray 0.0% when it does).
+# page 2: pixel-designed proportional faces (Kenney, CC0). Their grid is
+# defined in em units, so only an exact ppem lands stems on whole pixels
+# (fontbake reports gray 0.0% when it does) — which is what SIZE means
+# now, so there is nothing to opt into. Never hinted: the grid-fit they
+# want is the one they were drawn on.
 set(KMINI ${SURFER_ROOT}/assets/fonts/KenneyMini.ttf)
 set(KHIGH ${SURFER_ROOT}/assets/fonts/KenneyHigh.ttf)
 set(KPIXEL ${SURFER_ROOT}/assets/fonts/KenneyPixel.ttf)
 set(KBLOCKS ${SURFER_ROOT}/assets/fonts/KenneyBlocks.ttf)
-set(KPIX_ENV FONTBAKE_EM=1 FONTBAKE_THRESHOLD=1)
+set(KPIX_ENV FONTBAKE_THRESHOLD=1)
 # Kenney Pixel size ramp: multiples of its em16 grid, all exact
 surfer_font(kpixel16 16 ${KPIXEL} ENV ${KPIX_ENV})
 surfer_font(kpixel32 32 ${KPIXEL} ENV ${KPIX_ENV})
