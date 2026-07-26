@@ -66,6 +66,15 @@ static surf_image sel_img = {
     .h = WSEL_SIZE, .stride = WSEL_SIZE * WKNOB_FRAMES * 4,
     .format = SURF_FMT_ARGB8888,
 };
+/* the slider's art lying down, for a horizontal one */
+static surf_image trackh_img = {
+    .pixels = (void *)widget_trackh_px, .w = WTRACK_SIZE, .h = WTRACK_SIZE,
+    .stride = WTRACK_SIZE * 4, .format = SURF_FMT_ARGB8888,
+};
+static surf_image caph_img = {
+    .pixels = (void *)widget_caph_px, .w = WCAP_H, .h = WCAP_W,
+    .stride = WCAP_H * 4, .format = SURF_FMT_ARGB8888,
+};
 static surf_image panel_img = {
     .pixels = (void *)widget_panel_px, .w = WPANEL_SIZE, .h = WPANEL_SIZE,
     .stride = WPANEL_SIZE * 4, .format = SURF_FMT_ARGB8888,
@@ -97,6 +106,8 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&sbtrack_img);
     surfer_port_prepare_image(&sbarh_img);
     surfer_port_prepare_image(&sbtrackh_img);
+    surfer_port_prepare_image(&trackh_img);
+    surfer_port_prepare_image(&caph_img);
     surfer_port_prepare_image(&check_img);
     surfer_port_prepare_image(&panel_img);
     surfer_port_prepare_image(&arrow_img);
@@ -1903,7 +1914,11 @@ static MP_DEFINE_CONST_FUN_OBJ_3(mod_colorpicker_obj, mod_colorpicker);
 static mp_obj_t mod_slider(size_t n_args, const mp_obj_t *args)
 {
     static const surf_slider_style st = {.track = &track_img,
-                                         .inset = WTRACK_INSET, .cap = &cap_img};
+                                         .inset = WTRACK_INSET, .cap = &cap_img,
+                                         .track_h = &trackh_img,
+                                         .cap_h = &caph_img};
+    /* surfer.slider(x, y, w, h) — the SHAPE picks the orientation, so
+     * slider(x, y, 240, 40) is a horizontal one and needs no flag. */
     int16_t w = n_args > 2 ? (int16_t)mp_obj_get_int(args[2]) : WTRACKFULL_W;
     int16_t h = n_args > 3 ? (int16_t)mp_obj_get_int(args[3]) : WTRACKFULL_H;
     surf_slider *s = surf_slider_new(surf_screen(), 0, 0, w, h, &st);

@@ -8,6 +8,7 @@
 struct surf_slider {
     surf_node     *root, *track, *cap;
     int16_t        w, h, cap_w, cap_h;
+    bool           horiz;          /* wider than tall: value runs across */
     int32_t        value;  /* Q16 */
     surf_change_cb cb;
     void          *user;
@@ -22,6 +23,13 @@ static int32_t clamp_q16(int32_t v)
 
 static void slider_apply(surf_slider *s)
 {
+    if (s->horiz) {
+        int range = s->w - s->cap_w;
+        int cap_x = (int)(((int64_t)s->value * range) >> 16);
+        surf_node_set_pos(s->cap, (int16_t)cap_x,
+                          (int16_t)((s->h - s->cap_h) / 2));
+        return;
+    }
     int range = s->h - s->cap_h;
     int cap_y = range - (int)(((int64_t)s->value * range) >> 16);
     surf_node_set_pos(s->cap, (int16_t)((s->w - s->cap_w) / 2), (int16_t)cap_y);
@@ -36,12 +44,23 @@ static void slider_touch(surf_node *n, const surf_touch *t, void *user)
 
     int16_t ax, ay;
     surf_node_abs_pos(s->root, &ax, &ay);
-    int range = s->h - s->cap_h;
-    int cap_y = t->y - ay - s->cap_h / 2;
-    if (cap_y < 0) cap_y = 0;
-    if (cap_y > range) cap_y = range;
+    int range, at;
+    if (s->horiz) {
+        /* left to right, which is the direction the value grows — the
+         * vertical one runs the other way, because up is more */
+        range = s->w - s->cap_w;
+        at = t->x - ax - s->cap_w / 2;
+    } else {
+        range = s->h - s->cap_h;
+        at = t->y - ay - s->cap_h / 2;
+    }
+    if (at < 0) at = 0;
+    if (at > range) at = range;
+    if (range <= 0)
+        return;
 
-    int32_t v = (int32_t)(((int64_t)(range - cap_y) << 16) / range);
+    int32_t v = s->horiz ? (int32_t)(((int64_t)at << 16) / range)
+                         : (int32_t)(((int64_t)(range - at) << 16) / range);
     if (v == s->value)
         return;
     s->value = v;
@@ -53,8 +72,15 @@ static void slider_touch(surf_node *n, const surf_touch *t, void *user)
 surf_slider *surf_slider_new(surf_node *parent, int16_t x, int16_t y,
                              int16_t w, int16_t h, const surf_slider_style *style)
 {
-    if (!parent || !style || !style->track || !style->cap ||
-        h <= style->cap->h || w < style->cap->w)
+    if (!parent || !style || !style->track || !style->cap)
+        return NULL;
+    /* Orientation is the SHAPE, not a flag: a caller asking for 200x40
+     * means a horizontal slider and should not have to say so twice. */
+    bool horiz = w > h;
+    const surf_image *track = horiz && style->track_h ? style->track_h
+                                                      : style->track;
+    const surf_image *cap = horiz && style->cap_h ? style->cap_h : style->cap;
+    if (horiz ? (w <= cap->w || h < cap->h) : (h <= cap->h || w < cap->w))
         return NULL;
 
     surf_slider *s = calloc(1, sizeof *s);
@@ -62,19 +88,30 @@ surf_slider *surf_slider_new(surf_node *parent, int16_t x, int16_t y,
         return NULL;
     s->w = w;
     s->h = h;
-    s->cap_w = style->cap->w;
-    s->cap_h = style->cap->h;
+    s->horiz = horiz;
+    s->cap_w = cap->w;
+    s->cap_h = cap->h;
 
     s->root = surf_group_new(x, y);
     /* Exact-size track art is one blit; the tiled 9-patch is the fallback
      * for sizes the theme didn't bake. On the P4 the per-op cost of tiling
      * dwarfs the pixels (M2 bench), so themes should ship exact sizes. */
-    if (style->track->w == w && style->track->h == h)
-        s->track = surf_sprite_new(style->track, 0, 0);
-    else
-        s->track = surf_ninepatch_new(style->track, 0, 0, w, h, style->inset,
+    if (track->w == w && track->h == h) {
+        s->track = surf_sprite_new(track, 0, 0);
+    } else if (horiz) {
+        /* Stretch ALONG the groove, never across it. The groove is one
+         * line down the middle of the art; tiling the 9-patch's middle
+         * band vertically repeats it, and a slider with two parallel
+         * grooves is what that looks like. So the track keeps the art's
+         * own height, centred, and only the horizontal middle tiles. */
+        int16_t th = track->h < h ? track->h : h;
+        s->track = surf_ninepatch_new(track, 0, (int16_t)((h - th) / 2),
+                                      w, th, style->inset, 0, style->inset, 0);
+    } else {
+        s->track = surf_ninepatch_new(track, 0, 0, w, h, style->inset,
                                       style->inset, style->inset, style->inset);
-    s->cap = surf_sprite_new(style->cap, 0, 0);
+    }
+    s->cap = surf_sprite_new(cap, 0, 0);
     if (!s->root || !s->track || !s->cap) {
         surf_node_destroy(s->root);
         surf_node_destroy(s->track);

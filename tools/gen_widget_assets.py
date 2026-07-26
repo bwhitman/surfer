@@ -306,6 +306,18 @@ def selector_strip(size=SEL):
     return out
 
 
+def transpose(px, w, h):
+    """Rotate a WxH pixel list a quarter turn. The slider's groove and its
+    cap are drawn for a vertical control; a horizontal one needs the same
+    art lying down, and a 9-patch cannot get there by stretching — same
+    lesson as the scrollbar's beads."""
+    out = [0] * (w * h)
+    for y in range(h):
+        for x in range(w):
+            out[x * h + (h - 1 - y)] = px[y * w + x]
+    return out
+
+
 def emit8(name, values, per_line=24):
     """A8 art is one BYTE per pixel - emitting it as uint32 would quadruple
     a strip that is already 1.5 KB and lie about the stride."""
@@ -356,6 +368,9 @@ def main():
     emit("widget_track_px", track(TRACK, TRACK))
     emit("widget_trackfull_px", track(TRACKFULL_W, TRACKFULL_H))
     emit("widget_cap_px", cap())
+    # ...and the same two lying down, for a horizontal slider
+    emit("widget_trackh_px", transpose(track(TRACK, TRACK), TRACK, TRACK))
+    emit("widget_caph_px", transpose(cap(), CAP_W, CAP_H))
     emit("widget_check_px", checkbox_strip())
     emit("widget_panel_px", panel())
     emit("widget_arrow_px", arrow_strip())

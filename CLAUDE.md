@@ -337,6 +337,20 @@ folded in — and the snap then undoes the drag instead of following it.
 `SURF_FREE_ASPECT=1` turns the whole thing off; `SURF_VIEW_DEBUG=1`
 prints drawable/fb/view on every resize.
 
+## Sliders run either way
+
+`surf_slider_new(parent, x, y, w, h, style)` gives a HORIZONTAL slider
+when `w > h`. The shape is the orientation — a caller asking for 240x40
+means a horizontal one and should not have to say so twice — and the
+style carries `track_h`/`cap_h`, the same art transposed at generation
+time, because a 9-patch slices along fixed axes and the upright groove
+cannot be stretched sideways (the scrollbar taught this first).
+
+The horizontal track keeps the ART'S OWN HEIGHT, centred, and stretches
+only along its length. Stretching across the groove tiles it: the middle
+band of the 9-patch repeats, and a slider with two parallel grooves is
+what that looks like.
+
 ## Colour picker
 
 `surf_colorpicker_new(parent, x, y, size)` — a saturation/value square

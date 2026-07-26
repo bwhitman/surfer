@@ -588,6 +588,11 @@ typedef struct {
     const surf_image *track;  /* 9-patch source */
     int16_t           inset;  /* uniform 9-slice inset */
     const surf_image *cap;    /* cap sprite */
+    /* the same two lying down, for a slider wider than it is tall. A
+     * 9-patch slices along fixed axes, so the upright art cannot be
+     * stretched sideways — see the scrollbar. Optional: without them a
+     * horizontal slider still works and still looks wrong. */
+    const surf_image *track_h, *cap_h;
 } surf_slider_style;
 
 typedef struct surf_slider surf_slider;
