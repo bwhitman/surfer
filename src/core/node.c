@@ -452,19 +452,10 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
                     dx > 0 ? band.x : (int16_t)(band.x + adx),
                     dy > 0 ? (int16_t)(band.y + band.h - ady) : band.y,
                     (int16_t)(band.w - adx), ady});
-            /* overlays (later siblings) smeared by the shift */
-            for (surf_node *s = n->next; s; s = s->next) {
-                if (s->flags & SURF_NF_HIDDEN)
-                    continue;
-                int16_t sx, sy;
-                surf_node_abs_pos(s, &sx, &sy);
-                surf_rect r = {(int16_t)(sx - adx), (int16_t)(sy - ady),
-                               (int16_t)(s->w + 2 * adx),
-                               (int16_t)(s->h + 2 * ady)};
-                r = surf_rect_intersect(r, band);
-                if (!surf_rect_empty(r))
-                    surf_dirty_add(&surf_g.dirty, r);
-            }
+            /* everything painted over the band was smeared by the
+             * shift — including overlays in another branch of the tree,
+             * which is where a host's chrome lives */
+            surf_damage_above(n, band, adx, ady);
             return;
         }
     }

@@ -10,8 +10,48 @@ static const surf_image img64 = {
     .format = SURF_FMT_RGB565, .opaque = false,
 };
 
+/* A panning sprite (forest's camera) band-shifts its rect, dragging the
+ * pixels of anything drawn over it. Repairing only LATER SIBLINGS misses
+ * a host's chrome, which lives in another branch of the tree. */
+static void test_sprite_pan_damages_other_branches(void)
+{
+    fresh(200, 100, 32);
+    surf_node *app = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), app);
+    static uint16_t world_px[128 * 64];
+    static const surf_image world = {
+        .pixels = world_px, .w = 128, .h = 64, .stride = 128 * 2,
+        .format = SURF_FMT_RGB565, .opaque = true,   /* fast pan needs it */
+    };
+    surf_node *cam = surf_sprite_new(&world, 0, 0);
+    surf_sprite_set_fast_pan(cam, true);
+    surf_sprite_set_src(cam, (surf_rect){0, 0, 64, 32});
+    surf_node_add(app, cam);
+
+    surf_node *chrome = surf_group_new(0, 0);      /* the task bar */
+    surf_node_add(surf_screen(), chrome);
+    surf_node *btn = surf_rect_new(40, 4, 20, 12, 0xf800);
+    surf_node_add(chrome, btn);
+    surf_tick();
+
+    surf_g.dirty.n = 0;
+    surf_sprite_set_src(cam, (surf_rect){4, 0, 64, 32});   /* pan under it */
+    OK(surf_g.dirty.n > 0 && surf_g.dirty.n < 6);   /* the FAST path ran */
+    bool covered = false;
+    for (int i = 0; i < surf_g.dirty.n; i++) {
+        surf_rect r = surf_rect_intersect(surf_g.dirty.r[i],
+                                          (surf_rect){40, 4, 20, 12});
+        if (r.w >= 20 && r.h >= 12)
+            covered = true;
+    }
+    OK(covered);
+    surf_node_destroy(app);
+    surf_node_destroy(chrome);
+}
+
 void run_sprite_tests(void)
 {
+    test_sprite_pan_damages_other_branches();
     fresh(200, 200, 16);
     surf_node *s = surf_sprite_new(&img64, 10, 10);
     surf_node_add(surf_screen(), s);

@@ -220,10 +220,11 @@ large damaged areas fell 42–51% (wider PPA SRM block, 8×8 → 32×32); the
 
 ## The hal-shift smear rule
 
-Three paths hand a rect to the hal to shift in place — the layer's
-band_shift, the scrollview's scroll_rect, the textgrid's. All three drag
-the pixels of whatever is painted ON TOP of that rect, which then has to
-be repainted where it actually is.
+Four paths hand a rect to the hal to shift in place — the layer's
+band_shift, the **sprite's fast pan** (a camera window walked over a big
+opaque image), the scrollview's scroll_rect, and the textgrid's. All four
+drag the pixels of whatever is painted ON TOP of that rect, which then
+has to be repainted where it actually is.
 
 The layer used to repair only its LATER SIBLINGS, which is right only
 when every overlay is a sibling. It is not: tulip's task bar and its
@@ -234,8 +235,16 @@ very funny bug report.
 
 `surf_damage_above(n, area, gx, gy)` (node.c) walks the whole paint order
 after `n`, skipping its own subtree, and damages anything overlapping.
-All three paths use it. tests/test_layer.c has the regression: an overlay
-in a different branch, which fails against the sibling-only walk.
+All four paths use it. tests/test_layer.c and tests/test_sprite.c have
+the regression: an overlay in a different branch, which fails against the
+sibling-only walk.
+
+The sprite copy of the walk was found a day later, by forest (a sprite
+camera over a baked world) smearing the same task bar the layer fix had
+just stopped smearing — so if a fifth shift path ever appears, this is
+the paragraph it has to read. Its test needs an **opaque** image: fast
+pan is gated on `img->opaque`, and with a transparent one the slow path
+runs, damages everything, and the test passes with the bug in place.
 
 ## Scrollbar
 
