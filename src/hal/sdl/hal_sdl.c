@@ -2,6 +2,7 @@
  * is the only place outside build tools where per-pixel loops are allowed;
  * on device the same ops are PPA/2D-DMA jobs. */
 #include <SDL.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #if defined(__EMSCRIPTEN__) && !defined(SURF_HAL_SDL_NO_YIELD)
@@ -30,8 +31,50 @@ static struct {
     surf_rect     scrolled;     /* union of scroll_rect regions this frame */
     bool          has_scrolled;
     int           scale;        /* SURF_SCALE: integer nearest-neighbour zoom */
+    int16_t       win_w, win_h; /* window size in POINTS, which is not the
+                                 * framebuffer size under SURF_SCALE or
+                                 * SURF_NATIVE — mouse events arrive here */
+    int           out_w, out_h; /* renderer output (drawable) in real pixels */
+    SDL_Rect      view;         /* where the fb lands inside the drawable */
     void (*on_interrupt)(void); /* Ctrl-C hook; NULL = ignore the key */
 } S;
+
+/* The window is resizable, so the framebuffer rarely covers the drawable
+ * exactly. Rather than stretch to fit — which would make some surfer
+ * pixels 3 screen pixels wide and others 4, wrecking the one thing this
+ * backend is for — take the largest WHOLE multiple that fits and centre
+ * it. Dragging the window bigger then steps 1x, 2x, 3x and letterboxes
+ * the remainder, and every step stays an exact nearest-neighbour zoom.
+ * Only a drawable smaller than the framebuffer falls back to a stretch,
+ * because there is no whole multiple left to take. */
+static void update_view(void)
+{
+    int ow = 0, oh = 0;
+    SDL_GetRendererOutputSize(S.ren, &ow, &oh);
+    if (ow <= 0 || oh <= 0)
+        return;
+    S.out_w = ow;
+    S.out_h = oh;
+    int sx = ow / S.w, sy = oh / S.h;
+    int s = sx < sy ? sx : sy;
+    if (s >= 1) {
+        S.view.w = S.w * s;
+        S.view.h = S.h * s;
+    } else if ((int64_t)ow * S.h < (int64_t)oh * S.w) {
+        S.view.w = ow;
+        S.view.h = (int)((int64_t)ow * S.h / S.w);
+    } else {
+        S.view.h = oh;
+        S.view.w = (int)((int64_t)oh * S.w / S.h);
+    }
+    S.view.x = (ow - S.view.w) / 2;
+    S.view.y = (oh - S.view.h) / 2;
+
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(S.win, &ww, &wh);
+    S.win_w = (int16_t)ww;
+    S.win_h = (int16_t)wh;
+}
 
 void surf_hal_sdl_on_interrupt(void (*fn)(void))
 {
@@ -253,7 +296,10 @@ static void h_present(const surf_rect *dirty, int n)
         SDL_Rect r = {dirty[i].x, dirty[i].y, dirty[i].w, dirty[i].h};
         SDL_UpdateTexture(S.tex, &r, S.fb + r.y * S.w + r.x, S.w * 2);
     }
-    SDL_RenderCopy(S.ren, S.tex, NULL, NULL);
+    /* clear first: the letterbox bars are outside the view rect and
+     * nothing else ever writes them */
+    SDL_RenderClear(S.ren);
+    SDL_RenderCopy(S.ren, S.tex, NULL, &S.view);
     SDL_RenderPresent(S.ren);
 }
 
@@ -427,14 +473,22 @@ static const surf_hal hal_sdl = {
 
 /* ---- host glue ---- */
 
-/* x/y arrive in window coordinates; scene space is 1/SURF_SCALE of that. */
+/* x/y arrive in window points; scene space is the framebuffer. Going via
+ * the drawable and the letterboxed view rather than dividing by
+ * SURF_SCALE is what keeps a click landing on what it looks like it hit
+ * after a resize, or under SURF_NATIVE where the window is SMALLER than
+ * the framebuffer. */
 static void push_touch(int16_t x, int16_t y, uint8_t phase)
 {
     int next = (S.ring_w + 1) % TOUCH_RING;
     if (next == S.ring_r)
         return;  /* full: drop; UP events still arrive next pump */
-    x = (int16_t)(x / S.scale);
-    y = (int16_t)(y / S.scale);
+    if (S.win_w > 0 && S.win_h > 0 && S.view.w > 0 && S.view.h > 0) {
+        int px = (int)x * S.out_w / S.win_w - S.view.x;
+        int py = (int)y * S.out_h / S.win_h - S.view.y;
+        x = (int16_t)(px * S.w / S.view.w);
+        y = (int16_t)(py * S.h / S.view.h);
+    }
     S.ring[S.ring_w] = (surf_touch){x, y, phase};
     S.ring_w = next;
 }
@@ -452,20 +506,42 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
     S.w = w;
     S.h = h;
 
-    /* SURF_SCALE=N blows the window up N times for inspecting glyph
-     * pixels. Nearest-neighbour is the whole point — the hint is set
-     * explicitly rather than trusting SDL's default, because a smoothed
-     * upscale invents edge pixels and makes every bake look antialiased. */
+    /* SURF_SCALE=N asks for an N-times window, in points. Default 1: one
+     * framebuffer pixel per point, which is the size this demo has always
+     * been and the one to leave alone — SURF_NATIVE and SURF_SCALE are
+     * both there for looking closer, not for relocating the baseline.
+     * Nearest-neighbour is the whole point — the hint is set explicitly
+     * rather than trusting SDL's default, because a smoothed upscale
+     * invents edge pixels and makes every bake look antialiased. */
     const char *se = getenv("SURF_SCALE");
     S.scale = se ? atoi(se) : 1;
     if (S.scale < 1) S.scale = 1;
     if (S.scale > 8) S.scale = 8;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
 
+    /* A zoom the desktop cannot hold is worse than no zoom: the window
+     * runs off the screen and you lose the part you wanted to look at.
+     * Clamp to the usable bounds and let update_view() pick the largest
+     * whole multiple that fits — SURF_SCALE=2 on a display too small for
+     * 2x then still gets you the biggest exact zoom there is room for,
+     * rather than a 2048pt window on a 1710pt desktop. */
+    int req_w = w * S.scale, req_h = h * S.scale;
+    uint32_t flags = SDL_WINDOW_ALLOW_HIGHDPI;
+#ifndef __EMSCRIPTEN__
+    flags |= SDL_WINDOW_RESIZABLE;
+    SDL_Rect usable;
+    if (SDL_GetDisplayUsableBounds(0, &usable) == 0 &&
+        usable.w > 0 && usable.h > 0) {
+        if (req_w > usable.w) req_w = usable.w;
+        if (req_h > usable.h) req_h = usable.h;
+    }
+#endif
     S.win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                             w * S.scale, h * S.scale, SDL_WINDOW_ALLOW_HIGHDPI);
+                             req_w, req_h, flags);
     if (!S.win)
         goto fail;
+    S.win_w = (int16_t)req_w;
+    S.win_h = (int16_t)req_h;
 #ifdef SURF_HAL_SDL_NO_YIELD
     /* JS-driven frames (MP web build): rAF paces us, and emscripten's
      * PRESENTVSYNC path sleeps internally — an ASYNCIFY suspend the
@@ -479,12 +555,48 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
         S.ren = SDL_CreateRenderer(S.win, -1, 0);
     if (!S.ren)
         goto fail;
+
+    /* SURF_NATIVE=1: one framebuffer pixel per PHYSICAL display pixel.
+     *
+     * A surfer pixel drawn one-per-point lands at 110-140dpi depending on
+     * the display-scaling setting — a fair copy of a pre-retina desktop,
+     * but always COARSER than the P4's 7" 1024x600 panel (169dpi), often
+     * by 1.5x. Every jaggy and AA fringe on screen is therefore bigger
+     * than anything the device will ever show, which is most of why
+     * bitmap faces look worse here than on hardware. Shrinking the window
+     * by the drawable ratio puts one surfer pixel on one ~220dpi pixel:
+     * denser than the panel rather than coarser, so it errs the other
+     * way. No resampling either way — the texture stays 1:1 with real
+     * pixels. The truth is between the two and neither is reachable.
+     *
+     * This is an absolute density, not a multiplier, so it OVERRIDES
+     * SURF_SCALE rather than composing with it — the two are competing
+     * answers to "how big", and this one is the answer in device pixels. */
+    if (getenv("SURF_NATIVE")) {
+        int dw = 0, dh = 0, ww = 0, wh = 0;
+        SDL_GetRendererOutputSize(S.ren, &dw, &dh);
+        SDL_GetWindowSize(S.win, &ww, &wh);
+        if (ww > 0 && wh > 0 && dw > ww && dh > wh) {
+            S.win_w = (int16_t)(w * ww / dw);
+            S.win_h = (int16_t)(h * wh / dh);
+            SDL_SetWindowSize(S.win, S.win_w, S.win_h);
+            fprintf(stderr, "surfer: SURF_NATIVE: %dx%d fb in a %dx%d pt "
+                            "window (display is %dx backing)\n",
+                    w, h, S.win_w, S.win_h, dw / ww);
+        } else {
+            fprintf(stderr, "surfer: SURF_NATIVE: display is already 1x, "
+                            "nothing to shrink\n");
+        }
+    }
+
     S.tex = SDL_CreateTexture(S.ren, SDL_PIXELFORMAT_RGB565,
                               SDL_TEXTUREACCESS_STREAMING, w, h);
     S.fb = h_alloc_image((size_t)w * h * 2);
     if (!S.tex || !S.fb)
         goto fail;
     memset(S.fb, 0, (size_t)w * h * 2);
+    SDL_SetRenderDrawColor(S.ren, 0, 0, 0, 255);   /* the letterbox bars */
+    update_view();
     SDL_StartTextInput();
     return &hal_sdl;
 fail:
@@ -513,10 +625,13 @@ bool surf_hal_sdl_dump_screen_ppm(const char *path)
     int ow, oh;
     if (SDL_GetRendererOutputSize(S.ren, &ow, &oh) != 0 || ow < S.w || oh < S.h)
         return false;
+    if (S.view.w < S.w || S.view.h < S.h)
+        return false;   /* zoomed below 1:1; a readback would lose rows */
     uint16_t *px = malloc((size_t)ow * oh * 2);
     if (!px)
         return false;
-    SDL_RenderCopy(S.ren, S.tex, NULL, NULL);
+    SDL_RenderClear(S.ren);
+    SDL_RenderCopy(S.ren, S.tex, NULL, &S.view);
     if (SDL_RenderReadPixels(S.ren, NULL, SDL_PIXELFORMAT_RGB565, px,
                              ow * 2) != 0) {
         free(px);
@@ -530,8 +645,10 @@ bool surf_hal_sdl_dump_screen_ppm(const char *path)
     fprintf(f, "P6\n%d %d\n255\n", S.w, S.h);
     for (int y = 0; y < S.h; y++) {
         for (int x = 0; x < S.w; x++) {
-            /* nearest sample handles the hidpi output scale */
-            uint16_t p = px[(int64_t)(y * oh / S.h) * ow + x * ow / S.w];
+            /* nearest sample out of the letterboxed view, which is where
+             * the hidpi and zoom scaling both ended up */
+            uint16_t p = px[(int64_t)(S.view.y + y * S.view.h / S.h) * ow +
+                            S.view.x + x * S.view.w / S.w];
             uint8_t rgb[3] = {
                 (uint8_t)(((p >> 8) & 0xf8) | (p >> 13)),
                 (uint8_t)(((p >> 3) & 0xfc) | ((p >> 9) & 0x03)),
@@ -584,6 +701,13 @@ bool surf_hal_sdl_pump(void)
         switch (e.type) {
         case SDL_QUIT:
             return false;
+        case SDL_WINDOWEVENT:
+            /* SIZE_CHANGED covers both a drag and the hidpi backing
+             * changing under us (dragging to a 1x monitor), which is the
+             * case a plain RESIZED would miss. */
+            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+                update_view();
+            break;
         case SDL_KEYDOWN: {
             bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
             if (e.key.keysym.mod & KMOD_CTRL) {

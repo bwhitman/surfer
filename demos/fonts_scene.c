@@ -102,6 +102,16 @@ static void build_page1(int16_t w)
                        "curves, lumpy stems: thresholding an outline drawn "
                        "for AA is not the same as a pixel font. See page 2.",
                        COL_ACC);
+    /* ui16 and ui23 are the SAME physical size, on different screens: the
+     * desktop window puts a framebuffer pixel on a 110-140dpi point
+     * (display-scaling dependent), the P4's 7" 1024x600 panel on a 169dpi
+     * one. Which is why the ramp carries both instead of scaling one —
+     * and why this page reads bigger here than it will on the panel.
+     * SURF_NATIVE=1 previews the denser end. */
+    label_specimen(lx, y, colw, F("ui23"),
+                   "label - Roboto 23 AA (P4 body: ui16's size on the panel)",
+                   "the quick brown fox jumps over the lazy dog",
+                   COL_TEXT);
 
     y = 56;
     y = grid_specimen(rx, y, colw, F("mono16"),

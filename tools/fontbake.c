@@ -5,8 +5,16 @@
  *   fontbake NAME SIZE font.ttf out.h [ranges]
  *   fontbake NAME 0    font.bdf out.h [ranges]
  *
- * Two front ends feeding one emitter:
+ * SIZE IS PPEM — the em square in pixels, the number every other type
+ * toolchain means by "size". It used to mean ascent-descent, which made
+ * every name in the build a lie by ~32%: `ui12` was a 9.1 ppem bake with
+ * a 5-pixel x-height, roughly 6pt on a 110dpi screen, and no amount of
+ * rasterizer tuning rescues text that small. FONTBAKE_LINE=1 restores
+ * the old meaning if some caller genuinely wants to size by line box.
+ *
+ * Three front ends feeding one emitter:
  *   .ttf/.otf  outlines rasterized by stb_truetype at SIZE
+ *   .ttf/.otf  with FONTBAKE_HINT: rasterized by FreeType, grid-fitted
  *   .bdf       a designed bitmap font, copied pixel-for-pixel. SIZE is
  *              ignored — a BDF *is* one specific size, which is the whole
  *              point: helvR10 and helvR12 are separately drawn faces, not
@@ -16,22 +24,36 @@
  * Default: ASCII 32-126 plus U+2026 (ellipsis, needed for ellipsize).
  *
  * Env knobs (TTF only unless noted; all off by default):
- *   FONTBAKE_EM=1            size means em-pixels (ppem), not cap height.
- *                            REQUIRED for pixel-designed outline fonts:
- *                            their grid is defined in em units, so only
- *                            an exact ppem lands stems on whole pixels.
- *                            Default sizing is ScaleForPixelHeight
- *                            (size = ascent-descent), right for outlines.
+ *   FONTBAKE_HINT=full       grid-fit through FreeType's autohinter, so a
+ *                            sub-pixel-wide stem lands on ONE solid column
+ *                            instead of two 50% grays. This is the whole
+ *                            difference between surfer's small text and a
+ *                            2014 desktop's. Needs -DSURF_FONTBAKE_FT.
+ *              =light        autohint vertically only (FreeType's "light"
+ *                            target): snaps baselines and x-height, leaves
+ *                            horizontal metrics alone. Softer, spacing is
+ *                            closer to the designer's.
+ *              =bytecode     run the font's OWN TrueType hints instead of
+ *                            the autohinter. Only worth it for faces that
+ *                            actually ship good ones.
+ *   FONTBAKE_LINE=1          SIZE means ascent-descent, not ppem (legacy).
+ *   FONTBAKE_EM=1            no-op, kept so old command lines still work:
+ *                            ppem is the default now.
  *   FONTBAKE_GAMMA=0.55      boost AA alpha (gamma<1 = brighter small text)
  *   FONTBAKE_THRESHOLD=1     1-bit atlas, no antialiasing
  *   FONTBAKE_THRESHOLD_CUT=N on/off cut for 1-bit mode (default 128,
  *                            lower = bolder)
  *
- * The summary line reports "gray" — the share of inked pixels that are
- * neither 0 nor 255. A BDF is always 0.0%. For an outline face it is ~0
- * only at a grid-aligned ppem; anything above a few % means the size is
- * off the grid (or the face was drawn with curves), and thresholding it
- * will look lumpy.
+ * The summary line reports two shares of the inked pixels:
+ *
+ *   gray   partial coverage. A BDF is always 0.0%. For an unhinted
+ *          outline face it is ~0 only at a grid-aligned ppem; above a few
+ *          % means the size is off the grid (or the face was drawn with
+ *          curves) and thresholding it will look lumpy.
+ *   solid  fully 255. This is the one that predicts whether small text
+ *          reads as text or as fog, and it is the reason to hint: a
+ *          hinted bake barely moves `gray` (the stems go solid, their AA
+ *          sidebands stay partial) while `solid` climbs from nothing.
  */
 #include <math.h>
 #include <stdint.h>
@@ -52,7 +74,8 @@ static int ncps;
 typedef struct {
     uint32_t cp;
     int x, y, w, h;     /* placement + size in the atlas */
-    int xoff, yoff;     /* pen-relative, yoff measured down from the line top */
+    int xoff, yoff;     /* pen-relative; yoff counts DOWN from the baseline,
+                         * so it is negative for anything above it */
     int adv;
 } bglyph;
 
@@ -105,13 +128,14 @@ static unsigned char *slurp(const char *path, long *len)
     return buf;
 }
 
-/* ---- BDF front end ---- */
+/* ---- shared by the two front ends that rasterize glyph-at-a-time (BDF,
+ * FreeType); the stb path packs through stbtt_PackFontRanges instead ---- */
 
 typedef struct {
     uint32_t cp;
     int w, h, xoff, yoff_bdf, adv;
-    unsigned char *bits;   /* w*h, 0 or 255 */
-} bdfglyph;
+    unsigned char *bits;   /* w*h coverage, 0..255 (BDF: only 0 or 255) */
+} rawglyph;
 
 static int hexval(int c)
 {
@@ -124,7 +148,7 @@ static int hexval(int c)
 /* Shelf-pack the collected glyphs, growing the atlas until they fit.
  * Emission order stays ascending by codepoint — surf_font_glyph binary
  * searches the table, so that order is load-bearing. */
-static int pack(bdfglyph *g, int n)
+static int pack(rawglyph *g, int n)
 {
     for (;;) {
         free(atlas);
@@ -168,7 +192,7 @@ static int bake_bdf(const char *path)
         fprintf(stderr, "fontbake: cannot open %s\n", path);
         return 0;
     }
-    static bdfglyph g[MAX_CPS];
+    static rawglyph g[MAX_CPS];
     int n = 0, have_asc = 0, have_desc = 0;
     int bbx_h_default = 0, bbx_yoff_default = 0;
     char line[1024];
@@ -241,7 +265,7 @@ static int bake_bdf(const char *path)
 
     /* sort ascending by codepoint: the runtime binary searches this table */
     for (int i = 1; i < n; i++) {
-        bdfglyph t = g[i];
+        rawglyph t = g[i];
         int j = i - 1;
         while (j >= 0 && g[j].cp > t.cp) { g[j + 1] = g[j]; j--; }
         g[j + 1] = t;
@@ -267,6 +291,146 @@ static int bake_bdf(const char *path)
     gap_px = 0;
     return 1;
 }
+
+/* ---- FreeType front end (FONTBAKE_HINT) ----
+ *
+ * stb_truetype interprets no hints and has no autohinter, so at UI sizes
+ * a stem narrower than a pixel is spread across two columns at ~30-50%
+ * coverage each and never reaches solid ink — Roboto's 'l' at 9 ppem
+ * peaks at 131/255. FreeType's autohinter moves the outline onto the
+ * pixel grid before rasterizing, which is what made 10px text on a
+ * pre-retina desktop crisp. Host-tool only: the runtime still blits the
+ * same A8 atlas, and a build without FreeType just can't pass
+ * FONTBAKE_HINT.
+ */
+#ifdef SURF_FONTBAKE_FT
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+static int bake_ft(const char *path, float ppem, const char *mode)
+{
+    FT_Library lib;
+    FT_Face face;
+    if (FT_Init_FreeType(&lib)) {
+        fprintf(stderr, "fontbake: FreeType init failed\n");
+        return 0;
+    }
+    if (FT_New_Face(lib, path, 0, &face)) {
+        fprintf(stderr, "fontbake: FreeType cannot open %s\n", path);
+        return 0;
+    }
+    FT_UInt px = (FT_UInt)(ppem + 0.5f);
+    if (!px || FT_Set_Pixel_Sizes(face, 0, px)) {
+        fprintf(stderr, "fontbake: FreeType rejects ppem %u\n", px);
+        return 0;
+    }
+
+    FT_Int32 load = FT_LOAD_DEFAULT;
+    if (!strcmp(mode, "light"))
+        load |= FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT;
+    else if (!strcmp(mode, "bytecode"))
+        load |= FT_LOAD_NO_AUTOHINT | FT_LOAD_TARGET_NORMAL;
+    else
+        load |= FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_NORMAL;
+
+    /* 26.6 fixed, already grid-fitted at this ppem */
+    ascent_px  = (int)(face->size->metrics.ascender >> 6);
+    descent_px = (int)(face->size->metrics.descender >> 6);
+    int line_h = (int)(face->size->metrics.height >> 6);
+    gap_px = line_h - (ascent_px - descent_px);
+    if (gap_px < 0)
+        gap_px = 0;
+
+    static rawglyph g[MAX_CPS];
+    int n = 0;
+    for (int i = 0; i < ncps; i++) {
+        if (FT_Load_Char(face, cps[i], load))
+            continue;
+        FT_GlyphSlot s = face->glyph;
+        if (s->format != FT_GLYPH_FORMAT_BITMAP &&
+            FT_Render_Glyph(s, FT_RENDER_MODE_NORMAL))
+            continue;
+        int w = (int)s->bitmap.width, h = (int)s->bitmap.rows;
+        unsigned char *bits = NULL;
+        if (w > 0 && h > 0) {
+            bits = malloc((size_t)w * h);
+            /* pitch is signed but always "one row down" — buffer points
+             * at the top row either way */
+            for (int r = 0; r < h; r++)
+                memcpy(bits + (size_t)r * w,
+                       s->bitmap.buffer + (ptrdiff_t)r * s->bitmap.pitch,
+                       (size_t)w);
+        }
+        g[n] = (rawglyph){
+            .cp = cps[i], .w = w, .h = h,
+            .xoff = s->bitmap_left,
+            /* both are baseline-relative (font.c draws at base_y + yoff)
+             * but count opposite ways: FreeType's bitmap_top is rows ABOVE
+             * the baseline, surfer's yoff is negative above it. Getting
+             * this backwards puts every glyph a whole ascent too low,
+             * where the label's clip box eats all but a stray row. */
+            .yoff_bdf = -s->bitmap_top,
+            .adv = (int)((s->advance.x + 32) >> 6),
+            .bits = bits,
+        };
+        n++;
+    }
+    if (!n) {
+        fprintf(stderr, "fontbake: %s has no glyphs in range\n", path);
+        return 0;
+    }
+
+    nglyphs = n;
+    for (int i = 0; i < n; i++) {
+        glyphs[i].cp = g[i].cp;
+        glyphs[i].w = g[i].w;
+        glyphs[i].h = g[i].h;
+        glyphs[i].xoff = g[i].xoff;
+        glyphs[i].yoff = g[i].yoff_bdf;
+        glyphs[i].adv = g[i].adv;
+    }
+    if (!pack(g, n)) {
+        fprintf(stderr, "fontbake: atlas won't fit\n");
+        return 0;
+    }
+    for (int i = 0; i < n; i++)
+        free(g[i].bits);
+
+    /* FT_Get_Kerning reads the legacy `kern` table, the same one
+     * stbtt_GetCodepointKernAdvance uses — so hinted and unhinted bakes
+     * of the same face agree on which pairs exist. */
+    if (FT_HAS_KERNING(face)) {
+        ka = malloc(sizeof(uint32_t) * (size_t)ncps * ncps);
+        kb = malloc(sizeof(uint32_t) * (size_t)ncps * ncps);
+        kd = malloc(sizeof(int16_t) * (size_t)ncps * ncps);
+        for (int i = 0; i < ncps; i++) {
+            FT_UInt gi = FT_Get_Char_Index(face, cps[i]);
+            for (int j = 0; j < ncps; j++) {
+                FT_UInt gj = FT_Get_Char_Index(face, cps[j]);
+                FT_Vector k;
+                if (FT_Get_Kerning(face, gi, gj, FT_KERNING_DEFAULT, &k))
+                    continue;
+                int v = (int)((k.x + (k.x < 0 ? -32 : 32)) >> 6);
+                if (v) {
+                    ka[nkern] = cps[i];
+                    kb[nkern] = cps[j];
+                    kd[nkern] = (int16_t)v;
+                    nkern++;
+                }
+            }
+        }
+    }
+    return 1;
+}
+#else
+static int bake_ft(const char *path, float ppem, const char *mode)
+{
+    (void)path; (void)ppem; (void)mode;
+    fprintf(stderr, "fontbake: FONTBAKE_HINT needs a FreeType build "
+                    "(rebuild with -DSURF_FONTBAKE_FT and -lfreetype)\n");
+    return 0;
+}
+#endif
 
 /* ---- TTF front end ---- */
 
@@ -354,7 +518,15 @@ int main(int argc, char **argv)
     const char *name = argv[1];
     float size = (float)atof(argv[2]);
     const char *src = argv[3];
-    int em_mode = getenv("FONTBAKE_EM") != NULL;
+    /* ppem is the default; FONTBAKE_LINE=1 is the old ascent-descent
+     * meaning. FONTBAKE_EM is accepted and ignored — it used to select
+     * what is now the default. */
+    int em_mode = getenv("FONTBAKE_LINE") == NULL;
+    const char *hint = getenv("FONTBAKE_HINT");
+    if (hint && (!*hint || !strcmp(hint, "0")))
+        hint = NULL;
+    if (hint && !strcmp(hint, "1"))
+        hint = "full";
     parse_ranges(argc > 5 ? argv[5] : "32-126,8230");
 
     size_t sl = strlen(src);
@@ -365,21 +537,48 @@ int main(int argc, char **argv)
         fprintf(stderr, "fontbake: cannot write %s\n", argv[4]);
         return 1;
     }
-    if (!(is_bdf ? bake_bdf(src) : bake_ttf(src, size, em_mode)))
+    /* A hinted bake is grid-fitted at a ppem, so FONTBAKE_LINE has no
+     * meaning there — say so rather than quietly sizing by the wrong box. */
+    if (hint && !is_bdf && !em_mode) {
+        fprintf(stderr, "fontbake: FONTBAKE_HINT sizes by ppem; "
+                        "FONTBAKE_LINE is not supported with it\n");
+        return 1;
+    }
+    int ok = is_bdf         ? bake_bdf(src)
+           : hint           ? bake_ft(src, size, hint)
+                            : bake_ttf(src, size, em_mode);
+    if (!ok)
         return 1;
 
-    /* How much of the ink is partial coverage? ~0% means the glyphs
-     * landed on whole pixels and this bake is a genuine bitmap. Measured
-     * before gamma/threshold, which would both destroy the evidence. */
-    long ink = 0, gray = 0;
+    /* Two numbers, both measured before gamma/threshold, which would each
+     * destroy the evidence.
+     *
+     * gray: share of inked pixels with partial coverage. ~0% means the
+     * glyphs landed on whole pixels and this bake is a genuine bitmap.
+     *
+     * solid: share at 7/8 coverage or more — ink rather than fog. This is
+     * the one to watch on an outline face, because gray stays high on a
+     * hinted bake: the stems go solid but their AA sidebands are still
+     * partial, so gray barely moves while the font gets dramatically
+     * crisper. The cut is 224 and not 255 because the autohinter snaps a
+     * stem's WIDTH to the grid without always landing its left edge
+     * there, which leaves a 244 core beside a 32 spill — plainly ink, and
+     * an exact-255 test would score it the same as an unhinted 131 smear.
+     * Unhinted Roboto at 9 ppem scores solid 0.0%: not one pixel of real
+     * ink in the whole atlas, which is what "fuzzy" looks like from the
+     * inside. */
+    long ink = 0, gray = 0, solid = 0;
     for (int j = 0; j < aw * ah; j++) {
         if (atlas[j]) {
             ink++;
             if (atlas[j] != 255)
                 gray++;
+            if (atlas[j] >= 224)
+                solid++;
         }
     }
     double gray_pct = ink ? 100.0 * (double)gray / (double)ink : 0.0;
+    double solid_pct = ink ? 100.0 * (double)solid / (double)ink : 0.0;
 
     /* FONTBAKE_GAMMA=0.55 -> raise AA coverage by pow(a, gamma), gamma<1.
      * stb_truetype emits linear coverage; on a non-linear panel thin stems
@@ -416,8 +615,10 @@ int main(int argc, char **argv)
         if (glyphs[i].cp == 'M')
             m_adv = glyphs[i].adv;
     int line_h = ascent_px - descent_px + gap_px;
-    const char *szdesc = is_bdf ? "bdf" : (em_mode ? "em" : "px");
+    const char *szdesc = is_bdf ? "bdf" : (em_mode ? "ppem" : "linepx");
     double szval = is_bdf ? (double)line_h : (double)size;
+    char mode[32];
+    snprintf(mode, sizeof mode, "%s", hint && !is_bdf ? hint : "unhinted");
 
     const char *op = argv[4];
     int is_py = strlen(op) >= 3 && strcmp(op + strlen(op) - 3, ".py") == 0;
@@ -448,8 +649,9 @@ int main(int argc, char **argv)
         }
         for (int i = 0; i < nkern; i++) { PU32(ka[i]); PU32(kb[i]); PU16((uint16_t)kd[i]); }
 
-        fprintf(out, "# Generated by tools/fontbake.c — do not edit. %s %.1f%s, cell %dx%d\n",
-                name, szval, szdesc, m_adv, line_h);
+        fprintf(out, "# Generated by tools/fontbake.c — do not edit. "
+                "%s %.1f%s %s, cell %dx%d\n",
+                name, szval, szdesc, mode, m_adv, line_h);
         fprintf(out, "FONT = (");
         for (size_t i = 0; i < sz; i += 16) {
             fprintf(out, "\n    b'");
@@ -458,13 +660,16 @@ int main(int argc, char **argv)
             fprintf(out, "'");
         }
         fprintf(out, "\n)\n");
-        fprintf(stderr, "fontbake: %s %.1f%s -> blob %zu bytes, cell %dx%d, gray %.1f%%\n",
-                name, szval, szdesc, sz, m_adv, line_h, gray_pct);
+        fprintf(stderr, "fontbake: %s %.1f%s %s -> blob %zu bytes, "
+                "cell %dx%d, gray %.1f%% solid %.1f%%\n",
+                name, szval, szdesc, mode, sz, m_adv, line_h,
+                gray_pct, solid_pct);
         return 0;
     }
 
-    fprintf(out, "/* Generated by tools/fontbake.c — do not edit. %s %.1f%s from %s */\n",
-           name, szval, szdesc, src);
+    fprintf(out, "/* Generated by tools/fontbake.c — do not edit. "
+           "%s %.1f%s %s from %s */\n",
+           name, szval, szdesc, mode, src);
     fprintf(out, "#include \"surfer.h\"\n\n");
 
     fprintf(out, "static const uint8_t surf_font_%s_px[%d] = {\n", name, aw * ah);
@@ -499,8 +704,9 @@ int main(int argc, char **argv)
     fprintf(out, "    .kerns = surf_font_%s_kerns, .nkerns = %d,\n", name, nkern);
     fprintf(out, "};\n");
 
-    fprintf(stderr, "fontbake: %s %.1f%s -> %dx%d atlas, %d glyphs, "
-            "cell %dx%d (M adv x line_h), gray %.1f%%\n",
-            name, szval, szdesc, aw, ah, nglyphs, m_adv, line_h, gray_pct);
+    fprintf(stderr, "fontbake: %-10s %5.1f%-6s %-9s -> %dx%d atlas, %d glyphs, "
+            "cell %2dx%-2d, gray %5.1f%% solid %5.1f%%\n",
+            name, szval, szdesc, mode, aw, ah, nglyphs, m_adv, line_h,
+            gray_pct, solid_pct);
     return 0;
 }
