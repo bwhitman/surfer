@@ -40,13 +40,16 @@ static struct {
 } S;
 
 /* The window is resizable, so the framebuffer rarely covers the drawable
- * exactly. Rather than stretch to fit — which would make some surfer
- * pixels 3 screen pixels wide and others 4, wrecking the one thing this
- * backend is for — take the largest WHOLE multiple that fits and centre
- * it. Dragging the window bigger then steps 1x, 2x, 3x and letterboxes
- * the remainder, and every step stays an exact nearest-neighbour zoom.
- * Only a drawable smaller than the framebuffer falls back to a stretch,
- * because there is no whole multiple left to take. */
+ * exactly. A window dragged to an exact multiple gets an exact
+ * nearest-neighbour zoom; anywhere else gets the largest aspect-preserved
+ * FIT, centred, with letterbox bars.
+ *
+ * Whole multiples ONLY is the tempting rule — every surfer pixel then
+ * covers the same number of screen pixels, which is what this backend is
+ * for — but it means a window dragged to 1.8x still draws at 1x with bars
+ * round it, and nobody reads that as "not a whole multiple yet". They
+ * read it as the view having collapsed. SURF_SCALE=N is there for a
+ * guaranteed exact zoom. */
 static void update_view(void)
 {
     int ow = 0, oh = 0;
@@ -55,21 +58,30 @@ static void update_view(void)
         return;
     S.out_w = ow;
     S.out_h = oh;
-    int sx = ow / S.w, sy = oh / S.h;
-    int s = sx < sy ? sx : sy;
-    if (s >= 1) {
-        S.view.w = S.w * s;
-        S.view.h = S.h * s;
-    } else if ((int64_t)ow * S.h < (int64_t)oh * S.w) {
-        S.view.w = ow;
-        S.view.h = (int)((int64_t)ow * S.h / S.w);
-    } else {
-        S.view.h = oh;
-        S.view.w = (int)((int64_t)oh * S.w / S.h);
-    }
+    /* Under SURF_NATIVE the framebuffer already fills the drawable at 1x,
+     * so with a whole-multiple rule every resize short of an exact
+     * DOUBLING left the view at 1x in the middle of a bigger window. And
+     * because a host only presents when something is damaged, that shrink
+     * showed up at the next keystroke rather than when the drag ended —
+     * which reads as "it went small again when I typed". */
+    int32_t q = (int32_t)(((int64_t)ow << 16) / S.w);
+    int32_t qh = (int32_t)(((int64_t)oh << 16) / S.h);
+    if (qh < q)
+        q = qh;
+    /* a drawable a hair off an exact zoom should BE that zoom, not
+     * 1.99x with a seam every few hundred rows */
+    if (q >= (1 << 16) && (q & 0xFFFF) < 1600)          /* within ~2.5% */
+        q &= ~0xFFFF;
+    S.view.w = (int)(((int64_t)S.w * q) >> 16);
+    S.view.h = (int)(((int64_t)S.h * q) >> 16);
+    if (S.view.w > ow) S.view.w = ow;
+    if (S.view.h > oh) S.view.h = oh;
     S.view.x = (ow - S.view.w) / 2;
     S.view.y = (oh - S.view.h) / 2;
 
+    if (getenv("SURF_VIEW_DEBUG"))
+        fprintf(stderr, "VIEW drawable %dx%d fb %dx%d -> view %dx%d at %d,%d\n",
+                ow, oh, S.w, S.h, S.view.w, S.view.h, S.view.x, S.view.y);
     int ww = 0, wh = 0;
     SDL_GetWindowSize(S.win, &ww, &wh);
     S.win_w = (int16_t)ww;
