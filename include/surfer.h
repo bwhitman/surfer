@@ -413,6 +413,12 @@ void        surf_textinput_set_caret(surf_node *n, int32_t byte_idx, bool extend
 void        surf_textinput_move(surf_node *n, int32_t delta_cp, bool extend);
 int32_t     surf_textinput_index_from_x(const surf_node *n, int16_t local_x);
 void        surf_textinput_set_focused(surf_node *n, bool focused);
+/* Password fields: draw `c` for every character (0 = show the text). The
+ * buffer is untouched — surf_textinput_text() still returns what was
+ * typed — and the caret, the hit test and the paint all measure the mask,
+ * so the caret lands where the asterisks are. */
+void        surf_textinput_set_mask(surf_node *n, char c);
+char        surf_textinput_mask(const surf_node *n);
 
 /* LED: an indicator lamp — the one widget that reports nothing, because a
  * lamp is an output. The art is A8, so one asset is any color: each LED
@@ -435,6 +441,22 @@ void       surf_led_set(surf_led *l, bool on);
 void       surf_led_set_level(surf_led *l, int32_t level_q16);
 int32_t    surf_led_level(const surf_led *l);
 void       surf_led_set_color(surf_led *l, surf_color c);
+
+/* Colour picker: a saturation/value square beside a hue strip, reporting
+ * a packed surf_color. The one widget whose art cannot be baked — the
+ * square's colours depend on the hue — so it draws into two runtime
+ * images per pixel, on an EVENT: the strip once at creation, the square
+ * again only when the hue changes. Never in the frame path. */
+typedef struct surf_colorpicker surf_colorpicker;
+
+surf_colorpicker *surf_colorpicker_new(surf_node *parent, int16_t x, int16_t y,
+                                       int16_t size);
+void       surf_colorpicker_destroy(surf_colorpicker *c);
+surf_node *surf_colorpicker_node(surf_colorpicker *c);
+surf_color surf_colorpicker_color(const surf_colorpicker *c);
+void       surf_colorpicker_set_color(surf_colorpicker *c, surf_color col);
+void       surf_colorpicker_on_change(surf_colorpicker *c, surf_index_cb cb,
+                                      void *user);
 
 /* Scrollbar: a thumb on a track, driven by a content model the CALLER
  * owns. It knows nothing about what is scrolling — hand it total, visible
@@ -481,6 +503,10 @@ void surf_textgrid_set_row(surf_node *n, int16_t row, const char *utf8);
 /* positive = content moves up; exposed rows are blanked */
 void surf_textgrid_scroll(surf_node *n, int16_t dy_rows);
 surf_point surf_textgrid_cell_size(const surf_node *n);
+/* Recolour a live grid — a console changing its background while you
+ * watch. Cells still holding the old defaults follow; anything a caller
+ * coloured by hand keeps what it was given. */
+void surf_textgrid_set_colors(surf_node *n, surf_color fg, surf_color bg);
 /* Fast scroll (opt-in): scroll() shifts the framebuffer pixels via the
  * hal and repaints only the exposed rows, instead of re-rendering every
  * cell. The caller promises the grid is fully visible and unoccluded on

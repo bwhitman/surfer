@@ -23,8 +23,8 @@ ask rather than silently diverging.
   All device allocations go through `hal->alloc_image`; never raw
   `heap_caps_malloc` in core code.
 - **The widget set stays small** (knob, slider, button, checkbox, dropdown,
-  label, textinput, scrollview, scrollbar, led, selector). Do not add
-  widgets, node types, or hal ops without asking first.
+  label, textinput, scrollview, scrollbar, led, selector, colorpicker).
+  Do not add widgets, node types, or hal ops without asking first.
 - **No new dependencies without asking.** Currently allowed: stb_truetype,
   stb_image (build tools only), SDL2, ESP-IDF, MicroPython headers.
 
@@ -336,6 +336,38 @@ current size it reads as "nothing moved" — the events have already been
 folded in — and the snap then undoes the drag instead of following it.
 `SURF_FREE_ASPECT=1` turns the whole thing off; `SURF_VIEW_DEBUG=1`
 prints drawable/fb/view on every resize.
+
+## Colour picker
+
+`surf_colorpicker_new(parent, x, y, size)` — a saturation/value square
+beside a hue strip, reporting a packed `surf_color`. HSV rather than
+three RGB sliders, because picking by eye means moving one axis at a
+time, and because three sliders is something a caller can already build.
+
+**The one widget whose art cannot be baked**: the square's colours depend
+on which hue you are standing on. So it is drawn per pixel, in C, into
+two runtime images — and the rule that keeps that legal is that it
+happens on an EVENT and never in the frame path. The strip is drawn once
+at creation; the square again only when the hue actually changes. After
+that they are two ordinary opaque sprites.
+
+Its group takes a size from `surf_group_set_clip`, which is how a group
+becomes hittable at all — without it the gutter between square and strip
+is a hole.
+
+The fixed-point conversion uses **64-bit intermediates**, because at full
+value and full saturation `v * (SURF_ONE - s)` is 65536 * 65536 and an
+int32 wraps to zero. That corner is the most-used pixel on the widget:
+it came out pure red instead of white.
+
+## Password fields
+
+`surf_textinput_set_mask(n, '*')` draws one character in place of every
+other. The buffer is untouched — `surf_textinput_text()` still returns
+what was typed, since this is a mask and not a cipher — and all THREE
+walks over the text measure the mask: the caret's, the hit test's and the
+paint's. Getting one of them wrong puts the caret somewhere the asterisks
+are not. MicroPython: `ti.mask = "*"`, and None to show the text again.
 
 ## Scrollbar
 

@@ -88,6 +88,7 @@ struct surf_node {
             int32_t    len, cap;
             int32_t    caret, anchor;  /* byte idx; selection = [min..max) */
             int16_t    scroll_x;
+            char       mask;     /* != 0: draw this instead of every char */
             surf_image img;      /* atlas header copy; tint = text color */
         } input;
         struct {

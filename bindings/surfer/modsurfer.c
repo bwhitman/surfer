@@ -140,7 +140,7 @@ typedef struct {
 extern const mp_obj_type_t surfer_font_type;
 
 enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON, W_SCROLLBAR,
-       W_LED, W_SELECTOR };
+       W_LED, W_SELECTOR, W_COLORPICKER };
 
 typedef struct {
     mp_obj_base_t base;
@@ -411,6 +411,15 @@ static mp_obj_t node_history(mp_obj_t self_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(node_history_obj, node_history);
 
+/* grid.set_colors(fg, bg): recolour a live textgrid. */
+static mp_obj_t node_set_colors(mp_obj_t self_in, mp_obj_t fg, mp_obj_t bg)
+{
+    surf_textgrid_set_colors(node_of(self_in), (surf_color)mp_obj_get_int(fg),
+                             (surf_color)mp_obj_get_int(bg));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(node_set_colors_obj, node_set_colors);
+
 static mp_obj_t node_grid_scroll(mp_obj_t self_in, mp_obj_t rows)
 {
     surf_textgrid_scroll(node_of(self_in), mp_obj_get_int(rows));
@@ -549,6 +558,7 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_set_row), MP_ROM_PTR(&node_set_row_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_cell), MP_ROM_PTR(&node_set_cell_obj)},
     {MP_ROM_QSTR(MP_QSTR_grid_scroll), MP_ROM_PTR(&node_grid_scroll_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_colors), MP_ROM_PTR(&node_set_colors_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollback), MP_ROM_PTR(&node_scrollback_obj)},
     {MP_ROM_QSTR(MP_QSTR_view), MP_ROM_PTR(&node_view_obj)},
     {MP_ROM_QSTR(MP_QSTR_history), MP_ROM_PTR(&node_history_obj)},
@@ -654,6 +664,24 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             dest[0] = mp_obj_new_str(t, strlen(t));
         } else {
             surf_textinput_set_text(o->node, mp_obj_str_get_str(dest[1]));
+            dest[0] = MP_OBJ_NULL;
+        }
+        return;
+    }
+    if (o->is_input && attr == MP_QSTR_mask) {
+        /* ti.mask = "*" makes it a password field; "" or None shows the
+         * text again. The buffer is untouched either way — .text still
+         * returns what was typed. */
+        if (dest[0] == MP_OBJ_NULL) {
+            char m = surf_textinput_mask(o->node);
+            dest[0] = m ? mp_obj_new_str(&m, 1) : mp_const_none;
+        } else {
+            char m = 0;
+            if (dest[1] != mp_const_none) {
+                const char *t = mp_obj_str_get_str(dest[1]);
+                m = t[0];
+            }
+            surf_textinput_set_mask(o->node, m);
             dest[0] = MP_OBJ_NULL;
         }
         return;
@@ -1001,6 +1029,7 @@ static void widget_cb(int32_t value, void *user)
     case W_DROPDOWN:
     case W_SCROLLBAR:
     case W_SELECTOR:
+    case W_COLORPICKER:
     case W_LED:       /* has no callback, but be consistent */
     default:          arg = mp_obj_new_int(value); break;
     }
@@ -1028,6 +1057,8 @@ static mp_obj_t widget_get_value(surfer_widget_obj_t *o)
         return mp_obj_new_float((mp_float_t)surf_led_level(o->w) / SURF_ONE);
     case W_SELECTOR:
         return MP_OBJ_NEW_SMALL_INT(surf_selector_index(o->w));
+    case W_COLORPICKER:
+        return MP_OBJ_NEW_SMALL_INT(surf_colorpicker_color(o->w));
     case W_BUTTON:
         return mp_const_none;
     default:
@@ -1060,6 +1091,9 @@ static void widget_set_value(surfer_widget_obj_t *o, mp_obj_t v)
         break;
     case W_SELECTOR:
         surf_selector_set_index(o->w, mp_obj_get_int(v));
+        break;
+    case W_COLORPICKER:
+        surf_colorpicker_set_color(o->w, (surf_color)mp_obj_get_int(v));
         break;
     case W_BUTTON:
         break;
@@ -1847,6 +1881,25 @@ static mp_obj_t mod_selector(mp_obj_t x, mp_obj_t y, mp_obj_t positions)
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(mod_selector_obj, mod_selector);
 
+/* surfer.colorpicker(x, y, size) -> Widget. .value is a packed colour
+ * (what surfer.rgb() returns), settable, and the callback reports one. */
+static mp_obj_t mod_colorpicker(mp_obj_t x, mp_obj_t y, mp_obj_t size)
+{
+    surf_colorpicker *c = surf_colorpicker_new(surf_screen(), 0, 0,
+                                               (int16_t)mp_obj_get_int(size));
+    if (!c)
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("colorpicker create failed"));
+    surf_node *node = surf_colorpicker_node(c);
+    surf_node_detach(node);
+    surf_node_set_pos(node, (int16_t)mp_obj_get_int(x),
+                      (int16_t)mp_obj_get_int(y));
+    surfer_widget_obj_t *o = new_widget_obj(W_COLORPICKER, c, node);
+    surf_colorpicker_on_change(c, widget_idx_cb, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(mod_colorpicker_obj, mod_colorpicker);
+
 static mp_obj_t mod_slider(size_t n_args, const mp_obj_t *args)
 {
     static const surf_slider_style st = {.track = &track_img,
@@ -2065,6 +2118,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_button), MP_ROM_PTR(&mod_button_obj)},
     {MP_ROM_QSTR(MP_QSTR_led), MP_ROM_PTR(&mod_led_obj)},
     {MP_ROM_QSTR(MP_QSTR_selector), MP_ROM_PTR(&mod_selector_obj)},
+    {MP_ROM_QSTR(MP_QSTR_colorpicker), MP_ROM_PTR(&mod_colorpicker_obj)},
     /* capitalized aliases, DESIGN.md §3 taste */
     {MP_ROM_QSTR(MP_QSTR_Group), MP_ROM_PTR(&mod_group_obj)},
     {MP_ROM_QSTR(MP_QSTR_TextInput), MP_ROM_PTR(&mod_textinput_obj)},
@@ -2075,6 +2129,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_Button), MP_ROM_PTR(&mod_button_obj)},
     {MP_ROM_QSTR(MP_QSTR_Led), MP_ROM_PTR(&mod_led_obj)},
     {MP_ROM_QSTR(MP_QSTR_Selector), MP_ROM_PTR(&mod_selector_obj)},
+    {MP_ROM_QSTR(MP_QSTR_ColorPicker), MP_ROM_PTR(&mod_colorpicker_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch), MP_ROM_PTR(&mod_touch_obj)},
     {MP_ROM_QSTR(MP_QSTR__key), MP_ROM_PTR(&mod_key_obj)},
     {MP_ROM_QSTR(MP_QSTR_touches), MP_ROM_PTR(&mod_touches_obj)},

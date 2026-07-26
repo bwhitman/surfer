@@ -15,6 +15,15 @@ static bool is_input(const surf_node *n)
     return n && n->type == SURF_NODE_TEXTINPUT;
 }
 
+/* A masked field shows the same character for every codepoint, so every
+ * walk over the buffer — the caret's, the hit test's, the paint's — has
+ * to measure the MASK rather than the text. Getting one of the three
+ * wrong puts the caret somewhere the asterisks are not. */
+static uint32_t shown(const surf_node *n, uint32_t cp)
+{
+    return n->u.input.mask ? (uint32_t)n->u.input.mask : cp;
+}
+
 /* pen x of the caret at byte index `idx` (unscrolled) */
 static int16_t caret_x(const surf_node *n, int32_t idx)
 {
@@ -27,6 +36,7 @@ static int16_t caret_x(const surf_node *n, int32_t idx)
         uint32_t cp = surf_utf8_next(s, &i);
         if (cp == 0)
             break;
+        cp = shown(n, cp);
         const surf_glyph *g = surf_font_glyph(f, cp);
         if (g)
             x = (int16_t)(x + g->adv + surf_font_kern(f, prev, cp));
@@ -208,6 +218,7 @@ int32_t surf_textinput_index_from_x(const surf_node *n, int16_t local_x)
         uint32_t cp = surf_utf8_next(s, &j);
         if (cp == 0)
             return i;
+        cp = shown(n, cp);
         const surf_glyph *g = surf_font_glyph(f, cp);
         int16_t adv = g ? (int16_t)(g->adv + surf_font_kern(f, prev, cp)) : 0;
         if (x < pen + adv / 2)
@@ -216,6 +227,22 @@ int32_t surf_textinput_index_from_x(const surf_node *n, int16_t local_x)
         prev = cp;
         i = j;
     }
+}
+
+/* Show `c` for every character — '*' for a password field. 0 shows the
+ * text. The buffer is untouched: surf_textinput_text() still returns what
+ * was typed, which is the whole point of a mask rather than a cipher. */
+void surf_textinput_set_mask(surf_node *n, char c)
+{
+    if (!is_input(n) || n->u.input.mask == c)
+        return;
+    n->u.input.mask = c;
+    input_changed(n);
+}
+
+char surf_textinput_mask(const surf_node *n)
+{
+    return is_input(n) ? n->u.input.mask : 0;
 }
 
 void surf_textinput_set_focused(surf_node *n, bool focused)
@@ -247,14 +274,33 @@ void surf_textinput_paint(const surf_paint_ent *e)
             surf_g.hal->fill(sel, SURF_RGB(60, 90, 140));
     }
 
-    surf_tlayout it;
-    surf_tglyph tg;
-    surf_tlayout_begin(&it, f, s, 0, SURF_ALIGN_LEFT, 0);
-    while (surf_tlayout_next(&it, &tg)) {
-        if (tg.g->w <= 0)
-            continue;
-        surf_glyph_blit(&n->u.input.img, tg.g,
-                        (int16_t)(e->ax + tg.x - sx), (int16_t)(e->ay + tg.y), e->vis);
+    if (n->u.input.mask) {
+        /* one mask glyph per codepoint, walked by hand: the layout runs
+         * off the buffer and would spell the password out */
+        const surf_glyph *g = surf_font_glyph(f, (uint32_t)n->u.input.mask);
+        int16_t pen = 0, base = f->ascent;
+        int32_t i = 0;
+        uint32_t prev = 0, m = (uint32_t)n->u.input.mask;
+        while (surf_utf8_next(s, &i)) {
+            if (g && g->w > 0)
+                surf_glyph_blit(&n->u.input.img, g,
+                                (int16_t)(e->ax + pen + g->xoff - sx),
+                                (int16_t)(e->ay + base + g->yoff), e->vis);
+            if (g)
+                pen = (int16_t)(pen + g->adv + surf_font_kern(f, prev, m));
+            prev = m;
+        }
+    } else {
+        surf_tlayout it;
+        surf_tglyph tg;
+        surf_tlayout_begin(&it, f, s, 0, SURF_ALIGN_LEFT, 0);
+        while (surf_tlayout_next(&it, &tg)) {
+            if (tg.g->w <= 0)
+                continue;
+            surf_glyph_blit(&n->u.input.img, tg.g,
+                            (int16_t)(e->ax + tg.x - sx),
+                            (int16_t)(e->ay + tg.y), e->vis);
+        }
     }
 
     if (n->flags & SURF_NF_FOCUS) {

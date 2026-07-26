@@ -1,6 +1,7 @@
 /* M1 tests: filmstrip/ninepatch nodes, touch dispatch + capture, slider
  * and knob behavior driven through the real input path (queued touches). */
 #include <stdlib.h>
+#include <string.h>
 
 #include "mock_hal.h"
 
@@ -438,8 +439,127 @@ static void test_led_and_selector(void)
     surf_selector_destroy(sel);
 }
 
+static int32_t cp_reported;
+static void cp_cb(int32_t v, void *user) { (void)user; cp_reported = v; }
+
+/* The colour picker draws its own art, so what a test can check is the
+ * arithmetic: where a press lands in HSV, and that a colour set from
+ * outside comes back. */
+static void test_colorpicker(void)
+{
+    fresh(400, 300, 64);
+    surf_colorpicker *c = surf_colorpicker_new(surf_screen(), 10, 10, 100);
+    OK(c != NULL);
+    /* top-right of the square at hue 0 is full red */
+    OK(surf_colorpicker_color(c) == SURF_RGB(255, 0, 0));
+    surf_colorpicker_on_change(c, cp_cb, NULL);
+
+    /* bottom-left: no saturation, no value — black, whatever the hue */
+    cp_reported = -1;
+    surf_touch d = {.x = 11, .y = 108, .phase = SURF_TOUCH_DOWN};
+    surf_inject_touch(&d);
+    OK(surf_colorpicker_color(c) == 0);
+    OK(cp_reported == 0);
+
+    /* top-left: no saturation, full value — white */
+    surf_touch m = {.x = 10, .y = 10, .phase = SURF_TOUCH_MOVE};
+    surf_inject_touch(&m);
+    OK(surf_colorpicker_color(c) == SURF_RGB(255, 255, 255));
+
+    /* a colour set from outside round-trips to about itself (565 has
+     * five bits of red, so "about" is the honest word) */
+    surf_colorpicker_set_color(c, SURF_RGB(60, 180, 240));
+    surf_color got = surf_colorpicker_color(c);
+    int dr = ((got >> 11) & 31) - ((SURF_RGB(60, 180, 240) >> 11) & 31);
+    int dg = ((got >> 5) & 63) - ((SURF_RGB(60, 180, 240) >> 5) & 63);
+    OK(dr >= -1 && dr <= 1 && dg >= -1 && dg <= 1);
+    surf_colorpicker_destroy(c);
+}
+
+/* A masked field draws the SAME glyph for every character. The mock hal
+ * records every blend, so that is directly checkable: four characters,
+ * four blends, all from one atlas cell.
+ *
+ * Its own font, not test_text.c's: that one is filled in by a mkfont()
+ * that runs when the TEXT suite does, and this suite runs first — so
+ * borrowing it meant a font of all zeros, a node 200x0 tall, and nothing
+ * painted at all. */
+static surf_glyph mg[5];
+static uint8_t matlas[64 * 16];
+static surf_font mfont;
+
+static void mkmaskfont(void)
+{
+    for (int i = 0; i < 4; i++)          /* A B C D, each its own cell */
+        mg[i] = (surf_glyph){(uint32_t)('A' + i), (int16_t)(i * 8), 0,
+                             8, 10, 1, -10, 10};
+    mg[4] = (surf_glyph){'*', 32, 0, 8, 10, 1, -10, 10};
+    memset(matlas, 0x80, sizeof matlas);
+    mfont = (surf_font){
+        .atlas = {.pixels = matlas, .w = 64, .h = 16, .stride = 64,
+                  .format = SURF_FMT_A8},
+        .ascent = 12, .descent = -3, .line_gap = 1,
+        .glyphs = mg, .nglyphs = 5,
+    };
+}
+
+static void test_textinput_mask(void)
+{
+    mkmaskfont();
+    fresh(400, 300, 32);
+    surf_node *n = surf_textinput_new(&mfont, 0, 0, 200, SURF_RGB(255, 255, 255));
+    surf_node_add(surf_screen(), n);
+    surf_textinput_set_text(n, "ABCD");
+    surf_tick();
+
+    nops = 0;
+    surf_textinput_set_mask(n, 'A');
+    OK(surf_textinput_mask(n) == 'A');
+    surf_tick();
+    int blits = 0;
+    int16_t src0 = -1;
+    bool same = true;
+    for (int i = 0; i < nops; i++)
+        if (ops[i].op == 'A') {
+            if (blits++ == 0)
+                src0 = ops[i].src.x;
+            else if (ops[i].src.x != src0)
+                same = false;
+        }
+    OK(blits == 4);            /* one per character... */
+    OK(same);                  /* ...and every one the same glyph */
+
+    /* the buffer is untouched: a mask, not a cipher */
+    const char *t = surf_textinput_text(n);
+    OK(t[0] == 'A' && t[1] == 'B' && t[2] == 'C' && t[3] == 'D');
+
+    /* and the caret still indexes the real text, measured over the mask */
+    surf_textinput_set_caret(n, 2, false);
+    OK(surf_textinput_caret(n) == 2);
+    OK(surf_textinput_index_from_x(n, 1000) == 4);
+
+    /* unmasking draws the real glyphs again — four DIFFERENT cells */
+    nops = 0;
+    surf_textinput_set_mask(n, 0);
+    surf_tick();
+    blits = 0;
+    same = true;
+    src0 = -1;
+    for (int i = 0; i < nops; i++)
+        if (ops[i].op == 'A') {
+            if (blits++ == 0)
+                src0 = ops[i].src.x;
+            else if (ops[i].src.x != src0)
+                same = false;
+        }
+    OK(blits == 4 && !same);
+    surf_node_destroy(n);
+}
+
 void run_widget_tests(void)
 {
+    test_colorpicker();
+    test_textinput_mask();
     test_led_and_selector();
     test_scrollbar();
     test_filmstrip();

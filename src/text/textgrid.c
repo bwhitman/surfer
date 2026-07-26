@@ -80,6 +80,31 @@ surf_node *surf_textgrid_new(const surf_font *f, int16_t cols, int16_t rows,
     return n;
 }
 
+/* Recolour the whole grid. Every cell carries its own pair, so the
+ * defaults alone would only reach cells written from here on — the
+ * point of this is a console changing its background while you watch,
+ * so it rewrites the ones that still hold the OLD default and leaves
+ * anything a caller deliberately coloured. */
+void surf_textgrid_set_colors(surf_node *n, surf_color fg, surf_color bg)
+{
+    if (!n || n->type != SURF_NODE_TEXTGRID)
+        return;
+    surf_color ofg = n->u.grid.fg, obg = n->u.grid.bg;
+    if (ofg == fg && obg == bg)
+        return;
+    n->u.grid.fg = fg;
+    n->u.grid.bg = bg;
+    int32_t cells = (int32_t)n->u.grid.cols * n->u.grid.total_rows;
+    for (int32_t i = 0; i < cells; i++) {
+        surf_textcell *c = &n->u.grid.cells[i];
+        if (c->fg == ofg)
+            c->fg = fg;
+        if (c->bg == obg)
+            c->bg = bg;
+    }
+    surf_node_damage(n);
+}
+
 surf_point surf_textgrid_cell_size(const surf_node *n)
 {
     if (!is_grid(n))
