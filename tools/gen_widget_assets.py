@@ -263,6 +263,12 @@ def main():
     emit("widget_arrow_px", arrow_strip())
     emit("widget_sbar_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (150, 150, 158), 255))
     emit("widget_sbtrack_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (255, 255, 255), 40))
+    # ...and the same capsules lying down. A 9-patch slices along fixed
+    # axes, so a horizontal bar cannot reuse the vertical art: stretching
+    # it sideways tiles the round CAP and the thumb comes out as a string
+    # of beads. The thickness (and so the radius) is unchanged.
+    emit("widget_sbarh_px", sbar(SBAR_H, SBAR_W, SBAR_W / 2.0, (150, 150, 158), 255))
+    emit("widget_sbtrackh_px", sbar(SBAR_H, SBAR_W, SBAR_W / 2.0, (255, 255, 255), 40))
 
 
 if __name__ == "__main__":

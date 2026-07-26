@@ -48,6 +48,15 @@ static surf_image sbtrack_img = {
     .pixels = (void *)widget_sbtrack_px, .w = WSBAR_W, .h = WSBAR_H,
     .stride = WSBAR_W * 4, .format = SURF_FMT_ARGB8888,
 };
+/* the same two capsules lying down, for horizontal bars */
+static surf_image sbarh_img = {
+    .pixels = (void *)widget_sbarh_px, .w = WSBAR_H, .h = WSBAR_W,
+    .stride = WSBAR_H * 4, .format = SURF_FMT_ARGB8888,
+};
+static surf_image sbtrackh_img = {
+    .pixels = (void *)widget_sbtrackh_px, .w = WSBAR_H, .h = WSBAR_W,
+    .stride = WSBAR_H * 4, .format = SURF_FMT_ARGB8888,
+};
 static surf_image panel_img = {
     .pixels = (void *)widget_panel_px, .w = WPANEL_SIZE, .h = WPANEL_SIZE,
     .stride = WPANEL_SIZE * 4, .format = SURF_FMT_ARGB8888,
@@ -77,6 +86,8 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&cap_img);
     surfer_port_prepare_image(&sbar_img);
     surfer_port_prepare_image(&sbtrack_img);
+    surfer_port_prepare_image(&sbarh_img);
+    surfer_port_prepare_image(&sbtrackh_img);
     surfer_port_prepare_image(&check_img);
     surfer_port_prepare_image(&panel_img);
     surfer_port_prepare_image(&arrow_img);
@@ -802,6 +813,11 @@ static void widget_cb(int32_t value, void *user)
     case W_CHECKBOX: arg = mp_obj_new_bool(value != 0); break;
     case W_DROPDOWN: arg = MP_OBJ_NEW_SMALL_INT(value); break;
     case W_BUTTON:   arg = mp_const_true; break;
+    /* a scrollbar's position is in the CALLER's unit (rows, lines,
+     * pixels) — not a Q16 fraction like a knob's. Dividing it by
+     * SURF_ONE made every drag report ~0, so `int(pos)` handlers
+     * snapped to the top instead of where the thumb was dropped. */
+    case W_SCROLLBAR: arg = mp_obj_new_int(value); break;
     default: arg = mp_obj_new_float((mp_float_t)value / SURF_ONE); break;
     }
     mp_call_function_1(o->callback, arg);
@@ -1507,6 +1523,7 @@ static mp_obj_t mod_scrollbar(size_t n_args, const mp_obj_t *args)
 {
     static const surf_scrollbar_style st = {
         .thumb = &sbar_img, .track = &sbtrack_img, .inset = WSBAR_INSET,
+        .thumb_h = &sbarh_img, .track_h = &sbtrackh_img,
     };
     bool vertical = n_args > 3 ? mp_obj_is_true(args[3]) : true;
     surf_scrollbar *sb = surf_scrollbar_new(surf_screen(), 0, 0,

@@ -425,6 +425,12 @@ typedef struct {
     const surf_image *thumb;   /* 9-patch capsule; its w is the thickness */
     const surf_image *track;   /* optional, same art fainter */
     int16_t           inset;   /* 9-patch inset along the axis */
+    /* A 9-patch slices along fixed axes, so a horizontal bar needs the
+     * capsule LYING DOWN — stretching the vertical art sideways tiles
+     * its round cap into beads. Optional: without them a horizontal bar
+     * falls back to the vertical art and looks wrong. */
+    const surf_image *thumb_h;
+    const surf_image *track_h;
 } surf_scrollbar_style;
 
 surf_scrollbar *surf_scrollbar_new(surf_node *parent, int16_t x, int16_t y,

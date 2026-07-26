@@ -329,6 +329,33 @@ static void test_scrollbar(void)
     surf_scrollbar_set_pos(sb, 999);
     OK(surf_scrollbar_pos(sb) == 80 && sb_reported == -1);
     surf_scrollbar_destroy(sb);
+
+    /* Horizontal: the 9-patch slices along fixed axes, so it must take
+     * the LYING-DOWN capsule and put its insets on the left/right edges.
+     * Given the upright art it stretched a round cap along the bar and
+     * drew a string of beads. */
+    surf_image thumb_h = {.pixels = NULL, .w = 9, .h = 6, .stride = 36,
+                          .format = SURF_FMT_ARGB8888};
+    surf_scrollbar_style hst = {.thumb = &thumb, .track = NULL, .inset = 4,
+                                .thumb_h = &thumb_h};
+    surf_scrollbar *hb = surf_scrollbar_new(surf_screen(), 0, 200, 200, false,
+                                            &hst);
+    OK(hb != NULL);
+    surf_node *hthumb = surf_scrollbar_node(hb)->first;
+    OK(hthumb->u.nine.img == &thumb_h);                  /* the right art */
+    OK(hthumb->u.nine.l == 4 && hthumb->u.nine.r == 4 && /* ...sliced along */
+       hthumb->u.nine.t == 0 && hthumb->u.nine.b == 0);  /*    the axis */
+
+    /* and it still reports in the caller's unit when dragged */
+    surf_scrollbar_on_change(hb, sb_cb, NULL);
+    surf_scrollbar_set_range(hb, 100, 20, 0);
+    sb_reported = -1;
+    surf_touch hd = {.x = 5, .y = 203, .phase = SURF_TOUCH_DOWN};
+    surf_touch hm = {.x = 400, .y = 203, .phase = SURF_TOUCH_MOVE};
+    surf_inject_touch(&hd);
+    surf_inject_touch(&hm);
+    OK(surf_scrollbar_pos(hb) == 80 && sb_reported == 80);
+    surf_scrollbar_destroy(hb);
 }
 
 void run_widget_tests(void)

@@ -261,6 +261,21 @@ Three consumers in tulip5, deliberately in three different units: the
 console (rows of scrollback), the editor (lines of a document), and
 gamma9001's sound chooser (pixels of scrollview offset).
 
+Two things the widget got wrong until tulip5's `widgets` demo put a
+horizontal one on screen next to a vertical one:
+
+- **Horizontal needs its own art.** A 9-patch slices along fixed axes, so
+  a bar laid on its side cannot reuse the upright capsule — stretching it
+  sideways tiles the round *cap* and the thumb comes out as a string of
+  beads. `thumb_h`/`track_h` in the style are the lying-down pair, and
+  the insets move to the left/right edges. They are optional; without
+  them a horizontal bar still works, it just looks wrong.
+- **The MicroPython callback reported a Q16 fraction.** `pos` is in the
+  caller's unit, but the binding fell through to the knob/slider branch
+  and divided by SURF_ONE, so every `int(pos)` handler saw 0 — all three
+  tulip5 bars snapped to the top when dragged instead of landing where
+  the thumb was dropped. `.value` was always right, which is what hid it.
+
 ## Textgrid scrollback
 
 `surf_textgrid_set_scrollback(n, mult)` keeps `mult` screens of rows so

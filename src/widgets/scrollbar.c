@@ -121,8 +121,15 @@ surf_scrollbar *surf_scrollbar_new(surf_node *parent, int16_t x, int16_t y,
     surf_scrollbar *s = calloc(1, sizeof *s);
     if (!s)
         return NULL;
+    /* horizontal wants the capsule lying down, and the 9-patch insets on
+     * the other pair of edges — the round ends have to sit at the ends of
+     * the AXIS, or the stretch tiles a cap into beads */
+    const surf_image *thumb = !vertical && style->thumb_h ? style->thumb_h
+                                                          : style->thumb;
+    const surf_image *track = !vertical && style->track_h ? style->track_h
+                                                          : style->track;
     s->len = len;
-    s->thick = style->thumb->w;
+    s->thick = vertical ? thumb->w : thumb->h;
     s->vertical = vertical;
     s->total = s->visible = 1;
     s->root = surf_group_new(x, y);
@@ -132,16 +139,16 @@ surf_scrollbar *surf_scrollbar_new(surf_node *parent, int16_t x, int16_t y,
     }
     int16_t w = vertical ? s->thick : len;
     int16_t h = vertical ? len : s->thick;
-    if (style->track) {
-        s->track = surf_ninepatch_new(style->track, 0, 0, w, h, 0,
-                                      style->inset, 0, style->inset);
+    int16_t il = vertical ? 0 : style->inset, it = vertical ? style->inset : 0;
+    if (track) {
+        s->track = surf_ninepatch_new(track, 0, 0, w, h, il, it, il, it);
         if (s->track)
             surf_node_add(s->root, s->track);
     }
-    s->thumb = surf_ninepatch_new(style->thumb, 0, 0,
+    s->thumb = surf_ninepatch_new(thumb, 0, 0,
                                   vertical ? s->thick : s->thick * 3,
                                   vertical ? s->thick * 3 : s->thick,
-                                  0, style->inset, 0, style->inset);
+                                  il, it, il, it);
     if (!s->thumb) {
         surf_node_destroy(s->root);
         free(s);
