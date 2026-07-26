@@ -119,6 +119,11 @@ struct surf_node {
     } u;
 };
 
+/* Repaint whatever is painted above `area` after a hal-assisted shift
+ * dragged its pixels along (see node.c). gx/gy expand each node's box so
+ * the ghost it left behind is repainted too. */
+void surf_damage_above(const surf_node *n, surf_rect area, int16_t gx, int16_t gy);
+
 /* rect ops */
 static inline bool surf_rect_empty(surf_rect r) { return r.w <= 0 || r.h <= 0; }
 surf_rect surf_rect_intersect(surf_rect a, surf_rect b);

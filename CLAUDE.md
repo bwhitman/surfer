@@ -218,6 +218,25 @@ with no message. Measured on tulip5's identical part: compose cost at
 large damaged areas fell 42–51% (wider PPA SRM block, 8×8 → 32×32); the
 ~85 µs per-op floor is unchanged, so "bake at final size" still holds.
 
+## The hal-shift smear rule
+
+Three paths hand a rect to the hal to shift in place — the layer's
+band_shift, the scrollview's scroll_rect, the textgrid's. All three drag
+the pixels of whatever is painted ON TOP of that rect, which then has to
+be repainted where it actually is.
+
+The layer used to repair only its LATER SIBLINGS, which is right only
+when every overlay is a sibling. It is not: tulip's task bar and its
+console scrollbar are siblings of an app's GROUP, not of the scrolling
+node inside it, so they smeared across the screen at whatever rate the
+thing under them was scrolling — three layers, three different rates, one
+very funny bug report.
+
+`surf_damage_above(n, area, gx, gy)` (node.c) walks the whole paint order
+after `n`, skipping its own subtree, and damages anything overlapping.
+All three paths use it. tests/test_layer.c has the regression: an overlay
+in a different branch, which fails against the sibling-only walk.
+
 ## Scrollbar
 
 `surf_scrollbar_new(parent, x, y, len, vertical, style)` is a thumb on a

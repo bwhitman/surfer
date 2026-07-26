@@ -90,6 +90,7 @@ static void scroll_damage(surf_node *sv, int32_t old_x_q16, int32_t old_y_q16)
                 sd->r[i] = surf_rect_union(sd->r[i], moved);
         }
         surf_g.hal->scroll_rect(v, dy);
+        surf_damage_above(sv, v, 0, ady);
         surf_rect strip = dy > 0
             ? (surf_rect){v.x, (int16_t)(v.y + v.h - ady), v.w, ady}
             : (surf_rect){v.x, v.y, v.w, ady};

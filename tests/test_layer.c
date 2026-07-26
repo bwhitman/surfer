@@ -10,8 +10,42 @@ static const surf_image strip256 = {
     .format = SURF_FMT_RGB565, .opaque = true,
 };
 
+/* A hal band-shift drags the pixels of whatever is painted above it. The
+ * layer used to repair only its LATER SIBLINGS, so an overlay living in
+ * another branch of the tree — tulip's task bar over an app's group —
+ * smeared across the screen at the layer's scroll rate. */
+static void test_layer_damages_other_branches(void)
+{
+    fresh(200, 100, 32);
+    surf_node *app = surf_group_new(0, 0);          /* branch 1: the app */
+    surf_node_add(surf_screen(), app);
+    surf_node *lay = surf_layer_new(&strip256, 0, 0, 200);
+    surf_layer_set_fast_scroll(lay, true);
+    surf_node_add(app, lay);
+
+    surf_node *chrome = surf_group_new(0, 0);       /* branch 2: the bar */
+    surf_node_add(surf_screen(), chrome);
+    surf_node *btn = surf_rect_new(150, 5, 40, 20, 0xf800);
+    surf_node_add(chrome, btn);
+    surf_tick();
+
+    surf_g.dirty.n = 0;
+    surf_layer_set_offset(lay, 8 << 16);            /* scroll under it */
+    bool covered = false;
+    for (int i = 0; i < surf_g.dirty.n; i++) {
+        surf_rect r = surf_rect_intersect(surf_g.dirty.r[i],
+                                          (surf_rect){150, 5, 40, 20});
+        if (r.w >= 40 && r.h >= 20)
+            covered = true;                          /* the button repaints */
+    }
+    OK(covered);
+    surf_node_destroy(app);
+    surf_node_destroy(chrome);
+}
+
 void run_layer_tests(void)
 {
+    test_layer_damages_other_branches();
     fresh(200, 100, 16);
     surf_node *l = surf_layer_new(&strip256, 0, 10, 200);
     surf_node_add(surf_screen(), l);

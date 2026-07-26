@@ -533,6 +533,42 @@ int32_t surf_layer_offset(const surf_node *n)
     return (n && n->type == SURF_NODE_LAYER) ? n->u.layer.off_q16 : 0;
 }
 
+/* Everything painted ABOVE a hal-shifted rect had its pixels dragged
+ * along by the shift and has to be repainted where it actually is.
+ *
+ * "Above" is the whole paint order after this node — NOT just its later
+ * siblings, which is what the layer used to walk. An overlay living in
+ * another branch of the tree is exactly the case that breaks: tulip's
+ * task bar and its console scrollbar are siblings of an app's GROUP, not
+ * of the scrolling node inside it, so they smeared across the screen at
+ * whatever rate the thing under them was scrolling.
+ *
+ * The node's own subtree is skipped: it moves with the shift. */
+static bool damage_above_walk(surf_node *cur, const surf_node *stop, bool after,
+                              surf_rect area, int16_t gx, int16_t gy)
+{
+    if (cur == stop)
+        return true;
+    if (after && !(cur->flags & SURF_NF_HIDDEN) && cur->w > 0 && cur->h > 0) {
+        int16_t ax, ay;
+        surf_node_abs_pos(cur, &ax, &ay);
+        surf_rect r = {(int16_t)(ax - gx), (int16_t)(ay - gy),
+                       (int16_t)(cur->w + 2 * gx), (int16_t)(cur->h + 2 * gy)};
+        r = surf_rect_intersect(r, area);
+        if (!surf_rect_empty(r))
+            surf_dirty_add(&surf_g.dirty, r);
+    }
+    for (surf_node *c = cur->first; c; c = c->next)
+        after = damage_above_walk(c, stop, after, area, gx, gy);
+    return after;
+}
+
+void surf_damage_above(const surf_node *n, surf_rect area, int16_t gx, int16_t gy)
+{
+    if (surf_g.root && n)
+        damage_above_walk(surf_g.root, n, false, area, gx, gy);
+}
+
 void surf_layer_set_fast_scroll(surf_node *n, bool on)
 {
     if (n && n->type == SURF_NODE_LAYER)
@@ -599,19 +635,9 @@ void surf_layer_set_offset(surf_node *n, int32_t off_q16)
         : (surf_rect){band.x, band.y, adx, band.h};
     surf_dirty_add(&surf_g.dirty, sliver);
 
-    /* anything drawn over the band (later siblings) just got smeared by
-     * the shift: repaint it, expanded by the shift so the ghost goes too */
-    for (surf_node *s = n->next; s; s = s->next) {
-        if (s->flags & SURF_NF_HIDDEN)
-            continue;
-        int16_t sx, sy;
-        surf_node_abs_pos(s, &sx, &sy);
-        surf_rect r = {(int16_t)(sx - adx), sy,
-                       (int16_t)(s->w + 2 * adx), s->h};
-        r = surf_rect_intersect(r, band);
-        if (!surf_rect_empty(r))
-            surf_dirty_add(&surf_g.dirty, r);
-    }
+    /* anything drawn over the band just got smeared by the shift:
+     * repaint it, expanded by the shift so the ghost goes too */
+    surf_damage_above(n, band, adx, 0);
 }
 
 void surf_group_set_clip(surf_node *g, int16_t w, int16_t h)

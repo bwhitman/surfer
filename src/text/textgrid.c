@@ -174,7 +174,10 @@ static bool grid_shift_pixels(surf_node *n, int16_t dy_rows, int16_t ady)
         (surf_rect){0, 0, surf_g.w, surf_g.h});
     if (r.w != n->w || r.h != n->h)
         return false;  /* partially off-screen: take the slow path */
+    int16_t px = (int16_t)(ady * n->u.grid.cell_h);
     surf_g.hal->scroll_rect(r, (int16_t)(dy_rows * n->u.grid.cell_h));
+    /* the console's own scrollbar sits over the grid: same smear */
+    surf_damage_above(n, r, 0, px);
     return true;
 }
 
