@@ -159,24 +159,96 @@ typedef struct {
     void *w;          /* surf_slider* / surf_knob* / ... */
     surf_node *node;  /* widget root, for tree/pos ops */
     mp_obj_t callback;
+    mp_obj_t node_ref; /* .node, made once — see new_node_obj */
 } surfer_widget_obj_t;
 
 extern const mp_obj_type_t surfer_node_type;
 extern const mp_obj_type_t surfer_widget_type;
 extern const mp_obj_type_t surfer_image_type;
 
-/* everything Python creates stays reachable from here so the GC can't
- * collect an object the C side still points at (callbacks, tree links) */
-MP_REGISTER_ROOT_POINTER(mp_obj_t surfer_registry);
+/* Things Python creates stay reachable from here so the GC can't collect
+ * an object the C side still points at (callbacks, tree links).
+ *
+ * TWO tables, because there are two lifetimes and conflating them leaked
+ * the machine dry. `surfer_nodes` is indexed by POOL SLOT and holds the
+ * one wrapper for the node in that slot; surf_set_node_freed_cb clears
+ * the entry when the node dies, children included. `surfer_pins` is the
+ * old append-only list, now only for things with no node to hang off --
+ * a runtime Font is baked into labels and has to outlive the call that
+ * made it.
+ *
+ * It used to be one append-only list for all of it, and nothing was ever
+ * removed: every node object Python ever created stayed rooted for the
+ * life of the session. A task bar rebuilt on each colour-picker callback
+ * leaked ~4.4 KB an event and died with `memory allocation failed`. The
+ * same append also left a destroyed node's wrapper pointing at a pool
+ * slot already handed to someone else. */
+MP_REGISTER_ROOT_POINTER(mp_obj_t surfer_nodes);
+MP_REGISTER_ROOT_POINTER(mp_obj_t surfer_pins);
 
-static void registry_add(mp_obj_t o)
+/* The node pool, and so the length of the slot table. See mod_init for
+ * why it is this number and what it costs. */
+#define SURF_POOL_NODES 4096
+
+static void on_node_freed(surf_node *n, int index);
+
+/* One slot per pool node, all None. Built at init and after a soft reset,
+ * which is the only time the pool is re-made. */
+static void registry_init(void)
 {
-    if (MP_STATE_VM(surfer_registry) == MP_OBJ_NULL)
-        MP_STATE_VM(surfer_registry) = mp_obj_new_list(0, NULL);
-    mp_obj_list_append(MP_STATE_VM(surfer_registry), o);
+    mp_obj_t list = mp_obj_new_list(SURF_POOL_NODES, NULL);
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_list_get(list, &len, &items);
+    for (size_t i = 0; i < len; i++)
+        items[i] = mp_const_none;
+    MP_STATE_VM(surfer_nodes) = list;
+    surf_set_node_freed_cb(on_node_freed);
 }
 
-static surfer_node_obj_t *new_node_obj(surf_node *n)
+static void registry_pin(mp_obj_t o)
+{
+    if (MP_STATE_VM(surfer_pins) == MP_OBJ_NULL)
+        MP_STATE_VM(surfer_pins) = mp_obj_new_list(0, NULL);
+    mp_obj_list_append(MP_STATE_VM(surfer_pins), o);
+}
+
+/* The slot table as a raw array: O(1), no allocation and nothing that can
+ * raise, which matters because the freed callback runs inside destroy. */
+static mp_obj_t *nodes_table(size_t *len)
+{
+    if (MP_STATE_VM(surfer_nodes) == MP_OBJ_NULL) {
+        *len = 0;
+        return NULL;
+    }
+    mp_obj_t *items;
+    mp_obj_list_get(MP_STATE_VM(surfer_nodes), len, &items);
+    return items;
+}
+
+static mp_obj_t registry_get(const surf_node *n)
+{
+    size_t len;
+    mp_obj_t *items = nodes_table(&len);
+    int i = surf_node_index(n);
+    if (!items || i < 0 || (size_t)i >= len)
+        return mp_const_none;
+    return items[i];
+}
+
+static void registry_set(const surf_node *n, mp_obj_t o)
+{
+    size_t len;
+    mp_obj_t *items = nodes_table(&len);
+    int i = surf_node_index(n);
+    if (items && i >= 0 && (size_t)i < len)
+        items[i] = o;
+}
+
+/* The wrapper alone, claiming no slot. Only for a WIDGET's .node, whose
+ * slot the widget object already owns — the widget roots this through
+ * its own node_ref and on_node_freed blanks it from there. */
+static surfer_node_obj_t *new_node_obj_raw(surf_node *n)
 {
     if (!n)
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("node pool exhausted"));
@@ -185,8 +257,49 @@ static surfer_node_obj_t *new_node_obj(surf_node *n)
     o->touch_cb = mp_const_none;
     o->img_ref = mp_const_none;
     o->is_input = false;
-    registry_add(MP_OBJ_FROM_PTR(o));
     return o;
+}
+
+/* One wrapper per node, kept in the node's own slot. surfer.screen() used
+ * to mint a fresh one per call — a leak on its own, and with a slot table
+ * it would unroot the previous wrapper while the C node still pointed at
+ * it through touch_user. Identity is now stable: screen() is screen(). */
+static surfer_node_obj_t *new_node_obj(surf_node *n)
+{
+    mp_obj_t have = registry_get(n);
+    if (have != mp_const_none && have != MP_OBJ_NULL &&
+        mp_obj_get_type(have) == &surfer_node_type)
+        return MP_OBJ_TO_PTR(have);
+    surfer_node_obj_t *o = new_node_obj_raw(n);
+    registry_set(n, MP_OBJ_FROM_PTR(o));
+    return o;
+}
+
+/* Every node the library frees comes through here, so this is where a
+ * wrapper stops being rooted and stops pointing at a recycled slot. */
+static void on_node_freed(surf_node *n, int index)
+{
+    (void)n;
+    size_t len;
+    mp_obj_t *items = nodes_table(&len);
+    if (!items || index < 0 || (size_t)index >= len)
+        return;
+    mp_obj_t o = items[index];
+    items[index] = mp_const_none;
+    if (o == mp_const_none || o == MP_OBJ_NULL)
+        return;
+    const mp_obj_type_t *t = mp_obj_get_type(o);
+    if (t == &surfer_node_type) {
+        ((surfer_node_obj_t *)MP_OBJ_TO_PTR(o))->node = NULL;
+    } else if (t == &surfer_widget_type) {
+        surfer_widget_obj_t *w = MP_OBJ_TO_PTR(o);
+        w->node = NULL;
+        w->w = NULL;
+        /* .node handed out a wrapper of its own; blank that too */
+        if (w->node_ref != mp_const_none && w->node_ref != MP_OBJ_NULL &&
+            mp_obj_get_type(w->node_ref) == &surfer_node_type)
+            ((surfer_node_obj_t *)MP_OBJ_TO_PTR(w->node_ref))->node = NULL;
+    }
 }
 
 static surf_node *node_of(mp_obj_t o)
@@ -1152,8 +1265,11 @@ static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             return;
         }
         if (attr == MP_QSTR_node) {
-            surfer_node_obj_t *n = new_node_obj(o->node);
-            dest[0] = MP_OBJ_FROM_PTR(n);
+            /* cached: a fresh wrapper per access leaked one object each
+             * time, and `b.node.hidden` is written in a frame loop */
+            if (o->node_ref == mp_const_none && o->node)
+                o->node_ref = MP_OBJ_FROM_PTR(new_node_obj_raw(o->node));
+            dest[0] = o->node_ref;
             return;
         }
     } else {
@@ -1209,7 +1325,9 @@ static surfer_widget_obj_t *new_widget_obj(uint8_t kind, void *w, surf_node *nod
     o->w = w;
     o->node = node;
     o->callback = mp_const_none;
-    registry_add(MP_OBJ_FROM_PTR(o));
+    o->node_ref = mp_const_none;
+    /* the widget owns its root node's slot; .node hangs off the widget */
+    registry_set(node, MP_OBJ_FROM_PTR(o));
     return o;
 }
 
@@ -1487,20 +1605,23 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
      * On the P4 that calloc lands in PSRAM (SPIRAM_USE_MALLOC, and
      * SPIRAM_MALLOC_ALWAYSINTERNAL is 16 KB), so the tight backend is
      * the browser, not the board. */
-    surf_config cfg = {.max_nodes = 4096, .bg = SURF_RGB(18, 20, 25)};
+    surf_config cfg = {.max_nodes = SURF_POOL_NODES,
+                       .bg = SURF_RGB(18, 20, 25)};
     if (inited) {
         /* soft reset (or repeat init): the VM dropped every Python object,
          * so rebuild the C scene from scratch on the surviving hal —
          * stale nodes with dangling callbacks must not outlive the VM.
-         * The registry list died with the old heap; drop the root pointer
-         * so registry_add rebuilds it instead of appending into freed
-         * memory (store fault on the first node after Ctrl-D otherwise). */
-        MP_STATE_VM(surfer_registry) = MP_OBJ_NULL;
+         * Both tables died with the old heap; drop the root pointers so
+         * they are rebuilt rather than written into freed memory (a store
+         * fault on the first node after Ctrl-D otherwise). */
+        MP_STATE_VM(surfer_nodes) = MP_OBJ_NULL;
+        MP_STATE_VM(surfer_pins) = MP_OBJ_NULL;
         surf_deinit();
         g_scr_w = w;
         g_scr_h = h;
         if (!surf_init(g_hal, w, h, &cfg))
             mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("surf re-init failed"));
+        registry_init();
         return mp_const_none;
     }
     g_hal = surfer_port_init(w, h, single);
@@ -1511,6 +1632,7 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
     prepare_assets();
     if (!surf_init(g_hal, w, h, &cfg))
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("surf init failed"));
+    registry_init();
     inited = true;
     return mp_const_none;
 }
@@ -1767,7 +1889,7 @@ static mp_obj_t mod_font(mp_obj_t data_in)
     surfer_font_obj_t *o = mp_obj_malloc(surfer_font_obj_t, &surfer_font_type);
     o->font = f;
     o->owned = true;
-    registry_add(MP_OBJ_FROM_PTR(o));
+    registry_pin(MP_OBJ_FROM_PTR(o));
     return MP_OBJ_FROM_PTR(o);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mod_font_obj, mod_font);
@@ -1861,8 +1983,8 @@ static mp_obj_t mod_widget_font(size_t n_args, const mp_obj_t *args)
         widget_font_cache = f;
         widget_font_spec = args[0];
         if (ref != mp_const_none)
-            registry_add(ref);     /* a runtime Font must outlive the call */
-        registry_add(args[0]);
+            registry_pin(ref);     /* a runtime Font must outlive the call */
+        registry_pin(args[0]);
     }
     if (widget_font_spec)
         return widget_font_spec;

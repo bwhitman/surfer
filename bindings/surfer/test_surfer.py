@@ -128,4 +128,51 @@ screen_node.add(g)
 for _ in range(5):
     surfer.tick()
 
+
+# ---- one wrapper per node, and it dies with the node ----------------------
+# The registry used to be an append-only list nothing was ever removed
+# from, so every node object Python created stayed GC-rooted for the whole
+# session -- measured at ~1 KB per build/destroy cycle, which killed a
+# host that rebuilt a panel per colour-picker event. It also left a
+# destroyed node's wrapper pointing at a pool slot already handed out
+# again. Both are the same fix: the table is keyed by pool slot and
+# surf_set_node_freed_cb clears the entry, children included.
+import gc
+
+
+def churn(n):
+    for _ in range(n):
+        gg = surfer.group(0, 0)
+        screen_node.add(gg)
+        for i in range(10):
+            gg.add(surfer.rect(i, i, 8, 8, 0x1234))
+        gg.add(surfer.label("hi", 0, 0, 0xffff))
+        gg.add(surfer.button(0, 0, 40, 20, "x"))
+        gg.on_touch = lambda ph, x, y: None
+        gg.destroy()
+
+
+churn(20)
+gc.collect()
+before = gc.mem_alloc()
+churn(200)
+gc.collect()
+grew = gc.mem_alloc() - before
+ok(grew < 16 * 1024, "build+destroy does not leak (grew %d bytes)" % grew)
+
+ok(surfer.screen() is surfer.screen(), "screen() is one stable object")
+
+# a child freed with its parent must not be left pointing into the pool
+par = surfer.group(0, 0)
+screen_node.add(par)
+kid = surfer.rect(0, 0, 4, 4, 0)
+par.add(kid)
+par.destroy()
+dangling = True
+try:
+    kid.x_pos = 5
+except Exception:
+    dangling = False
+ok(not dangling, "a child destroyed with its parent is blanked, not dangling")
+
 print("FAILURES:" if fails else "ALL OK,", len(fails) if fails else "surfer mpy binding good")

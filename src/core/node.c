@@ -19,8 +19,31 @@ surf_node *surf_node_alloc(uint8_t type)
 }
 #define node_alloc surf_node_alloc
 
+/* Set by a binding that keeps one wrapper object per node. Static rather
+ * than part of surf_g, so it survives deinit/re-init: the binding
+ * installs it once and a soft reset must not silently unhook it. */
+static surf_node_freed_fn g_freed_cb;
+
+void surf_set_node_freed_cb(surf_node_freed_fn cb)
+{
+    g_freed_cb = cb;
+}
+
+int surf_node_index(const surf_node *n)
+{
+    if (!n || !surf_g.pool)
+        return -1;
+    ptrdiff_t i = n - surf_g.pool;
+    return (i >= 0 && i < surf_g.pool_cap) ? (int)i : -1;
+}
+
 static void node_free(surf_node *n)
 {
+    /* Only real destroys. surf_init threads the whole pool onto the free
+     * list through here, and those slots were never anybody's node --
+     * calloc left them SURF_NODE_FREE, which is what tells them apart. */
+    if (g_freed_cb && n->type != SURF_NODE_FREE)
+        g_freed_cb(n, surf_node_index(n));
     if (surf_g.capture == n)
         surf_g.capture = NULL;
     if (surf_g.steal_sv == n)

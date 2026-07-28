@@ -282,6 +282,20 @@ void surf_node_add(surf_node *parent, surf_node *child);
 void surf_node_detach(surf_node *child);
 void surf_node_destroy(surf_node *n);  /* detaches, then frees the subtree */
 
+/* A node's slot in the pool, or -1 if it is not a pool node. Stable for
+ * the node's lifetime and reused after it, which is exactly what a
+ * binding wants to key a side table of wrapper objects on. */
+int surf_node_index(const surf_node *n);
+
+/* Called for EVERY node the library frees — including the children
+ * destroy() takes with their parent, which a caller has no other way to
+ * learn about. A language binding holds one wrapper object per node and
+ * uses this to drop it; without it the wrapper both leaks and is left
+ * pointing at a pool slot that has already been handed to someone else.
+ * Not called for the free-list build in surf_init. */
+typedef void (*surf_node_freed_fn)(surf_node *n, int index);
+void surf_set_node_freed_cb(surf_node_freed_fn cb);
+
 /* properties — every write damages the old and new screen rects */
 void surf_node_set_pos(surf_node *n, int16_t x, int16_t y);
 void surf_node_damage(surf_node *n);   /* force a repaint (e.g. after retint) */
