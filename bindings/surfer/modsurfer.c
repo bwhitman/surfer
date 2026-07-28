@@ -1471,14 +1471,23 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
     /* p4 only, first init only: compose straight into the scan buffer —
      * the right mode for full-screen-every-frame animation */
     bool single = n_args > 2 && mp_obj_is_true(args[2]);
-    /* 2048: real apps blow 512 fast — tulip5's drum machine alone holds
-     * ~1100 live nodes (8 channel strips + a 155-row sound chooser).
-     * Pool RAM is ~sizeof(surf_node)+paint per slot; at 2048 that is a
-     * few hundred KB, fine on every backend. Exhaustion raises
+    /* 4096: real apps blow 512 fast — tulip5's drum machine alone holds
+     * ~1100 live nodes (8 channel strips + a 155-row sound chooser) —
+     * and 2048 then ran out with SIX ordinary apps open at once, which
+     * an OS with a task bar is expected to do. Exhaustion raises
      * RuntimeError mid-scene-build, which presents as a half-alive UI
      * (everything built before the throw works, nothing after does) —
-     * found the hard way. */
-    surf_config cfg = {.max_nodes = 2048, .bg = SURF_RGB(18, 20, 25)};
+     * found the hard way.
+     *
+     * The cost is RAM and ONLY RAM: pool_cap is read in surf_init and
+     * nowhere else (node.c), and compose walks the tree with a paint
+     * list bounded by what intersects the dirty rect, not by capacity.
+     * So raising it costs nothing per frame. 136 B/surf_node + 24 B/
+     * surf_paint_ent = 160 B a slot: 320 KB at 2048, 640 KB at 4096.
+     * On the P4 that calloc lands in PSRAM (SPIRAM_USE_MALLOC, and
+     * SPIRAM_MALLOC_ALWAYSINTERNAL is 16 KB), so the tight backend is
+     * the browser, not the board. */
+    surf_config cfg = {.max_nodes = 4096, .bg = SURF_RGB(18, 20, 25)};
     if (inited) {
         /* soft reset (or repeat init): the VM dropped every Python object,
          * so rebuild the C scene from scratch on the surviving hal —
