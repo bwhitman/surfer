@@ -74,6 +74,12 @@ struct surf_node {
         struct {
             const surf_image *img;
             int16_t l, t, r, b;  /* insets; node w/h are the dst size */
+            /* The centre band of a 9-patch is what STRETCHES, and it is
+             * usually one flat colour (every capsule and panel we bake).
+             * Decided once at construction — never in the frame path —
+             * so paint can fill it in one op instead of tiling it. */
+            bool       solid[3][3];
+            surf_color solid_col[3][3];
         } nine;
         struct {
             const surf_font *font;

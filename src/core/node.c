@@ -236,6 +236,54 @@ surf_node *surf_filmstrip_new(const surf_image *img, int16_t frame_w, int16_t fr
     return n;
 }
 
+/* Is the 9-patch's centre band a single opaque colour? Scanned ONCE,
+ * here, because a stretched centre is tiled one source-tile at a time and
+ * each tile is a hal op — a 356px scrollbar thumb off a 4px band is ~89
+ * ops at the PPA's ~85us floor, twice a frame while it moves. A capsule's
+ * ROUND CAPS carry alpha but its centre does not, so this asks about the
+ * centre rather than trusting img->opaque.
+ *
+ * Not a frame-path pixel loop (DESIGN.md's first rule): it runs at
+ * construction, over the source's centre, which is tens of pixels. */
+static bool region_is_solid(const surf_image *img, int x0, int y0,
+                            int w, int h, surf_color *out)
+{
+    const int l = x0, t = y0;
+    if (w <= 0 || h <= 0 || !img->pixels)
+        return false;
+    if (img->format == SURF_FMT_RGB565) {
+        const uint8_t *base = (const uint8_t *)img->pixels;
+        surf_color first = *(const surf_color *)(base + (size_t)t * img->stride
+                                                 + (size_t)l * 2);
+        for (int yy = 0; yy < h; yy++) {
+            const surf_color *row = (const surf_color *)
+                (base + (size_t)(t + yy) * img->stride + (size_t)l * 2);
+            for (int xx = 0; xx < w; xx++)
+                if (row[xx] != first)
+                    return false;
+        }
+        *out = first;
+        return true;
+    }
+    if (img->format == SURF_FMT_ARGB8888) {
+        const uint8_t *base = (const uint8_t *)img->pixels;
+        uint32_t first = *(const uint32_t *)(base + (size_t)t * img->stride
+                                             + (size_t)l * 4);
+        if ((first >> 24) != 0xff)          /* translucent: must blend */
+            return false;
+        for (int yy = 0; yy < h; yy++) {
+            const uint32_t *row = (const uint32_t *)
+                (base + (size_t)(t + yy) * img->stride + (size_t)l * 4);
+            for (int xx = 0; xx < w; xx++)
+                if (row[xx] != first)
+                    return false;
+        }
+        *out = SURF_RGB((first >> 16) & 0xff, (first >> 8) & 0xff, first & 0xff);
+        return true;
+    }
+    return false;                            /* A8 is tinted; leave it alone */
+}
+
 surf_node *surf_ninepatch_new(const surf_image *img, int16_t x, int16_t y,
                               int16_t w, int16_t h,
                               int16_t l, int16_t t, int16_t r, int16_t b)
@@ -247,6 +295,13 @@ surf_node *surf_ninepatch_new(const surf_image *img, int16_t x, int16_t y,
         n->x = x; n->y = y; n->w = w; n->h = h;
         n->u.nine.img = img;
         n->u.nine.l = l; n->u.nine.t = t; n->u.nine.r = r; n->u.nine.b = b;
+        int sx[4] = {0, l, img->w - r, img->w};
+        int sy[4] = {0, t, img->h - b, img->h};
+        for (int ry = 0; ry < 3; ry++)
+            for (int rx = 0; rx < 3; rx++)
+                n->u.nine.solid[ry][rx] = region_is_solid(
+                    img, sx[rx], sy[ry], sx[rx + 1] - sx[rx],
+                    sy[ry + 1] - sy[ry], &n->u.nine.solid_col[ry][rx]);
     }
     return n;
 }

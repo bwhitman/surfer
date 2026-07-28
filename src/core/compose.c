@@ -100,6 +100,14 @@ static void paint_ninepatch(const surf_paint_ent *e)
                            (int16_t)(sx[rx + 1] - sx[rx]), (int16_t)(sy[ry + 1] - sy[ry])};
             surf_rect d = {(int16_t)dx[rx], (int16_t)dy[ry],
                            (int16_t)(dx[rx + 1] - dx[rx]), (int16_t)(dy[ry + 1] - dy[ry])};
+            /* the stretched centre, when it is one flat colour, is ONE
+             * fill rather than one op per source tile (see mid_is_solid) */
+            if (n->u.nine.solid[ry][rx]) {
+                surf_rect v = surf_rect_intersect(d, e->vis);
+                if (!surf_rect_empty(v))
+                    surf_g.hal->fill(v, n->u.nine.solid_col[ry][rx]);
+                continue;
+            }
             tile_blit(img, s, d, e->vis);
         }
     }
