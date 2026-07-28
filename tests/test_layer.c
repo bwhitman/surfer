@@ -14,6 +14,77 @@ static const surf_image strip256 = {
  * layer used to repair only its LATER SIBLINGS, so an overlay living in
  * another branch of the tree — tulip's task bar over an app's group —
  * smeared across the screen at the layer's scroll rate. */
+static uint16_t world_px[64];  /* pixels unused by the mock */
+static const surf_image cam_world = {
+    .pixels = world_px, .w = 400, .h = 300, .stride = 800,
+    .format = SURF_FMT_RGB565, .opaque = true,
+};
+
+/* A hal shift moves REAL framebuffer pixels, so a node that paints
+ * nothing must never issue one. The gates used to ask only the shifting
+ * node's OWN hidden flag, so a layer animating inside a hidden group —
+ * a backgrounded app's — shifted a band it does not own and dragged
+ * whatever app IS on screen sideways at its own scroll rate.
+ *
+ * Both gates on this path need covering, and they need covering IN
+ * ORDER: the sub-pixel keep-alive only runs when a shift already ran
+ * (`shifted`), so the visible whole-pixel step below is what arms it. */
+static void test_layer_hidden_ancestor_never_shifts(void)
+{
+    fresh(200, 100, 32);
+    surf_node *app = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), app);
+    surf_node *lay = surf_layer_new(&strip256, 0, 0, 200);
+    surf_layer_set_fast_scroll(lay, true);
+    surf_node_add(app, lay);
+    surf_tick();
+
+    nops = 0;
+    surf_layer_set_offset(lay, 8 << 16);        /* control: visible shifts */
+    OK(nops == 1 && ops[0].op == 'S');
+    surf_tick();
+
+    surf_node_set_hidden(app, true);            /* app goes to the back */
+    surf_tick();
+
+    nops = 0;
+    surf_layer_set_offset(lay, (8 << 16) + 100);  /* sub-pixel keep-alive */
+    OK(nops == 0);
+    surf_layer_set_offset(lay, 16 << 16);         /* whole-pixel can_fast */
+    OK(nops == 0);
+    surf_node_destroy(app);
+}
+
+/* Same rule, the sprite's copy of it (a camera window over a big opaque
+ * image). Its image must be OPAQUE or fast pan is off anyway and the
+ * slow path passes the test with the bug in place. */
+static void test_sprite_hidden_ancestor_never_pans(void)
+{
+    fresh(200, 100, 32);
+    surf_node *app = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), app);
+    surf_node *cam = surf_sprite_new(&cam_world, 0, 0);
+    surf_sprite_set_src(cam, (surf_rect){50, 50, 200, 100});
+    surf_sprite_set_fast_pan(cam, true);
+    surf_node_add(app, cam);
+    surf_tick();
+
+    nops = 0;
+    surf_sprite_set_src(cam, (surf_rect){53, 52, 200, 100});
+    OK(nops == 1 && ops[0].op == 'S');          /* control: visible pans */
+    surf_tick();
+
+    surf_node_set_hidden(app, true);
+    surf_tick();
+
+    nops = 0;
+    surf_sprite_set_src(cam, (surf_rect){53, 52, 200, 100});  /* zero shift */
+    OK(nops == 0);
+    surf_sprite_set_src(cam, (surf_rect){56, 54, 200, 100});  /* real pan */
+    OK(nops == 0);
+    surf_node_destroy(app);
+}
+
 static void test_layer_damages_other_branches(void)
 {
     fresh(200, 100, 32);
@@ -85,35 +156,12 @@ static void test_layer_skips_hidden_branches(void)
     surf_node_destroy(lay);
 }
 
-/* The skip may not lose the STOP node: a shift inside a hidden branch
- * still moved real framebuffer pixels, and an overlay above it is the
- * one thing that has to be repaired. Descend far enough to find it. */
-static void test_layer_finds_stop_inside_hidden(void)
-{
-    fresh(200, 100, 32);
-    surf_node *app = surf_group_new(0, 0);
-    surf_node_add(surf_screen(), app);
-    surf_node *lay = surf_layer_new(&strip256, 0, 0, 200);
-    surf_layer_set_fast_scroll(lay, true);
-    surf_node_add(app, lay);
-    surf_node_set_hidden(app, true);
-
-    surf_node *chrome = surf_rect_new(100, 8, 40, 16, 0xf800);
-    surf_node_add(surf_screen(), chrome);
-    surf_tick();
-
-    surf_g.dirty.n = 0;
-    surf_layer_set_offset(lay, 4 << 16);
-    OK(dirty_hits((surf_rect){100, 8, 40, 16}));
-    surf_node_destroy(app);
-    surf_node_destroy(chrome);
-}
-
 void run_layer_tests(void)
 {
     test_layer_damages_other_branches();
     test_layer_skips_hidden_branches();
-    test_layer_finds_stop_inside_hidden();
+    test_layer_hidden_ancestor_never_shifts();
+    test_sprite_hidden_ancestor_never_pans();
     fresh(200, 100, 16);
     surf_node *l = surf_layer_new(&strip256, 0, 10, 200);
     surf_node_add(surf_screen(), l);

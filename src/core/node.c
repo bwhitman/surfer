@@ -142,6 +142,23 @@ bool surf_node_attached(const surf_node *n)
     return n == surf_g.root;
 }
 
+/* Hidden by its OWN flag or by any ancestor's — a node inside a hidden
+ * group paints nothing, so it owns none of the pixels under it.
+ *
+ * This is what every hal-shift gate has to ask, not `flags & HIDDEN`.
+ * The four shift paths hand a screen rect to the hal to move in place,
+ * and the hal moves real framebuffer pixels: ask the wrong question and
+ * a layer scrolling inside a backgrounded app's hidden group drags
+ * whatever app IS on screen sideways at its own scroll rate. The node's
+ * own flag was never the whole test, only the common half of it. */
+bool surf_node_effectively_hidden(const surf_node *n)
+{
+    for (; n; n = n->parent)
+        if (n->flags & SURF_NF_HIDDEN)
+            return true;
+    return false;
+}
+
 surf_rect surf_node_subtree_bounds(const surf_node *n, int16_t px, int16_t py)
 {
     if (n->flags & SURF_NF_HIDDEN)
@@ -483,7 +500,8 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
          * when streaming can't continue. */
         if (n->u.sprite.pan_shifted) {
             bool alive = n->u.sprite.fast_pan && surf_g.hal->band_shift &&
-                         surf_node_attached(n) && !(n->flags & SURF_NF_HIDDEN);
+                         surf_node_attached(n) &&
+                         !surf_node_effectively_hidden(n);
             if (alive) {
                 int16_t zx, zy;
                 surf_node_abs_pos(n, &zx, &zy);
@@ -501,7 +519,7 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
                     n->u.sprite.img->opaque &&
                     n->u.sprite.scale_q16 == SURF_ONE && n->u.sprite.rot == 0 &&
                     n->u.sprite.mirror == 0 && surf_node_attached(n) &&
-                    !(n->flags & SURF_NF_HIDDEN) &&
+                    !surf_node_effectively_hidden(n) &&
                     dx > -src.w && dx < src.w && dy > -src.h && dy < src.h;
     if (can_fast) {
         surf_node_abs_pos(n, &ax, &ay);
@@ -602,14 +620,6 @@ int32_t surf_layer_offset(const surf_node *n)
     return (n && n->type == SURF_NODE_LAYER) ? n->u.layer.off_q16 : 0;
 }
 
-static bool node_under(const surf_node *n, const surf_node *anc)
-{
-    for (; n; n = n->parent)
-        if (n == anc)
-            return true;
-    return false;
-}
-
 /* Everything painted ABOVE a hal-shifted rect had its pixels dragged
  * along by the shift and has to be repainted where it actually is.
  *
@@ -626,21 +636,20 @@ static bool damage_above_walk(surf_node *cur, const surf_node *stop, bool after,
 {
     if (cur == stop)
         return true;
-    if (cur->flags & SURF_NF_HIDDEN) {
-        /* A hidden subtree paints nothing, so the shift dragged none of
-         * its pixels and none of them need repainting — the same early
-         * out collect() takes. Testing the flag per node instead sent
-         * every child of a backgrounded app (tulip hides an app's GROUP,
-         * not its children — 1100 nodes for one of them) through abs_pos
-         * and into the dirty list, where SURF_MAX_DIRTY entries degrade
-         * to a bounding union and a scroll costs a full-screen compose.
-         *
-         * Descend anyway when the shifting node itself lives in here:
-         * the walk still has to FIND it, or nothing after it is repaired
-         * and the smear is permanent. */
-        if (after || !node_under(stop, cur))
-            return after;
-    } else if (after && cur->w > 0 && cur->h > 0) {
+    /* A hidden subtree paints nothing, so the shift dragged none of its
+     * pixels and none of them need repainting — the same early out
+     * collect() takes. Testing the flag per node instead sent every
+     * child of a backgrounded app (tulip hides an app's GROUP, not its
+     * children — 1100 nodes for one of them) through abs_pos and into
+     * the dirty list, where SURF_MAX_DIRTY entries degrade to a bounding
+     * union and a scroll costs a full-screen compose.
+     *
+     * `stop` is never in here: every shift gate now refuses to shift
+     * from inside a hidden subtree (surf_node_effectively_hidden), so a
+     * branch that paints nothing cannot be the one that moved pixels. */
+    if (cur->flags & SURF_NF_HIDDEN)
+        return after;
+    if (after && cur->w > 0 && cur->h > 0) {
         int16_t ax, ay;
         surf_node_abs_pos(cur, &ax, &ay);
         surf_rect r = {(int16_t)(ax - gx), (int16_t)(ay - gy),
@@ -682,7 +691,8 @@ void surf_layer_set_offset(surf_node *n, int32_t off_q16)
          * (same rule and same measured reason as sprite fast pan). */
         if (n->u.layer.shifted) {
             bool alive = n->u.layer.fast && surf_g.hal->band_shift &&
-                         surf_node_attached(n) && !(n->flags & SURF_NF_HIDDEN);
+                         surf_node_attached(n) &&
+                         !surf_node_effectively_hidden(n);
             if (alive) {
                 int16_t zx, zy;
                 surf_node_abs_pos(n, &zx, &zy);
@@ -705,7 +715,7 @@ void surf_layer_set_offset(surf_node *n, int32_t off_q16)
     surf_rect on = surf_rect_intersect(band, (surf_rect){0, 0, surf_g.w, surf_g.h});
     bool can_fast = n->u.layer.fast && surf_g.hal->band_shift &&
                     n->u.layer.strip->opaque && surf_node_attached(n) &&
-                    !(n->flags & SURF_NF_HIDDEN) &&
+                    !surf_node_effectively_hidden(n) &&
                     on.w == band.w && on.h == band.h &&
                     dx > -band.w && dx < band.w;
     for (const surf_node *p = n->parent; can_fast && p; p = p->parent)

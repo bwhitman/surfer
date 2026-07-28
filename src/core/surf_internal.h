@@ -188,6 +188,8 @@ void surf_scroll_forget(surf_node *sv);  /* node freed/detached */
 
 surf_node *surf_node_alloc(uint8_t type);  /* pool; NULL when exhausted */
 bool      surf_node_attached(const surf_node *n);
+/* own HIDDEN flag or any ancestor's — what a hal-shift gate must ask */
+bool      surf_node_effectively_hidden(const surf_node *n);
 surf_rect surf_node_subtree_bounds(const surf_node *n, int16_t px, int16_t py);
 void      surf_damage_subtree(const surf_node *n);
 void      surf_compose(void);  /* compose all dirty rects + present */

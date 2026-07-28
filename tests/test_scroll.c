@@ -158,6 +158,34 @@ static void test_axis_lock(void)
     OK(surf_scrollview_offset(sv).x == 0);
 }
 
+/* The scrollview's copy of the hal-shift rule: a viewport inside a
+ * hidden group paints nothing, so scroll_rect must not run over pixels
+ * it does not own. See test_layer.c for the full reasoning. */
+static void test_scroll_hidden_ancestor_never_shifts(void)
+{
+    fresh(200, 200, 64);
+    surf_node *app = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), app);
+    surf_node *sv = surf_scrollview_new(10, 20, 100, 100);
+    surf_node_add(app, sv);
+    surf_node_add(sv, surf_rect_new(0, 0, 80, 300, 1));
+    surf_scrollview_set_fast_scroll(sv, true);
+    surf_tick();
+
+    nops = 0;
+    surf_scrollview_set_offset(sv, 0, 30);      /* control: visible shifts */
+    OK(nops == 1 && ops[0].op == 'S');
+    surf_tick();
+
+    surf_node_set_hidden(app, true);
+    surf_tick();
+
+    nops = 0;
+    surf_scrollview_set_offset(sv, 0, 60);
+    OK(nops == 0);
+    surf_node_destroy(app);
+}
+
 static void test_fast_scrollview(void)
 {
     fresh(200, 200, 64);
@@ -338,6 +366,7 @@ void run_scroll_tests(void)
     test_scroll_drag_steal();
     test_axis_lock();
     test_fast_scrollview();
+    test_scroll_hidden_ancestor_never_shifts();
     test_overscroll_spring();
     test_checkbox();
     test_dropdown();

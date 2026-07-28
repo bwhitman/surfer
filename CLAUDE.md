@@ -261,13 +261,52 @@ re-adds the presented group LAST, putting every backgrounded app before
 it where `after` is still false; the launcher's full-screen scrim, added
 after, is what reaches it.
 
-One node still has to be found inside a hidden branch: `stop` itself. The
-shift gates test the shifting node's OWN hidden flag, not its ancestors',
-so a layer inside a hidden group can still band_shift real framebuffer
-pixels — and skipping that branch would leave the overlay above it
-unrepaired forever. The walk descends into a hidden subtree only when
-`stop` is under it (`node_under`), which is O(depth) and only on the way
-down to it.
+The skip needs no exception for `stop`. It briefly had one — the walk
+descended into a hidden subtree when the shifting node was under it,
+because back then a node inside a hidden group could still `band_shift`
+and an overlay above it would have been left smeared with nothing ever
+repairing it. Fixing the gates below removed the case that hatch existed
+for, and it went with them: a branch that paints nothing can no longer be
+the branch that moved pixels.
+
+### ...and a shift path must first ask whether it is visible AT ALL
+
+Repairing what is above the band is the second question. The first is
+whether this node owns those pixels at all, and **the node's own HIDDEN
+flag is not that test** — a node inside a hidden group paints nothing
+either. Every gate asked `n->flags & SURF_NF_HIDDEN` alone, so a layer or
+camera animating inside a hidden group handed the hal a `band_shift` for
+a band it does not own and dragged whatever IS on screen there sideways
+at its own scroll rate. The same smear as the sibling-only walk, one
+level up: the walk had the *repair* right and the *permission* wrong.
+
+`surf_node_effectively_hidden(n)` (node.c, beside `surf_node_attached`)
+walks self-then-ancestors, and **six** gates ask it, not four — the four
+`can_fast` tests plus the layer's and sprite's sub-pixel keep-alive,
+which issue a ZERO band_shift and drag pixels just as well. The fallback
+needed no code of its own: the gate goes false, the slow path's
+`surf_damage_subtree` runs, nothing is shifted.
+
+Why the four paths were the only ones wrong, and where to look if a fifth
+appears: `hit()` and `collect()` are recursive descents from the ROOT, so
+a hidden ancestor prunes the subtree before recursion ever reaches the
+child, and a per-node flag test is sufficient there. The shift paths are
+the only ones a host calls **directly on a node**, sideways into the
+tree, with no ancestor on the stack to have already said no.
+
+Two things about testing it. The keep-alive only runs when a shift
+already ran (`shifted`/`pan_shifted`), so a test has to do a **visible**
+whole-pixel step first to arm it — hide the group first and that branch
+is never reached and the assertion passes with the bug in place. And the
+regressions live one per path (test_layer.c the layer and the sprite,
+test_scroll.c the scrollview, test_grid.c the textgrid), because these
+are four separate copies of one rule and always have been.
+
+tulip5 cannot reach any of this today — a backgrounded app's `frame()` is
+never called, so nothing animates while hidden. It was fixed anyway
+because surfer is a general UI library and nothing stops a host from
+animating a hidden group; the cost of being wrong is the whole screen
+smearing, and the fix is one predicate.
 
 ## Textinput, from MicroPython
 

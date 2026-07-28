@@ -190,7 +190,7 @@ static bool grid_shift_pixels(surf_node *n, int16_t dy_rows, int16_t ady)
 {
     if (!n->u.grid.fast || !surf_g.hal->scroll_rect ||
         ady >= n->u.grid.rows || !surf_node_attached(n) ||
-        (n->flags & SURF_NF_HIDDEN))
+        surf_node_effectively_hidden(n))
         return false;
     int16_t ax, ay;
     surf_node_abs_pos(n, &ax, &ay);

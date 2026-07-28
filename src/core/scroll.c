@@ -60,7 +60,7 @@ static void scroll_damage(surf_node *sv, int32_t old_x_q16, int32_t old_y_q16)
     int16_t dy = (int16_t)((sv->u.scroll.off_y >> 16) - (old_y_q16 >> 16));
 
     if (sv->u.scroll.fast && surf_g.hal->scroll_rect && dx == 0 &&
-        surf_node_attached(sv) && !(sv->flags & SURF_NF_HIDDEN)) {
+        surf_node_attached(sv) && !surf_node_effectively_hidden(sv)) {
         if (dy == 0)
             return;  /* sub-pixel: nothing moved on screen */
         for (const surf_node *p = sv->parent; p; p = p->parent)

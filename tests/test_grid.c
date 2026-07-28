@@ -88,6 +88,34 @@ static void test_grid_pixels(void)
     surf_node_destroy(g);
 }
 
+/* The textgrid's copy of the hal-shift rule — the console's own path.
+ * A grid inside a hidden group paints nothing, so its line-scroll must
+ * not shift pixels it does not own. See test_layer.c for the reasoning. */
+static void test_grid_hidden_ancestor_never_shifts(void)
+{
+    fresh(400, 200, 32);
+    surf_node *app = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), app);
+    surf_node *g = surf_textgrid_new(&tfont, 10, 4, 0xffff, 0x1234);
+    surf_node_add(app, g);
+    surf_textgrid_set_row(g, 0, "AB");
+    surf_textgrid_set_fast_scroll(g, true);
+    surf_tick();
+
+    nops = 0;
+    surf_textgrid_scroll(g, 1);                 /* control: visible shifts */
+    OK(nops == 1 && ops[0].op == 'S');
+    surf_tick();
+
+    surf_node_set_hidden(app, true);
+    surf_tick();
+
+    nops = 0;
+    surf_textgrid_scroll(g, 1);
+    OK(nops == 0);
+    surf_node_destroy(app);
+}
+
 static void test_grid_fast_scroll(void)
 {
     fresh(400, 200, 32);
@@ -183,5 +211,6 @@ void run_grid_tests(void)
     test_grid_model();
     test_grid_pixels();
     test_grid_fast_scroll();
+    test_grid_hidden_ancestor_never_shifts();
     test_grid_scrollback();
 }
