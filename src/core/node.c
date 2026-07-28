@@ -602,6 +602,14 @@ int32_t surf_layer_offset(const surf_node *n)
     return (n && n->type == SURF_NODE_LAYER) ? n->u.layer.off_q16 : 0;
 }
 
+static bool node_under(const surf_node *n, const surf_node *anc)
+{
+    for (; n; n = n->parent)
+        if (n == anc)
+            return true;
+    return false;
+}
+
 /* Everything painted ABOVE a hal-shifted rect had its pixels dragged
  * along by the shift and has to be repainted where it actually is.
  *
@@ -618,7 +626,21 @@ static bool damage_above_walk(surf_node *cur, const surf_node *stop, bool after,
 {
     if (cur == stop)
         return true;
-    if (after && !(cur->flags & SURF_NF_HIDDEN) && cur->w > 0 && cur->h > 0) {
+    if (cur->flags & SURF_NF_HIDDEN) {
+        /* A hidden subtree paints nothing, so the shift dragged none of
+         * its pixels and none of them need repainting — the same early
+         * out collect() takes. Testing the flag per node instead sent
+         * every child of a backgrounded app (tulip hides an app's GROUP,
+         * not its children — 1100 nodes for one of them) through abs_pos
+         * and into the dirty list, where SURF_MAX_DIRTY entries degrade
+         * to a bounding union and a scroll costs a full-screen compose.
+         *
+         * Descend anyway when the shifting node itself lives in here:
+         * the walk still has to FIND it, or nothing after it is repaired
+         * and the smear is permanent. */
+        if (after || !node_under(stop, cur))
+            return after;
+    } else if (after && cur->w > 0 && cur->h > 0) {
         int16_t ax, ay;
         surf_node_abs_pos(cur, &ax, &ay);
         surf_rect r = {(int16_t)(ax - gx), (int16_t)(ay - gy),

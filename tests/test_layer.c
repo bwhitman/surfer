@@ -43,9 +43,77 @@ static void test_layer_damages_other_branches(void)
     surf_node_destroy(chrome);
 }
 
+static bool dirty_hits(surf_rect q)
+{
+    for (int i = 0; i < surf_g.dirty.n; i++)
+        if (surf_rect_overlaps(surf_g.dirty.r[i], q))
+            return true;
+    return false;
+}
+
+/* ...but a HIDDEN branch paints nothing, so nothing in it was dragged.
+ * The walk gated the flag per node and recursed regardless, and tulip
+ * hides an app's GROUP rather than its children — so every child of a
+ * backgrounded app passed the test on its own and landed in the dirty
+ * list, which degrades to a bounding union past SURF_MAX_DIRTY. */
+static void test_layer_skips_hidden_branches(void)
+{
+    fresh(200, 100, 32);
+    surf_node *lay = surf_layer_new(&strip256, 0, 0, 200);
+    surf_layer_set_fast_scroll(lay, true);
+    surf_node_add(surf_screen(), lay);
+
+    surf_node *bg = surf_group_new(0, 0);           /* a backgrounded app */
+    surf_node_add(surf_screen(), bg);
+    surf_node *b1 = surf_rect_new(10, 4, 20, 20, 0x0111);
+    surf_node *b2 = surf_rect_new(60, 4, 20, 20, 0x0222);
+    surf_node_add(bg, b1);
+    surf_node_add(bg, b2);
+    surf_node_set_hidden(bg, true);                 /* the GROUP, not them */
+
+    surf_node *chrome = surf_rect_new(100, 8, 40, 16, 0xf800);  /* the bar */
+    surf_node_add(surf_screen(), chrome);
+    surf_tick();
+
+    surf_g.dirty.n = 0;
+    surf_layer_set_offset(lay, 4 << 16);
+    OK(!dirty_hits((surf_rect){10, 4, 20, 20}));    /* neither hidden child */
+    OK(!dirty_hits((surf_rect){60, 4, 20, 20}));    /* reaches the list */
+    OK(dirty_hits((surf_rect){100, 8, 40, 16}));    /* the bar still does */
+    surf_node_destroy(bg);
+    surf_node_destroy(chrome);
+    surf_node_destroy(lay);
+}
+
+/* The skip may not lose the STOP node: a shift inside a hidden branch
+ * still moved real framebuffer pixels, and an overlay above it is the
+ * one thing that has to be repaired. Descend far enough to find it. */
+static void test_layer_finds_stop_inside_hidden(void)
+{
+    fresh(200, 100, 32);
+    surf_node *app = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), app);
+    surf_node *lay = surf_layer_new(&strip256, 0, 0, 200);
+    surf_layer_set_fast_scroll(lay, true);
+    surf_node_add(app, lay);
+    surf_node_set_hidden(app, true);
+
+    surf_node *chrome = surf_rect_new(100, 8, 40, 16, 0xf800);
+    surf_node_add(surf_screen(), chrome);
+    surf_tick();
+
+    surf_g.dirty.n = 0;
+    surf_layer_set_offset(lay, 4 << 16);
+    OK(dirty_hits((surf_rect){100, 8, 40, 16}));
+    surf_node_destroy(app);
+    surf_node_destroy(chrome);
+}
+
 void run_layer_tests(void)
 {
     test_layer_damages_other_branches();
+    test_layer_skips_hidden_branches();
+    test_layer_finds_stop_inside_hidden();
     fresh(200, 100, 16);
     surf_node *l = surf_layer_new(&strip256, 0, 10, 200);
     surf_node_add(surf_screen(), l);

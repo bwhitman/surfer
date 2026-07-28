@@ -248,6 +248,27 @@ the paragraph it has to read. Its test needs an **opaque** image: fast
 pan is gated on `img->opaque`, and with a transparent one the slow path
 runs, damages everything, and the test passes with the bug in place.
 
+**The walk skips a HIDDEN subtree whole**, the same early out `collect()`
+takes — a branch that paints nothing had no pixels to drag. It used to
+gate the flag PER NODE and recurse regardless, which is wrong for the way
+a host actually hides things: tulip hides a backgrounded app's GROUP and
+never touches its children, so all ~1100 of them passed the test
+individually, went through `surf_node_abs_pos` and landed in the dirty
+list — where past `SURF_MAX_DIRTY` (32) entries degrade to a bounding
+union, turning one scroll into a full-screen compose (20.7 ms on the P4X,
+most of a 30 fps budget). It stayed latent only because `UIScreen.present()`
+re-adds the presented group LAST, putting every backgrounded app before
+it where `after` is still false; the launcher's full-screen scrim, added
+after, is what reaches it.
+
+One node still has to be found inside a hidden branch: `stop` itself. The
+shift gates test the shifting node's OWN hidden flag, not its ancestors',
+so a layer inside a hidden group can still band_shift real framebuffer
+pixels — and skipping that branch would leave the overlay above it
+unrepaired forever. The walk descends into a hidden subtree only when
+`stop` is under it (`node_under`), which is O(depth) and only on the way
+down to it.
+
 ## Textinput, from MicroPython
 
 `surfer.textinput(x, y, w, color, font)` is the editable-text node, and

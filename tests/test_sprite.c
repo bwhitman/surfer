@@ -49,9 +49,53 @@ static void test_sprite_pan_damages_other_branches(void)
     surf_node_destroy(chrome);
 }
 
+/* ...and the same walk must SKIP a hidden branch: tulip hides a
+ * backgrounded app's group, never its children, so every child passed
+ * the per-node flag test on its own and polluted the dirty list. */
+static void test_sprite_pan_skips_hidden_branches(void)
+{
+    fresh(200, 100, 32);
+    static uint16_t world_px[128 * 64];
+    static const surf_image world = {
+        .pixels = world_px, .w = 128, .h = 64, .stride = 128 * 2,
+        .format = SURF_FMT_RGB565, .opaque = true,   /* fast pan needs it */
+    };
+    surf_node *cam = surf_sprite_new(&world, 0, 0);
+    surf_sprite_set_fast_pan(cam, true);
+    surf_sprite_set_src(cam, (surf_rect){0, 0, 64, 32});
+    surf_node_add(surf_screen(), cam);
+
+    surf_node *bg = surf_group_new(0, 0);           /* a backgrounded app */
+    surf_node_add(surf_screen(), bg);
+    surf_node *hidden = surf_rect_new(8, 4, 20, 12, 0x0111);
+    surf_node_add(bg, hidden);
+    surf_node_set_hidden(bg, true);                 /* the GROUP, not it */
+
+    surf_node *chrome = surf_rect_new(40, 4, 20, 12, 0xf800);
+    surf_node_add(surf_screen(), chrome);
+    surf_tick();
+
+    surf_g.dirty.n = 0;
+    surf_sprite_set_src(cam, (surf_rect){4, 0, 64, 32});
+    OK(surf_g.dirty.n > 0 && surf_g.dirty.n < 6);   /* the FAST path ran */
+    bool hit_hidden = false, hit_chrome = false;
+    for (int i = 0; i < surf_g.dirty.n; i++) {
+        if (surf_rect_overlaps(surf_g.dirty.r[i], (surf_rect){8, 4, 20, 12}))
+            hit_hidden = true;
+        if (surf_rect_overlaps(surf_g.dirty.r[i], (surf_rect){40, 4, 20, 12}))
+            hit_chrome = true;
+    }
+    OK(!hit_hidden);
+    OK(hit_chrome);
+    surf_node_destroy(bg);
+    surf_node_destroy(chrome);
+    surf_node_destroy(cam);
+}
+
 void run_sprite_tests(void)
 {
     test_sprite_pan_damages_other_branches();
+    test_sprite_pan_skips_hidden_branches();
     fresh(200, 200, 16);
     surf_node *s = surf_sprite_new(&img64, 10, 10);
     surf_node_add(surf_screen(), s);
