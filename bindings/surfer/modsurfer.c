@@ -169,22 +169,41 @@ extern const mp_obj_type_t surfer_image_type;
 /* Things Python creates stay reachable from here so the GC can't collect
  * an object the C side still points at (callbacks, tree links).
  *
- * TWO tables, because there are two lifetimes and conflating them leaked
- * the machine dry. `surfer_nodes` is indexed by POOL SLOT and holds the
- * one wrapper for the node in that slot; surf_set_node_freed_cb clears
- * the entry when the node dies, children included. `surfer_pins` is the
- * old append-only list, now only for things with no node to hang off --
- * a runtime Font is baked into labels and has to outlive the call that
- * made it.
+ * ONE table, indexed by POOL SLOT, holding the one wrapper for the node
+ * in that slot; surf_set_node_freed_cb clears the entry when the node
+ * dies, children included. A node's own Python refs (its callback, a
+ * runtime Font or Image it draws from) hang off that wrapper, so they
+ * live exactly as long as the node does.
  *
- * It used to be one append-only list for all of it, and nothing was ever
- * removed: every node object Python ever created stayed rooted for the
- * life of the session. A task bar rebuilt on each colour-picker callback
- * leaked ~4.4 KB an event and died with `memory allocation failed`. The
- * same append also left a destroyed node's wrapper pointing at a pool
- * slot already handed to someone else. */
+ * It used to be an append-only list, and nothing was ever removed: every
+ * node object Python ever created stayed rooted for the life of the
+ * session. A task bar rebuilt on each colour-picker callback leaked
+ * ~4.4 KB an event and died with `memory allocation failed`. The same
+ * append also left a destroyed node's wrapper pointing at a pool slot
+ * already handed to someone else.
+ *
+ * That list survived as `surfer_pins` for things with no node to hang
+ * off, and it had to go too -- it was the one root a caller could write
+ * through BEFORE surfer.init(). mp_init() does not clear a usermod's
+ * root pointers (it clears its own, one subsystem at a time, in
+ * runtime.c), so after a soft reset this one still pointed at a list in
+ * a heap gc_init() had handed back. A stale pointer is not MP_OBJ_NULL,
+ * so the guard did not fire and the append wrote through it: a store
+ * fault, i.e. a board that does not come back. Reached from
+ * widget_font(), which a host may legitimately call before init -- that
+ * exact order killed the P4X 5/5, and it was as old as the registry
+ * rather than anything a recent commit broke.
+ *
+ * Deleting it is safe because it was already protecting nothing. A Font
+ * a NODE draws from is anchored by that node's own img_ref; a Font
+ * nobody uses can be collected without harm, since surfer_font_type has
+ * no finaliser and surf_font_free runs only from an explicit .destroy()
+ * -- so a collected wrapper leaves the C font allocated rather than
+ * leaving a pointer dangling. The pin leaked that same allocation, only
+ * permanently. `surfer_nodes` stays: nothing reachable before init
+ * touches it (registry_get/set both need a live scene), and mod_init's
+ * re-init branch drops it. */
 MP_REGISTER_ROOT_POINTER(mp_obj_t surfer_nodes);
-MP_REGISTER_ROOT_POINTER(mp_obj_t surfer_pins);
 
 /* The node pool, and so the length of the slot table. See mod_init for
  * why it is this number and what it costs. */
@@ -204,13 +223,6 @@ static void registry_init(void)
         items[i] = mp_const_none;
     MP_STATE_VM(surfer_nodes) = list;
     surf_set_node_freed_cb(on_node_freed);
-}
-
-static void registry_pin(mp_obj_t o)
-{
-    if (MP_STATE_VM(surfer_pins) == MP_OBJ_NULL)
-        MP_STATE_VM(surfer_pins) = mp_obj_new_list(0, NULL);
-    mp_obj_list_append(MP_STATE_VM(surfer_pins), o);
 }
 
 /* The slot table as a raw array: O(1), no allocation and nothing that can
@@ -353,9 +365,18 @@ static const surf_font *font_named(const char *name)
  * blob or a named built-in), a name string ("helvR12"), or a legacy
  * index. Sets *ref to the object that must stay alive for the node. */
 /* What widget chrome draws with. Resolved lazily, because the registry
- * is not up yet when this file's statics are initialised. */
+ * is not up yet when this file's statics are initialised.
+ *
+ * The name is a COPY rather than the mp_obj_t the caller passed. These
+ * are C statics: they outlive the VM that set them, so holding a Python
+ * object here means widget_font() can hand back one the GC freed a soft
+ * reset ago. The cached surf_font* is fine to keep either way -- a
+ * built-in is static data, and a runtime one is only freed by an
+ * explicit Font.destroy(). Empty name means a runtime Font, which has no
+ * name to report. */
 static const surf_font *widget_font_cache;
-static mp_obj_t widget_font_spec;         /* the name/Font the caller gave */
+static char widget_font_name[32];   /* "" until a host names one */
+static bool widget_font_unnamed;    /* last set from a Font object */
 
 static const surf_font *font_arg(mp_obj_t o, mp_obj_t *ref);
 
@@ -1611,11 +1632,18 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
         /* soft reset (or repeat init): the VM dropped every Python object,
          * so rebuild the C scene from scratch on the surviving hal —
          * stale nodes with dangling callbacks must not outlive the VM.
-         * Both tables died with the old heap; drop the root pointers so
-         * they are rebuilt rather than written into freed memory (a store
-         * fault on the first node after Ctrl-D otherwise). */
+         * The slot table died with the old heap; drop the root pointer so
+         * it is rebuilt rather than written into freed memory (a store
+         * fault on the first node after Ctrl-D otherwise). This is the
+         * only per-session reset surfer gets — a built-in module's
+         * __init__ is not it, since a const-globals module never lands in
+         * sys.modules and so runs __init__ on EVERY import, not once. */
         MP_STATE_VM(surfer_nodes) = MP_OBJ_NULL;
-        MP_STATE_VM(surfer_pins) = MP_OBJ_NULL;
+        /* and the chrome goes back to the house default, so a fresh VM
+         * does not inherit a face the last one chose */
+        widget_font_cache = NULL;
+        widget_font_name[0] = '\0';
+        widget_font_unnamed = false;
         surf_deinit();
         g_scr_w = w;
         g_scr_h = h;
@@ -1867,7 +1895,10 @@ MP_DEFINE_CONST_OBJ_TYPE(surfer_font_type, MP_QSTR_Font, MP_TYPE_FLAG_NONE,
 
 /* surfer.font(blob_bytes) -> Font. blob is a fontbake .py FONT value
  * (the "SFN1" format). Pass it to surfer.textgrid(..., font=f) for a
- * custom console font. Held alive by the grid + a GC root. */
+ * custom console font, which anchors it (img_ref) for as long as the
+ * grid lives. Dropping the last reference to one nobody draws with does
+ * NOT free the atlas — only Font.destroy() does — so it leaks rather
+ * than dangles, which is what makes it safe to leave unrooted. */
 static mp_obj_t mod_font(mp_obj_t data_in)
 {
     /* a name selects a built-in; bytes decode a fontbake blob */
@@ -1889,7 +1920,6 @@ static mp_obj_t mod_font(mp_obj_t data_in)
     surfer_font_obj_t *o = mp_obj_malloc(surfer_font_obj_t, &surfer_font_type);
     o->font = f;
     o->owned = true;
-    registry_pin(MP_OBJ_FROM_PTR(o));
     return MP_OBJ_FROM_PTR(o);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mod_font_obj, mod_font);
@@ -1969,26 +1999,39 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_scrollview_obj, 4, 4, mod_scrollv
  * no callback. .value takes True/False or a brightness 0..1, and .color
  * is settable — the art is A8, so a retint costs a repaint and no
  * pixels. */
-/* surfer.widget_font([name_or_font]) -> the current one.
+/* surfer.widget_font([name_or_font]) -> the current one, by NAME.
  *
  * Buttons and dropdowns draw their labels in this. It applies to widgets
  * created AFTER the call — a button builds its label node at
  * construction, so nothing already on screen changes face under it — and
- * with no argument it just reports what is in force. */
+ * with no argument it just reports what is in force.
+ *
+ * Set from a Font object it reports None, because a surf_font carries no
+ * name and there is nowhere to keep the object: this state is a C static
+ * that outlives the VM, so parking a Python object here is how you hand
+ * back one the GC freed a soft reset ago. Nothing is lost that surfer
+ * knew — the caller has the object it passed in. */
 static mp_obj_t mod_widget_font(size_t n_args, const mp_obj_t *args)
 {
     if (n_args) {
-        mp_obj_t ref = mp_const_none;
-        const surf_font *f = font_arg(args[0], &ref);
-        widget_font_cache = f;
-        widget_font_spec = args[0];
-        if (ref != mp_const_none)
-            registry_pin(ref);     /* a runtime Font must outlive the call */
-        registry_pin(args[0]);
+        widget_font_cache = font_arg(args[0], NULL);
+        if (mp_obj_is_str(args[0])) {
+            size_t len;
+            const char *s = mp_obj_str_get_data(args[0], &len);
+            if (len >= sizeof(widget_font_name))
+                len = sizeof(widget_font_name) - 1;
+            memcpy(widget_font_name, s, len);
+            widget_font_name[len] = '\0';
+            widget_font_unnamed = false;
+        } else {
+            widget_font_name[0] = '\0';
+            widget_font_unnamed = true;
+        }
     }
-    if (widget_font_spec)
-        return widget_font_spec;
-    return mp_obj_new_str(WIDGET_FONT, strlen(WIDGET_FONT));
+    if (widget_font_unnamed)
+        return mp_const_none;
+    const char *name = widget_font_name[0] ? widget_font_name : WIDGET_FONT;
+    return mp_obj_new_str(name, strlen(name));
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_widget_font_obj, 0, 1,
                                            mod_widget_font);

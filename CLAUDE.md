@@ -536,11 +536,15 @@ first in the Makefile list and reordering it would silently restyle every
 widget.
 
 `surfer.widget_font(name_or_font)` overrides the chrome face and returns
-what is in force (call it with no argument to just ask). It applies to
-widgets built AFTER the call — a button bakes its label node at
-construction — which is why a host sets it once at import rather than
-expecting the screen to change under it. tulip5 does exactly that, from
-its own house style in `ui.py`.
+what is in force **by name** (call it with no argument to just ask; it
+answers `None` after a `Font` object, which has no name to report). It
+applies to widgets built AFTER the call — a button bakes its label node
+at construction — so a host sets it once, early, rather than expecting
+the screen to change under it. tulip5 does exactly that, from its house
+style in `ui.py`.
+
+Early, but **after `surfer.init()`** — see the root-pointer rule below.
+Setting it at import time is what killed the P4X on every soft reset.
 
 MicroPython takes a font as a name, a `Font` object, or a legacy index
 anywhere: `surfer.label(s, x, y, c, "helvR12")`,
@@ -552,6 +556,51 @@ sizes its cell from 'M', so a proportional face is refused.
 `ports/esp32p4/main/app_main.c` render the same 3-page specimen from the
 same source (`demos/fonts_scene.c`); tap/click cycles pages. `SURF_TAP=x,y`
 injects a synthetic tap so the page flip is testable headlessly.
+
+## A root pointer dies with the VM. A C static does not.
+
+`MP_REGISTER_ROOT_POINTER` fields live in `mp_state_ctx`, and **`mp_init()`
+does not clear them**. It clears its OWN — `vfs_cur`, `dupterm_objs`,
+`persistent_code_root_pointers`, each one spelled out by hand in
+`py/runtime.c` — and knows nothing about a usermod's. So after a soft
+reset every root the binding registered still points into a heap
+`gc_init()` has just handed back, and a stale pointer is not
+`MP_OBJ_NULL`: the usual `if (x == MP_OBJ_NULL) x = new_list()` guard
+does not fire, and the append writes through it. On the P4 that is a
+store access fault at boot, i.e. a board that never comes back
+(measured 5/5 on the P4X, and as old as the registry — a bisect
+exonerated the wrapper rework it was first blamed on).
+
+There is **no per-session hook** to fix this with. A built-in module's
+`__init__` looks like one and is not: a module with a const globals dict
+is never stored in `sys.modules`, so `mp_module_get_builtin` re-resolves
+it and calls `__init__` on EVERY import, not once per VM. Measured — set
+the chrome font, `import surfer` again, and the hook has already reset
+it. Nor can C detect a new session on its own: statics and root pointers
+both survive a soft reset with identical values, and `gc_init()` does not
+zero the heap, so a canary's bytes are typically still sitting there
+intact and compare *equal* in exactly the case worth catching.
+
+So the rule is structural, not defensive:
+
+- **`surfer.init()` is the session boundary**, and it is the only place a
+  root is dropped and rebuilt. Anything a host may call BEFORE it must
+  not write through one.
+- **The node registry is the only root**, it is only reachable with a
+  live scene, and `mod_init` nulls it on re-entry. `surfer_pins`, an
+  append-only list for objects with no node to hang off, was the one root
+  a pre-init call could reach — through `widget_font()` — and it is gone.
+- Deleting it cost nothing, which is the part worth remembering: a `Font`
+  a node draws from is already anchored by that node's own `img_ref`, and
+  `surfer_font_type` has **no finaliser** (`surf_font_free` runs only
+  from an explicit `.destroy()`), so collecting an unused wrapper leaves
+  the C font allocated rather than leaving a pointer dangling. The pin
+  was buying a leak it already had.
+- **A C static must not hold an `mp_obj_t`.** It outlives the VM that
+  made the object. `widget_font_spec` did, so `widget_font()` could hand
+  a caller an object the GC freed a session ago; it is a `char[]` name
+  now, which is also why the getter reports a name rather than whatever
+  you passed in.
 
 ## Looking at the sdl window
 
