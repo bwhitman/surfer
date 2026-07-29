@@ -159,6 +159,10 @@ typedef struct {
     void *w;          /* surf_slider* / surf_knob* / ... */
     surf_node *node;  /* widget root, for tree/pos ops */
     mp_obj_t callback;
+    /* the knob's SECOND callback: a tap rather than a drag. Its own slot
+     * because it reports something else — where the user pointed, not
+     * what the value became. */
+    mp_obj_t tap_cb;
     mp_obj_t node_ref; /* .node, made once — see new_node_obj */
 } surfer_widget_obj_t;
 
@@ -1231,6 +1235,17 @@ static void widget_cb(int32_t value, void *user)
     mp_call_function_1(o->callback, arg);
 }
 
+/* knob.on_tap — a tap rather than a drag, with where in the knob's height
+ * it landed. Separate from the value callback because it means something
+ * else: not "the value moved" but "the user pointed at this". */
+static void widget_tap_cb(int32_t frac, void *user)
+{
+    surfer_widget_obj_t *o = user;
+    if (o->tap_cb == mp_const_none || o->tap_cb == MP_OBJ_NULL)
+        return;
+    mp_call_function_1(o->tap_cb, mp_obj_new_float((mp_float_t)frac / SURF_ONE));
+}
+
 static void widget_idx_cb(int32_t idx, void *user)
 {
     widget_cb(idx, user);
@@ -1354,6 +1369,12 @@ static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             dest[0] = MP_OBJ_NULL;
             return;
         }
+        if (attr == MP_QSTR_on_tap && o->kind == W_KNOB) {
+            o->tap_cb = dest[1];
+            surf_knob_on_tap(o->w, widget_tap_cb, o);
+            dest[0] = MP_OBJ_NULL;
+            return;
+        }
         /* .color on anything drawn from A8 art: the lamp, and now the
          * knob, the selector and the slider's cap. One asset is any
          * colour because the tint is a property of the image STRUCT, not
@@ -1409,6 +1430,7 @@ static surfer_widget_obj_t *new_widget_obj(uint8_t kind, void *w, surf_node *nod
     o->w = w;
     o->node = node;
     o->callback = mp_const_none;
+    o->tap_cb = mp_const_none;
     o->node_ref = mp_const_none;
     /* the widget owns its root node's slot; .node hangs off the widget */
     registry_set(node, MP_OBJ_FROM_PTR(o));

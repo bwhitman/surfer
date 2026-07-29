@@ -656,6 +656,12 @@ void       surf_knob_set_mode(surf_knob *k, surf_knob_mode mode);
 void       surf_knob_set_value(surf_knob *k, int32_t value_q16);  /* no cb */
 int32_t    surf_knob_value(const surf_knob *k);
 void       surf_knob_on_change(surf_knob *k, surf_change_cb cb, void *user);
+/* A TAP on the knob — a press that travelled under a few px, so not a
+ * drag. The value is unchanged; this reports that the user pointed AT
+ * this knob, which a caller turns into a settings popup. The reported
+ * value is WHERE in the knob's height it landed (Q16 0..SURF_ONE, top to
+ * bottom), so "the top third is special" is the caller's policy. */
+void       surf_knob_on_tap(surf_knob *k, surf_change_cb cb, void *user);
 
 /* Selector: a knob with DETENTS. It chooses among N fixed options and
  * reports an index — a mode switch, a bank, a waveform — sharing the

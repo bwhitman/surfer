@@ -9,6 +9,8 @@
 
 /* Pixels of vertical drag for a full value sweep. */
 #define KNOB_DRAG_RANGE 200
+/* A press that travelled less than this is a TAP, not a drag. */
+#define KNOB_TAP_SLOP 6
 
 /* The house grey, when a style asks for no colour of its own. */
 #define KNOB_DEFAULT_COLOR SURF_RGB(150, 154, 168)
@@ -23,6 +25,16 @@ struct surf_knob {
     int16_t        drag_start_y;
     surf_change_cb cb;
     void          *user;
+    /* A tap is reported SEPARATELY from the value, because it means
+     * something else entirely: not "the value is now this" but "the user
+     * pointed AT this knob", which a caller turns into a settings popup.
+     * It carries WHERE in the knob's height it landed, so the policy —
+     * "the top third opens the panel" — stays with the caller. A widget
+     * should have no opinion about which part of itself is special. */
+    surf_change_cb tap_cb;
+    void          *tap_user;
+    int16_t        down_x, down_y;
+    int32_t        moved;
 };
 
 static int32_t clamp_q16(int32_t v)
@@ -78,13 +90,41 @@ static void knob_touch(surf_node *n, const surf_touch *t, void *user)
     case SURF_TOUCH_DOWN:
         k->drag_start_y = t->y;
         k->drag_start_value = k->value;
+        k->down_x = t->x;
+        k->down_y = t->y;
+        k->moved = 0;
         break;
-    case SURF_TOUCH_MOVE:
+    case SURF_TOUCH_MOVE: {
+        int32_t dx = t->x - k->down_x, dy = t->y - k->down_y;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx + dy > k->moved)
+            k->moved = dx + dy;
         knob_set(k, k->drag_start_value +
                         (int32_t)((int64_t)(k->drag_start_y - t->y) * SURF_ONE /
                                   KNOB_DRAG_RANGE));
         break;
+    }
     case SURF_TOUCH_UP:
+        /* A TAP: a press that never travelled. The value is already back
+         * where it started — a zero-travel drag computes the value it
+         * began at — so there is nothing to undo and this is purely an
+         * extra report. Decided at UP, the same rule and the same slop
+         * the selector uses for its own tap. */
+        if (k->moved <= KNOB_TAP_SLOP && k->tap_cb != NULL) {
+            int16_t ax, ay;
+            surf_node_abs_pos(k->strip, &ax, &ay);
+            surf_point sz = surf_node_size(k->strip);
+            int32_t frac = 0;
+            if (sz.y > 0) {
+                frac = (int32_t)((int64_t)(t->y - ay) * SURF_ONE / sz.y);
+                if (frac < 0)
+                    frac = 0;
+                if (frac > SURF_ONE)
+                    frac = SURF_ONE;
+            }
+            k->tap_cb(frac, k->tap_user);
+        }
         break;
     }
 }
@@ -143,6 +183,14 @@ void surf_knob_set_color(surf_knob *k, surf_color c)
 }
 
 surf_color surf_knob_color(const surf_knob *k) { return k ? k->img.tint : 0; }
+
+void surf_knob_on_tap(surf_knob *k, surf_change_cb cb, void *user)
+{
+    if (!k)
+        return;
+    k->tap_cb = cb;
+    k->tap_user = user;
+}
 
 void surf_knob_set_mode(surf_knob *k, surf_knob_mode mode)
 {
