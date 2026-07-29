@@ -5,7 +5,11 @@
 
 #include "surfer.h"
 
+/* The house grey for a cap with no colour of its own. */
+#define CAP_DEFAULT_COLOR SURF_RGB(178, 182, 194)
+
 struct surf_slider {
+    surf_image     cap_img;  /* our own tint over the style's pixels */
     surf_node     *root, *track, *cap;
     int16_t        w, h, cap_w, cap_h;
     bool           horiz;          /* wider than tall: value runs across */
@@ -111,7 +115,12 @@ surf_slider *surf_slider_new(surf_node *parent, int16_t x, int16_t y,
         s->track = surf_ninepatch_new(track, 0, 0, w, h, style->inset,
                                       style->inset, style->inset, style->inset);
     }
-    s->cap = surf_sprite_new(cap, 0, 0);
+    /* The CAP is the A8 part, so it takes a colour for nothing: a struct
+     * copy shares the pixels and owns the tint (knob.c has the full
+     * note). The track keeps its own art. */
+    s->cap_img = *cap;
+    s->cap_img.tint = style->color ? style->color : CAP_DEFAULT_COLOR;
+    s->cap = surf_sprite_new(&s->cap_img, 0, 0);
     if (!s->root || !s->track || !s->cap) {
         surf_node_destroy(s->root);
         surf_node_destroy(s->track);
@@ -154,4 +163,17 @@ void surf_slider_on_change(surf_slider *s, surf_change_cb cb, void *user)
         return;
     s->cb = cb;
     s->user = user;
+}
+
+void surf_slider_set_color(surf_slider *s, surf_color c)
+{
+    if (!s || s->cap_img.tint == c)
+        return;
+    s->cap_img.tint = c;
+    surf_node_damage(s->cap);     /* a retint is a repaint, not a reblit */
+}
+
+surf_color surf_slider_color(const surf_slider *s)
+{
+    return s ? s->cap_img.tint : 0;
 }

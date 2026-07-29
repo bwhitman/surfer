@@ -607,6 +607,9 @@ typedef struct {
      * stretched sideways — see the scrollbar. Optional: without them a
      * horizontal slider still works and still looks wrong. */
     const surf_image *track_h, *cap_h;
+    /* the CAP's colour: it is A8, so one asset is any colour and a
+     * retint costs a repaint and no pixels. 0 means the house grey. */
+    surf_color        color;
 } surf_slider_style;
 
 typedef struct surf_slider surf_slider;
@@ -615,14 +618,24 @@ surf_slider *surf_slider_new(surf_node *parent, int16_t x, int16_t y,
                              int16_t w, int16_t h, const surf_slider_style *style);
 void       surf_slider_destroy(surf_slider *s);
 surf_node *surf_slider_node(surf_slider *s);  /* root group: detach/reattach */
+/* The CAP's colour — the handle is the A8 part; the track keeps its own
+ * art. Same bargain as the knob: one asset, any colour, no pixels. */
+void       surf_slider_set_color(surf_slider *s, surf_color c);
+surf_color surf_slider_color(const surf_slider *s);
 void       surf_slider_set_value(surf_slider *s, int32_t value_q16);  /* no cb */
 int32_t    surf_slider_value(const surf_slider *s);
 void       surf_slider_on_change(surf_slider *s, surf_change_cb cb, void *user);
 
 typedef struct {
-    const surf_image *strip;  /* filmstrip: frames left-to-right */
+    const surf_image *strip;  /* A8 filmstrip: frames left-to-right */
     int16_t           frame_w, frame_h;
     int16_t           frames;
+    /* The colour the art's alpha is drawn in. The strip is A8 — a
+     * silhouette, not a picture — so ONE asset is any colour: each knob
+     * keeps its own copy of the surf_image (shared pixels, its own tint)
+     * exactly as the LED does, and set_color costs a repaint and no
+     * pixels. 0 means the house grey. */
+    surf_color        color;
 } surf_knob_style;
 
 typedef enum {
@@ -636,6 +649,9 @@ surf_knob *surf_knob_new(surf_node *parent, int16_t x, int16_t y,
                          const surf_knob_style *style);
 void       surf_knob_destroy(surf_knob *k);
 surf_node *surf_knob_node(surf_knob *k);
+/* Retint. A repaint, not a reblit — see the note on surf_knob_style. */
+void       surf_knob_set_color(surf_knob *k, surf_color c);
+surf_color surf_knob_color(const surf_knob *k);
 void       surf_knob_set_mode(surf_knob *k, surf_knob_mode mode);
 void       surf_knob_set_value(surf_knob *k, int32_t value_q16);  /* no cb */
 int32_t    surf_knob_value(const surf_knob *k);
@@ -653,6 +669,7 @@ surf_selector *surf_selector_new(surf_node *parent, int16_t x, int16_t y,
                                  int32_t positions);
 void       surf_selector_destroy(surf_selector *s);
 surf_node *surf_selector_node(surf_selector *s);
+void       surf_selector_set_color(surf_selector *s, surf_color c);
 int32_t    surf_selector_index(const surf_selector *s);
 int32_t    surf_selector_positions(const surf_selector *s);
 void       surf_selector_set_index(surf_selector *s, int32_t idx);  /* no cb */

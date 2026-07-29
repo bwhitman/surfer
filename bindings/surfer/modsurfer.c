@@ -26,7 +26,7 @@
 
 static surf_image knob_img = {
     .pixels = (void *)widget_knob_px, .w = WKNOB_STRIP_W, .h = WKNOB_SIZE,
-    .stride = WKNOB_STRIP_W * 4, .format = SURF_FMT_ARGB8888,
+    .stride = WKNOB_STRIP_W, .format = SURF_FMT_A8,
 };
 static surf_image track_img = {
     .pixels = (void *)widget_trackfull_px, .w = WTRACKFULL_W, .h = WTRACKFULL_H,
@@ -34,7 +34,7 @@ static surf_image track_img = {
 };
 static surf_image cap_img = {
     .pixels = (void *)widget_cap_px, .w = WCAP_W, .h = WCAP_H,
-    .stride = WCAP_W * 4, .format = SURF_FMT_ARGB8888,
+    .stride = WCAP_W, .format = SURF_FMT_A8,
 };
 static surf_image check_img = {
     .pixels = (void *)widget_check_px, .w = WCHECK_SIZE * 2, .h = WCHECK_SIZE,
@@ -63,8 +63,8 @@ static const surf_image led_img = {
 };
 static surf_image sel_img = {
     .pixels = (void *)widget_sel_px, .w = WSEL_SIZE * WKNOB_FRAMES,
-    .h = WSEL_SIZE, .stride = WSEL_SIZE * WKNOB_FRAMES * 4,
-    .format = SURF_FMT_ARGB8888,
+    .h = WSEL_SIZE, .stride = WSEL_SIZE * WKNOB_FRAMES,
+    .format = SURF_FMT_A8,
 };
 /* the slider's art lying down, for a horizontal one */
 static surf_image trackh_img = {
@@ -73,7 +73,7 @@ static surf_image trackh_img = {
 };
 static surf_image caph_img = {
     .pixels = (void *)widget_caph_px, .w = WCAP_H, .h = WCAP_W,
-    .stride = WCAP_H * 4, .format = SURF_FMT_ARGB8888,
+    .stride = WCAP_H, .format = SURF_FMT_A8,
 };
 static surf_image panel_img = {
     .pixels = (void *)widget_panel_px, .w = WPANEL_SIZE, .h = WPANEL_SIZE,
@@ -89,7 +89,7 @@ static surf_image btnpr_img = {
 };
 static surf_image knobsm_img = {
     .pixels = (void *)widget_knobsm_px, .w = WKNOBSM_STRIP_W, .h = WKNOBSM_SIZE,
-    .stride = WKNOBSM_STRIP_W * 4, .format = SURF_FMT_ARGB8888,
+    .stride = WKNOBSM_STRIP_W, .format = SURF_FMT_A8,
 };
 static surf_image arrow_img = {
     .pixels = (void *)widget_arrow_px, .w = WARROW_W * 2, .h = WARROW_H,
@@ -477,6 +477,43 @@ static mp_obj_t node_set_cell(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_set_cell_obj, 4, 6, node_set_cell);
 
+/* UTF-8 advance from the lead byte; a stray continuation counts as one so
+ * a malformed string still terminates. */
+static int u8_len(unsigned char b)
+{
+    if (b < 0x80) return 1;
+    if ((b & 0xe0) == 0xc0) return 2;
+    if ((b & 0xf0) == 0xe0) return 3;
+    if ((b & 0xf8) == 0xf0) return 4;
+    return 1;
+}
+
+/* grid.set_cells(col, row, s, fg, bg) — a RUN of cells in ONE call.
+ *
+ * set_cell is per character, so a terminal repainting a screen of
+ * coloured text pays a MicroPython call per cell plus the interpreter
+ * loop driving it: measured on tulip5's editor, 2244 cells cost 19 ms of
+ * a 112 ms page on the P4X, and the Python around it cost more again.
+ * This is that loop, moved down. Same clipping and the same per-cell
+ * early-out as set_cell, so it damages exactly what changed. */
+static mp_obj_t node_set_cells(size_t n_args, const mp_obj_t *args)
+{
+    surf_node *g = node_of(args[0]);
+    int16_t col = (int16_t)mp_obj_get_int(args[1]);
+    int16_t row = (int16_t)mp_obj_get_int(args[2]);
+    const char *s = mp_obj_str_get_str(args[3]);
+    surf_color fg = n_args > 4 ? (surf_color)mp_obj_get_int(args[4]) : 0xffff;
+    surf_color bg = n_args > 5 ? (surf_color)mp_obj_get_int(args[5]) : 0x0000;
+    while (*s) {
+        surf_textgrid_set_cell(g, col, row, surf_utf8_first(s), fg, bg);
+        s += u8_len((unsigned char)*s);
+        col++;
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_set_cells_obj, 4, 6,
+                                           node_set_cells);
+
 static mp_obj_t node_set_wrap(mp_obj_t self_in, mp_obj_t w)
 {
     surf_text_set_wrap(node_of(self_in), (int16_t)mp_obj_get_int(w));
@@ -713,6 +750,7 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_set_align), MP_ROM_PTR(&node_set_align_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_row), MP_ROM_PTR(&node_set_row_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_cell), MP_ROM_PTR(&node_set_cell_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_cells), MP_ROM_PTR(&node_set_cells_obj)},
     {MP_ROM_QSTR(MP_QSTR_grid_scroll), MP_ROM_PTR(&node_grid_scroll_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_colors), MP_ROM_PTR(&node_set_colors_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_clip), MP_ROM_PTR(&node_set_clip_obj)},
@@ -1277,6 +1315,18 @@ static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
 {
     surfer_widget_obj_t *o = MP_OBJ_TO_PTR(self_in);
     if (dest[0] == MP_OBJ_NULL) {  /* load */
+        if (attr == MP_QSTR_color) {
+            surf_color c = 0;
+            switch (o->kind) {
+            case W_KNOB:   c = surf_knob_color(o->w); break;
+            case W_SLIDER: c = surf_slider_color(o->w); break;
+            default: break;
+            }
+            if (c) {
+                dest[0] = MP_OBJ_NEW_SMALL_INT(c);
+                return;
+            }
+        }
         if (attr == MP_QSTR_value) {
             dest[0] = widget_get_value(o);
             return;
@@ -1304,11 +1354,24 @@ static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             dest[0] = MP_OBJ_NULL;
             return;
         }
-        if (attr == MP_QSTR_color && o->kind == W_LED) {
-            surf_led_set_color(o->w, (surf_color)mp_obj_get_int(dest[1]));
+        /* .color on anything drawn from A8 art: the lamp, and now the
+         * knob, the selector and the slider's cap. One asset is any
+         * colour because the tint is a property of the image STRUCT, not
+         * of the pixels — a retint damages and repaints, and touches no
+         * pixels at all. */
+        if (attr == MP_QSTR_color) {
+            surf_color c = (surf_color)mp_obj_get_int(dest[1]);
+            switch (o->kind) {
+            case W_LED:      surf_led_set_color(o->w, c); break;
+            case W_KNOB:     surf_knob_set_color(o->w, c); break;
+            case W_SELECTOR: surf_selector_set_color(o->w, c); break;
+            case W_SLIDER:   surf_slider_set_color(o->w, c); break;
+            default:         goto not_color;
+            }
             dest[0] = MP_OBJ_NULL;
             return;
         }
+    not_color:;
         if (attr == MP_QSTR_label && o->kind == W_BUTTON) {
             surf_button_set_label(o->w, mp_obj_str_get_str(dest[1]));
             dest[0] = MP_OBJ_NULL;

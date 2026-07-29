@@ -10,7 +10,11 @@
 /* Pixels of vertical drag for a full value sweep. */
 #define KNOB_DRAG_RANGE 200
 
+/* The house grey, when a style asks for no colour of its own. */
+#define KNOB_DEFAULT_COLOR SURF_RGB(150, 154, 168)
+
 struct surf_knob {
+    surf_image     img;   /* our own tint over the style's shared pixels */
     surf_node     *root, *strip;
     int16_t        fw, fh, frames;
     uint8_t        mode;
@@ -98,8 +102,15 @@ surf_knob *surf_knob_new(surf_node *parent, int16_t x, int16_t y,
     k->fh = style->frame_h;
     k->frames = style->frames;
 
+    /* A struct COPY: the pixels stay shared, the tint is ours. That is
+     * what lets one A8 filmstrip be every colour on the panel at no cost
+     * — on the P4 the tint is a palette register the PPA applies during
+     * the blend it was doing anyway. Same trick as led.c. */
+    k->img = *style->strip;
+    k->img.tint = style->color ? style->color : KNOB_DEFAULT_COLOR;
+
     k->root = surf_group_new(x, y);
-    k->strip = surf_filmstrip_new(style->strip, style->frame_w, style->frame_h, 0, 0);
+    k->strip = surf_filmstrip_new(&k->img, style->frame_w, style->frame_h, 0, 0);
     if (!k->root || !k->strip) {
         surf_node_destroy(k->root);
         surf_node_destroy(k->strip);
@@ -117,11 +128,21 @@ void surf_knob_destroy(surf_knob *k)
 {
     if (!k)
         return;
-    surf_node_destroy(k->root);
+    surf_node_destroy(k->root);   /* holds &k->img: order matters */
     free(k);
 }
 
 surf_node *surf_knob_node(surf_knob *k) { return k ? k->root : NULL; }
+
+void surf_knob_set_color(surf_knob *k, surf_color c)
+{
+    if (!k || k->img.tint == c)
+        return;
+    k->img.tint = c;
+    surf_node_damage(k->strip);   /* a retint is a repaint, not a reblit */
+}
+
+surf_color surf_knob_color(const surf_knob *k) { return k ? k->img.tint : 0; }
 
 void surf_knob_set_mode(surf_knob *k, surf_knob_mode mode)
 {

@@ -785,6 +785,23 @@ bool surf_hal_sdl_pump(void)
             break;
         case SDL_KEYDOWN: {
             bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+            /* ctrl/alt+Tab is its own key, not a Tab. Tab is not a letter,
+             * so it does not fall into the ctrl+letter rule below, and
+             * without this it arrives as an ordinary 0x09 — a host that
+             * wants "next tab"/"next window" cannot tell the chord from
+             * an indent. There is no standard control character for it,
+             * so it gets 0x1e (RS), which nothing else emits.
+             *
+             * BOTH modifiers, because neither is portable alone: on Linux
+             * and Windows alt+Tab belongs to the window manager and never
+             * reaches us, while on macOS the system switcher is cmd+Tab
+             * and alt+Tab does. ctrl+Tab is free everywhere and is the
+             * one to document; alt+Tab is accepted where it survives. */
+            if ((e.key.keysym.mod & (KMOD_CTRL | KMOD_ALT)) &&
+                e.key.keysym.sym == SDLK_TAB) {
+                push_key(SURF_KEY_TEXT, false, "\x1e");
+                break;
+            }
             if (e.key.keysym.mod & KMOD_CTRL) {
                 bool chord = true;
                 switch (e.key.keysym.sym) {

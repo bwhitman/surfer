@@ -20,6 +20,7 @@
 #define TAP_SLOP       6     /* px; more travel than this is a drag */
 
 struct surf_selector {
+    surf_image     img;   /* our own tint over shared pixels; see knob.c */
     surf_node    *root, *strip;
     int16_t       fw, fh, frames;
     int32_t       positions, index;
@@ -94,7 +95,9 @@ surf_selector *surf_selector_new(surf_node *parent, int16_t x, int16_t y,
     s->frames = style->frames;
     s->positions = positions;
     s->root = surf_group_new(x, y);
-    s->strip = surf_filmstrip_new(style->strip, style->frame_w, style->frame_h,
+    s->img = *style->strip;
+    s->img.tint = style->color ? style->color : SURF_RGB(196, 198, 206);
+    s->strip = surf_filmstrip_new(&s->img, style->frame_w, style->frame_h,
                                   0, 0);
     if (!s->root || !s->strip) {
         surf_node_destroy(s->root);
@@ -141,4 +144,12 @@ void surf_selector_on_change(surf_selector *s, surf_index_cb cb, void *user)
         return;
     s->cb = cb;
     s->user = user;
+}
+
+void surf_selector_set_color(surf_selector *s, surf_color c)
+{
+    if (!s || s->img.tint == c)
+        return;
+    s->img.tint = c;
+    surf_node_damage(s->strip);
 }

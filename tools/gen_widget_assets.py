@@ -14,11 +14,32 @@ KNOB_SM = 40  # small knob for dense panels (drum machines etc.)
 TRACK = 36
 TRACK_INSET = 12
 TRACKFULL_W, TRACKFULL_H = 48, 330  # baked at the mixer's exact size: 1 blit
-CAP_W, CAP_H = 40, 20
+# A fader cap is TALLER than it is wide — a block you pinch, not a tab.
+# 30 x 56 is 4.5 x 8.4 mm on the P4's 169 dpi panel, which clears every
+# fingertip guideline there is; the old 40 x 20 was 3.0 mm tall.
+CAP_W, CAP_H = 30, 56
 
 
 def clamp(v, lo=0, hi=255):
     return max(lo, min(hi, int(v)))
+
+
+def ink(col, a):
+    """An ARGB colour + coverage as ONE A8 byte.
+
+    A8 art is a silhouette whose alpha the widget's `tint` colours, so
+    everything a colour image says with LIGHTNESS this has to say with
+    OPACITY: a bright pointer becomes opaque, a dark rim becomes
+    see-through. That is the trade the format makes and the whole reason
+    one asset can be any colour at no cost — on the P4 the tint is a
+    palette register the PPA applies during the blend it was doing
+    anyway (see led.c).
+
+    It also means this art is drawn for a DARK panel: where the colour
+    version put a dark edge, this puts background. Rec.601 luma, because
+    it is what the eye reads as brightness."""
+    lum = (col[0] * 77 + col[1] * 150 + col[2] * 29) >> 8
+    return clamp(a * lum)
 
 
 def mix(a, b, t):
@@ -63,8 +84,7 @@ def knob_strip(size=KNOB):
                 d = seg_dist(px, py, ax, ay, bx, by)
                 col = mix(col, (240, 242, 248),
                           max(0.0, min(1.0, ptr_w + 0.5 - d)))
-                word = (clamp(a * 255) << 24) | (col[0] << 16) | (col[1] << 8) | col[2]
-                out.append((f, x, y, word))
+                out.append((f, x, y, ink(col, a)))
     strip_w = size * KNOB_FRAMES
     px = [0] * (strip_w * size)
     for f, x, y, word in out:
@@ -122,23 +142,50 @@ def track(w, h):
     return out
 
 
+# Grooves cut across the cap, as fractions of its height: (centre,
+# half-height). Three above the index line and three below, the way a
+# mixer fader's mouldings run.
+CAP_GROOVES = ((0.135, 0.045), (0.265, 0.045), (0.395, 0.045),
+               (0.605, 0.045), (0.735, 0.045), (0.865, 0.045))
+CAP_INDEX = (0.500, 0.055)      # the line you read the value off
+
+
 def cap():
+    """The fader cap: a tall rounded block with horizontal grooves cut
+    across it and a bright index line at the middle.
+
+    A8 like the knob, so a slider's handle takes a colour for free (see
+    ink()). Which way round the tones go matters and got flipped once:
+    the BODY is the ink — near-opaque, so the cap reads as a solid
+    coloured block — and the grooves are where the alpha drops away and
+    the dark panel shows through, which is exactly what a groove looks
+    like. Making the ridges the ink instead gave a ghost of a cap with a
+    few bright stripes floating in it."""
     out = []
     for y in range(CAP_H):
         for x in range(CAP_W):
             px, py = x + 0.5, y + 0.5
-            d, a = rounded_alpha(px, py, CAP_W, CAP_H, 7)
+            d, a = rounded_alpha(px, py, CAP_W, CAP_H, 5)
             if a == 0.0:
                 out.append(0)
                 continue
-            col = (214, 138, 74)
-            if py < 8:
-                col = mix(col, (244, 178, 118), (8 - py) / 8.0)
-            elif py > 14:
-                col = mix(col, (160, 96, 46), (py - 14) / 6.0)
-            if d > -1.5:
-                col = (150, 92, 48)
-            out.append((clamp(a * 255) << 24) | (col[0] << 16) | (col[1] << 8) | col[2])
+            t = py / CAP_H
+            # Solid body, catching a little more light along the top —
+            # but NOT up at full: with one tint you cannot be brighter
+            # than the tint, so the index line only stands out if the
+            # body leaves it some headroom.
+            v = 0.66 + 0.14 * max(0.0, 1.0 - abs(t - 0.22) * 3.2)
+            for cy, half in CAP_GROOVES:
+                near = max(0.0, 1.0 - abs(t - cy) / half)
+                if near > 0.0:
+                    v = min(v, 1.0 - 0.72 * min(1.0, near * 1.9))
+            near = max(0.0, 1.0 - abs(t - CAP_INDEX[0]) / CAP_INDEX[1])
+            if near > 0.0:
+                v = max(v, min(1.0, near * 2.4))
+            # the moulding falls away at the left and right shoulders
+            shoulder = min(1.0, (CAP_W / 2.0 - abs(px - CAP_W / 2.0)) / 3.5)
+            v *= 0.62 + 0.38 * shoulder
+            out.append(clamp(a * v * 255))
     return out
 
 
@@ -301,8 +348,7 @@ def selector_strip(size=SEL):
                     col = (252, 252, 254)
                 if r < body_r * 0.17:
                     col = tuple(clamp(v * 0.42) for v in (196, 198, 206))
-                word = (clamp(a * 255) << 24) | (col[0] << 16) | (col[1] << 8) | col[2]
-                out[y * size * KNOB_FRAMES + f * size + x] = word
+                out[y * size * KNOB_FRAMES + f * size + x] = ink(col, a)
     return out
 
 
@@ -361,21 +407,21 @@ def main():
     print(f"#define WSEL_SIZE {SEL}")
     print("#define WBTN_SIZE 18")
     print("#define WBTN_INSET 6")
-    emit("widget_knob_px", knob_strip())
-    emit("widget_knobsm_px", knob_strip(KNOB_SM))
+    emit8("widget_knob_px", knob_strip())
+    emit8("widget_knobsm_px", knob_strip(KNOB_SM))
     emit("widget_btn_px", button_patch(False))
     emit("widget_btnpr_px", button_patch(True))
     emit("widget_track_px", track(TRACK, TRACK))
     emit("widget_trackfull_px", track(TRACKFULL_W, TRACKFULL_H))
-    emit("widget_cap_px", cap())
+    emit8("widget_cap_px", cap())
     # ...and the same two lying down, for a horizontal slider
     emit("widget_trackh_px", transpose(track(TRACK, TRACK), TRACK, TRACK))
-    emit("widget_caph_px", transpose(cap(), CAP_W, CAP_H))
+    emit8("widget_caph_px", transpose(cap(), CAP_W, CAP_H))
     emit("widget_check_px", checkbox_strip())
     emit("widget_panel_px", panel())
     emit("widget_arrow_px", arrow_strip())
     emit8("widget_led_px", led_strip())
-    emit("widget_sel_px", selector_strip())
+    emit8("widget_sel_px", selector_strip())
     emit("widget_sbar_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (150, 150, 158), 255))
     emit("widget_sbtrack_px", sbar(SBAR_W, SBAR_H, SBAR_W / 2.0, (255, 255, 255), 40))
     # ...and the same capsules lying down. A 9-patch slices along fixed

@@ -473,6 +473,53 @@ horizontal one on screen next to a vertical one:
   tulip5 bars snapped to the top when dragged instead of landing where
   the thumb was dropped. `.value` was always right, which is what hid it.
 
+## The tinted widgets: knob, selector, slider cap
+
+`.color` on a knob, a selector or a slider — and the LED, which got there
+first and taught the trick. The art is **A8**, so one asset is every
+colour on the panel: each widget keeps its own COPY of the `surf_image`
+struct (pixels shared, its own `tint`), and `set_color` is
+`surf_node_damage` — a repaint, no pixels. On the P4 the tint is a
+palette register the PPA applies during the blend it was doing anyway,
+so a coloured panel costs exactly what a grey one did.
+
+It also made the assets 4x smaller: `widget_assets.h` went 6.2 MB to
+2.7 MB, and the device image 7.1 MB to 5.4 MB — the knob strip alone was
+1 MiB of ARGB and is 256 KiB now.
+
+**What A8 costs is SHADING, not speed, and the art has to be drawn for
+it.** Alpha is coverage, not lightness: a colour image's dark rim becomes
+*see-through* rather than dark, so this art reads on a DARK panel and
+would look hollow on a light one. `ink()` in the generator does the
+conversion (Rec.601 luma × coverage) and is the one place that decision
+lives.
+
+Which way round the tones go is the thing to get right, and the fader cap
+had it backwards first: the **body** is the ink — near-opaque, so the cap
+is a solid coloured block — and the grooves are where alpha drops away
+and the panel shows through, which is what a groove looks like. Making
+the ridges the ink gave a ghost of a cap with bright stripes floating in
+it. The body also stops short of full: with one tint nothing can be
+*brighter* than the tint, so the index line only reads if the body leaves
+it headroom.
+
+## Writing a RUN of cells
+
+`grid.set_cells(col, row, s, fg, bg)` writes a whole same-coloured run in
+one call. `set_cell` is per character, so a program painting a screen of
+text pays a MicroPython call per cell plus the interpreter loop driving
+it — measured 2244 cells at 19 ms on a P4X, **4.5 ms** batched. Same
+clipping and the same per-cell early-out as `set_cell`, so it damages
+exactly what changed; it is that loop, moved down.
+
+**It only pays for a caller that keeps no shadow of its own.** tulip5
+has both cases and they came out opposite ways: its console writes and
+forgets, so batching is a straight 4x; its VT terminal keeps a per-cell
+Python shadow it must update either way, and batching there measured
+*slower* at every run length, because recording a span by slice costs
+three list allocations whose churn outweighs the C loop. Worth knowing
+before reaching for it: the win is the loop, not the call.
+
 ## Textgrid scrollback
 
 `surf_textgrid_set_scrollback(n, mult)` keeps `mult` screens of rows so
