@@ -19,6 +19,21 @@ TRACKFULL_W, TRACKFULL_H = 48, 330  # baked at the mixer's exact size: 1 blit
 # fingertip guideline there is; the old 40 x 20 was 3.0 mm tall.
 CAP_W, CAP_H = 30, 56
 
+# The COMPACT slider, for a panel with no room for a mixer fader: a thin
+# bar with a small rounded-rectangle handle riding ACROSS it, wider than
+# the bar so the overhang is what you read the value off.
+#
+# 24 x 14 is 3.6 x 2.1 mm on the P4's 169 dpi panel, under every
+# fingertip guideline there is — which is the trade a dense panel makes,
+# and the reason the full-size cap above is still the default. It is a
+# smaller trade than it looks: the whole widget box is the grab area
+# (slider.c clips its group), the cap centres on the finger, and a tap
+# anywhere on the track jumps to it — so what a finger has to hit is the
+# slider's declared WIDTH, never the handle.
+SLIM_TRACK_W, SLIM_TRACK_H = 8, 14
+SLIM_TRACK_INSET = 5
+SLIM_CAP_W, SLIM_CAP_H = 24, 14
+
 
 def clamp(v, lo=0, hi=255):
     return max(lo, min(hi, int(v)))
@@ -186,6 +201,53 @@ def cap():
             shoulder = min(1.0, (CAP_W / 2.0 - abs(px - CAP_W / 2.0)) / 3.5)
             v *= 0.62 + 0.38 * shoulder
             out.append(clamp(a * v * 255))
+    return out
+
+
+def slim_track():
+    """The compact slider's bar: a dark rounded capsule, 9-patched along
+    its length so the ends stay round at any size.
+
+    The full-size track is a wide moulding with a groove cut down the
+    middle of it. At 8px there is nothing to cut into: the bar IS the
+    groove, so this is the groove's colour with a lit rim around it."""
+    out = []
+    for y in range(SLIM_TRACK_H):
+        for x in range(SLIM_TRACK_W):
+            d, a = rounded_alpha(x + 0.5, y + 0.5, SLIM_TRACK_W, SLIM_TRACK_H,
+                                 SLIM_TRACK_W / 2.0)
+            if a == 0.0:
+                out.append(0)
+                continue
+            col = (30, 33, 40)
+            if d > -1.4:
+                col = mix(col, (76, 82, 96), min(1.0, (d + 1.4) / 1.4))
+            out.append((clamp(a * 255) << 24) | (col[0] << 16) |
+                       (col[1] << 8) | col[2])
+    return out
+
+
+def slim_cap():
+    """The compact handle: a plain rounded rectangle and nothing else.
+
+    No grooves and no index line — both are mouldings you read at 56px
+    and mud at 14, and the handle's own EDGES are the index line here,
+    since it overhangs the bar it rides on by 8px each side.
+
+    Flat, and FULLY OPAQUE, which is the opposite of what the full-size
+    cap does and is forced by what it sits on. In A8, alpha is the only
+    variable there is: shading a body means making it see-through, and
+    what shows through a handle this small is the bar directly under it —
+    two vertical seams down the middle of the block, which reads as a
+    lozenge of glass rather than as a handle. The full cap gets away with
+    it because its moulding is 30px of an even 48px track; here opacity
+    wins and the shape carries it."""
+    out = []
+    for y in range(SLIM_CAP_H):
+        for x in range(SLIM_CAP_W):
+            _d, a = rounded_alpha(x + 0.5, y + 0.5,
+                                  SLIM_CAP_W, SLIM_CAP_H, 4)
+            out.append(clamp(a * 255))
     return out
 
 
@@ -392,6 +454,11 @@ def main():
     print(f"#define WTRACKFULL_H {TRACKFULL_H}")
     print(f"#define WCAP_W {CAP_W}")
     print(f"#define WCAP_H {CAP_H}")
+    print(f"#define WSLIMTRACK_W {SLIM_TRACK_W}")
+    print(f"#define WSLIMTRACK_H {SLIM_TRACK_H}")
+    print(f"#define WSLIMTRACK_INSET {SLIM_TRACK_INSET}")
+    print(f"#define WSLIMCAP_W {SLIM_CAP_W}")
+    print(f"#define WSLIMCAP_H {SLIM_CAP_H}")
     print(f"#define WCHECK_SIZE {CHECK}")
     print(f"#define WPANEL_SIZE {PANEL}")
     print(f"#define WPANEL_INSET {PANEL_INSET}")
@@ -417,6 +484,12 @@ def main():
     # ...and the same two lying down, for a horizontal slider
     emit("widget_trackh_px", transpose(track(TRACK, TRACK), TRACK, TRACK))
     emit8("widget_caph_px", transpose(cap(), CAP_W, CAP_H))
+    # the compact pair, and the same two lying down
+    emit("widget_slimtrack_px", slim_track())
+    emit8("widget_slimcap_px", slim_cap())
+    emit("widget_slimtrackh_px",
+         transpose(slim_track(), SLIM_TRACK_W, SLIM_TRACK_H))
+    emit8("widget_slimcaph_px", transpose(slim_cap(), SLIM_CAP_W, SLIM_CAP_H))
     emit("widget_check_px", checkbox_strip())
     emit("widget_panel_px", panel())
     emit("widget_arrow_px", arrow_strip())

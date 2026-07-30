@@ -191,6 +191,51 @@ static void test_slider(void)
     surf_slider_destroy(e);
 }
 
+/* the compact shape: a track NARROWER than the widget, with the handle
+ * riding across it. Two things have to hold or it is unusable — the bar
+ * keeps its own width instead of being stretched (stretching tiles the
+ * groove), and the gutter either side of it is still grabbable. */
+static surf_image slimtrack_img = {
+    .pixels = (void *)&slimtrack_img, .w = 8, .h = 14, .stride = 32,
+    .format = SURF_FMT_ARGB8888, .opaque = false,
+};
+static surf_image slimcap_img = {
+    .pixels = (void *)&slimcap_img, .w = 24, .h = 14, .stride = 96,
+    .format = SURF_FMT_ARGB8888, .opaque = false,
+};
+
+static void test_slider_compact(void)
+{
+    fresh(200, 300, 32);
+    change_count = 0;
+
+    surf_slider_style st = {.track = &slimtrack_img, .inset = 5,
+                            .cap = &slimcap_img};
+    surf_slider *s = surf_slider_new(surf_screen(), 40, 20, 24, 200, &st);
+    OK(s != NULL);
+
+    /* the bar is the ART'S width, centred in the widget — not stretched */
+    surf_node *track = surf_slider_node(s)->first;
+    OK(track->w == 8 && track->x == 8);
+    OK(track->h == 200);
+
+    /* a tap in the GUTTER still works: 3px inside the box is 5px off the
+     * bar, and without the group's clip it lands on nothing at all */
+    surf_slider_on_change(s, record_change, NULL);
+    mock_push_touch((surf_touch){43, 120, SURF_TOUCH_DOWN});
+    surf_tick();
+    OK(change_count == 1);
+    /* cap centres on the finger: (120 - 20 - 7) of a 186 range, from the
+     * bottom up */
+    OK(surf_slider_value(s) == (int32_t)(((int64_t)(186 - 93) << 16) / 186));
+
+    /* ...and the clip is the whole declared box, no more: one past its
+     * right edge is somebody else's */
+    OK(surf_hit_test(64, 120) != surf_slider_node(s));
+
+    surf_slider_destroy(s);
+}
+
 static surf_image knobstrip_img = {
     .pixels = (void *)&knobstrip_img, .w = 640, .h = 64, .stride = 2560,
     .format = SURF_FMT_ARGB8888, .opaque = false,
@@ -566,6 +611,7 @@ void run_widget_tests(void)
     test_ninepatch();
     test_input_capture();
     test_slider();
+    test_slider_compact();
     test_knob();
 }
 

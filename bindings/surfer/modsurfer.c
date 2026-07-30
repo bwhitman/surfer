@@ -75,6 +75,23 @@ static surf_image caph_img = {
     .pixels = (void *)widget_caph_px, .w = WCAP_H, .h = WCAP_W,
     .stride = WCAP_H, .format = SURF_FMT_A8,
 };
+/* the compact slider: a thin bar, a small handle wider than it */
+static surf_image slimtrack_img = {
+    .pixels = (void *)widget_slimtrack_px, .w = WSLIMTRACK_W, .h = WSLIMTRACK_H,
+    .stride = WSLIMTRACK_W * 4, .format = SURF_FMT_ARGB8888,
+};
+static surf_image slimcap_img = {
+    .pixels = (void *)widget_slimcap_px, .w = WSLIMCAP_W, .h = WSLIMCAP_H,
+    .stride = WSLIMCAP_W, .format = SURF_FMT_A8,
+};
+static surf_image slimtrackh_img = {
+    .pixels = (void *)widget_slimtrackh_px, .w = WSLIMTRACK_H, .h = WSLIMTRACK_W,
+    .stride = WSLIMTRACK_H * 4, .format = SURF_FMT_ARGB8888,
+};
+static surf_image slimcaph_img = {
+    .pixels = (void *)widget_slimcaph_px, .w = WSLIMCAP_H, .h = WSLIMCAP_W,
+    .stride = WSLIMCAP_H, .format = SURF_FMT_A8,
+};
 static surf_image panel_img = {
     .pixels = (void *)widget_panel_px, .w = WPANEL_SIZE, .h = WPANEL_SIZE,
     .stride = WPANEL_SIZE * 4, .format = SURF_FMT_ARGB8888,
@@ -108,6 +125,10 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&sbtrackh_img);
     surfer_port_prepare_image(&trackh_img);
     surfer_port_prepare_image(&caph_img);
+    surfer_port_prepare_image(&slimtrack_img);
+    surfer_port_prepare_image(&slimcap_img);
+    surfer_port_prepare_image(&slimtrackh_img);
+    surfer_port_prepare_image(&slimcaph_img);
     surfer_port_prepare_image(&check_img);
     surfer_port_prepare_image(&panel_img);
     surfer_port_prepare_image(&arrow_img);
@@ -2188,11 +2209,23 @@ static mp_obj_t mod_slider(size_t n_args, const mp_obj_t *args)
                                          .inset = WTRACK_INSET, .cap = &cap_img,
                                          .track_h = &trackh_img,
                                          .cap_h = &caph_img};
+    static const surf_slider_style slim = {.track = &slimtrack_img,
+                                           .inset = WSLIMTRACK_INSET,
+                                           .cap = &slimcap_img,
+                                           .track_h = &slimtrackh_img,
+                                           .cap_h = &slimcaph_img};
     /* surfer.slider(x, y, w, h) — the SHAPE picks the orientation, so
      * slider(x, y, 240, 40) is a horizontal one and needs no flag. */
     int16_t w = n_args > 2 ? (int16_t)mp_obj_get_int(args[2]) : WTRACKFULL_W;
     int16_t h = n_args > 3 ? (int16_t)mp_obj_get_int(args[3]) : WTRACKFULL_H;
-    surf_slider *s = surf_slider_new(surf_screen(), 0, 0, w, h, &st);
+    /* ...and the SHAPE picks the art too, by the same argument: a caller
+     * asking for a slider 24px across has asked for the compact one and
+     * should not have to say so twice. The threshold is the full cap's
+     * own width, so the rule reads "narrower than the fader cap fits".
+     * It is also the difference between working and not — a 24-wide
+     * slider is smaller than that cap, and surf_slider_new refuses it. */
+    const surf_slider_style *use = (w > h ? h : w) < WCAP_W ? &slim : &st;
+    surf_slider *s = surf_slider_new(surf_screen(), 0, 0, w, h, use);
     if (!s)
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("slider create failed"));
     surf_node *node = surf_slider_node(s);

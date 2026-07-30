@@ -598,6 +598,12 @@ void       surf_dropdown_on_change(surf_dropdown *d, surf_index_cb cb, void *use
 
 /* ---- widgets: built from nodes, styled by caller-owned assets ---- */
 
+/* The track keeps the art's OWN cross-axis size, centred, and stretches
+ * only along its length — a 9-patch tiled across the groove repeats it,
+ * and two parallel grooves is what that looks like. So a track narrower
+ * than the widget is a legitimate shape (the compact slider is a thin bar
+ * with a wider handle riding on it), and the widget clips its group to
+ * the size it was asked for so the whole box stays grabbable. */
 typedef struct {
     const surf_image *track;  /* 9-patch source */
     int16_t           inset;  /* uniform 9-slice inset */

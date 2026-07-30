@@ -112,8 +112,15 @@ surf_slider *surf_slider_new(surf_node *parent, int16_t x, int16_t y,
         s->track = surf_ninepatch_new(track, 0, (int16_t)((h - th) / 2),
                                       w, th, style->inset, 0, style->inset, 0);
     } else {
-        s->track = surf_ninepatch_new(track, 0, 0, w, h, style->inset,
-                                      style->inset, style->inset, style->inset);
+        /* The same rule, upright — and it is the same rule, which is why
+         * the vertical case no longer slices all four edges. A track
+         * NARROWER than the widget is the compact slider's whole shape
+         * (a thin bar with a wider handle riding across it), and tiling
+         * the 9-patch's middle band sideways to fill the width gives the
+         * two parallel grooves described above, standing up. */
+        int16_t tw = track->w < w ? track->w : w;
+        s->track = surf_ninepatch_new(track, (int16_t)((w - tw) / 2), 0,
+                                      tw, h, 0, style->inset, 0, style->inset);
     }
     /* The CAP is the A8 part, so it takes a colour for nothing: a struct
      * copy shares the pixels and owns the tint (knob.c has the full
@@ -130,6 +137,12 @@ surf_slider *surf_slider_new(surf_node *parent, int16_t x, int16_t y,
     }
     surf_node_add(s->root, s->track);
     surf_node_add(s->root, s->cap);
+    /* The DECLARED box is the grab area, not the union of what happens to
+     * be drawn: a group is hittable only with a clip (see colorpicker),
+     * and the compact slider's bar is a third of its width. Without this
+     * the gutter either side of a thin track is a hole the finger falls
+     * through — and a tap on the track is how you jump the value. */
+    surf_group_set_clip(s->root, w, h);
     surf_node_set_on_touch(s->root, slider_touch, s);
     surf_node_set_gesture_grab(s->root, true);  /* a slider drag is never a scroll */
     slider_apply(s);

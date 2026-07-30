@@ -406,10 +406,50 @@ style carries `track_h`/`cap_h`, the same art transposed at generation
 time, because a 9-patch slices along fixed axes and the upright groove
 cannot be stretched sideways (the scrollbar taught this first).
 
-The horizontal track keeps the ART'S OWN HEIGHT, centred, and stretches
-only along its length. Stretching across the groove tiles it: the middle
-band of the 9-patch repeats, and a slider with two parallel grooves is
-what that looks like.
+The track keeps the ART'S OWN cross-axis size, centred, and stretches
+only along its length — **both ways round**. Stretching across the groove
+tiles it: the middle band of the 9-patch repeats, and a slider with two
+parallel grooves is what that looks like. The vertical case used to slice
+all four edges and so had the same defect standing up; it stayed hidden
+only because the default upright art is baked at the mixer's exact size
+and never reaches the 9-patch at all.
+
+The widget also **clips its own group to the size it was asked for**,
+which is what makes the whole declared box the grab area rather than the
+union of whatever happens to be drawn (a group is hittable only with a
+clip — see the colour picker). That is free for a full-size fader and
+load-bearing for the compact one below, whose bar is a third of its
+width: without it the gutter either side is a hole, and a tap on the
+track is how you jump the value.
+
+### ...and in two sizes
+
+The same shape argument again, on the other axis: a cross-axis narrower
+than the full fader cap (30px) gets the **compact** art — a thin 8px bar
+with a 24x14 rounded-rectangle handle riding across it, wider than the
+bar so the overhang is what you read the value off. `surfer.slider(x, y,
+24, 200)` is one; `slider(x, y, 200, 24)` is one lying down. The binding
+picks it; C callers pass whichever style they want, since the widget
+itself knows nothing about either.
+
+It is also the difference between working and not — `surf_slider_new`
+refuses a slider narrower than its own cap, so before this a 24-wide one
+was a `RuntimeError`.
+
+**The compact handle is FLAT and fully opaque, which is the opposite of
+what the full-size cap does**, and the reason is worth keeping. In A8,
+alpha is the only variable there is: shading a body means making it
+see-through, and what shows through a handle this small is the bar
+directly under it — two vertical seams down the middle of the block,
+which reads as a lozenge of glass rather than as a handle. The full cap
+gets away with its grooves because they sit on 30px of an even 48px
+moulding. Here opacity wins and the shape carries it.
+
+24 x 14 is 3.6 x 2.1 mm on the P4's 169 dpi panel, under every fingertip
+guideline there is. That is the trade a dense panel makes, and it is a
+smaller trade than it looks, because of the clip above: the cap centres
+on the finger and a tap anywhere in the box jumps to it, so what a finger
+has to hit is the slider's declared WIDTH, never the handle.
 
 ## Colour picker
 
