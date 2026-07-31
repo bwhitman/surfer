@@ -100,6 +100,13 @@ static surf_image btn_img = {
     .pixels = (void *)widget_btn_px, .w = WBTN_SIZE, .h = WBTN_SIZE,
     .stride = WBTN_SIZE * 4, .format = SURF_FMT_ARGB8888,
 };
+/* the tab's own 9-patch: A8, rounded at the top and flat at the foot, so
+ * a tab joins the page under it. Const like the LED's — every tabs
+ * widget copies the struct to hold its own tint. */
+static const surf_image tab_img = {
+    .pixels = (void *)widget_tab_px, .w = WTAB_W, .h = WTAB_H,
+    .stride = WTAB_W, .format = SURF_FMT_A8,
+};
 static surf_image btnpr_img = {
     .pixels = (void *)widget_btnpr_px, .w = WBTN_SIZE, .h = WBTN_SIZE,
     .stride = WBTN_SIZE * 4, .format = SURF_FMT_ARGB8888,
@@ -1421,6 +1428,9 @@ static void widget_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             case W_LED:      surf_led_set_color(o->w, c); break;
             case W_KNOB:     surf_knob_set_color(o->w, c); break;
             case W_SELECTOR: surf_selector_set_color(o->w, c); break;
+            /* the tabs' FACE colour: the page background it has to
+               match. The dim one keeps whatever it was built with. */
+            case W_TABS:     surf_tabs_set_face(o->w, c); break;
             case W_SLIDER:   surf_slider_set_color(o->w, c); break;
             default:         goto not_color;
             }
@@ -2331,21 +2341,33 @@ static mp_obj_t mod_button(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_button_obj, 4, 5, mod_button);
 
-/* surfer.tabs(x, y, w, h, ["one", "two"], tab_h=36) -> Widget
+/* surfer.tabs(x, y, w, h, ["one", "two"], tab_h=36, face=None, dim=None)
  *
- * A strip of labelled buttons with a PAGE behind each: `t.page(i)` is a
- * group to fill and the widget hides all but the current one. `.value`
- * is the index, settable, and the callback reports one.
+ * A strip of TABS with a page behind each: `t.page(i)` is a group to
+ * fill and the widget hides all but the current one. `.value` is the
+ * index, settable, and the callback reports one.
+ *
+ * `face` is the current tab's colour and is meant to be THE PAGE'S
+ * BACKGROUND — that is what makes the join disappear and a tab read as
+ * a tab rather than a button near a panel. `dim` is every other tab.
+ * Both default to surfer's own panel greys.
  *
  * `h` is the WHOLE height, tab strip included — a page gets h - tab_h,
  * which is what a caller laying out a panel actually knows. */
 static mp_obj_t mod_tabs(size_t n_args, const mp_obj_t *args)
 {
-    static surf_button_style st = {
-        .normal = &btn_img, .pressed = &btnpr_img, .inset = WBTN_INSET,
-        .text_color = SURF_RGB(240, 242, 248),
+    static surf_tabs_style st = {
+        .patch = &tab_img, .inset_side = WTAB_INSET_SIDE,
+        .inset_top = WTAB_INSET_TOP, .inset_bottom = WTAB_INSET_BOT,
+        .text_active = SURF_RGB(255, 255, 255),
+        .text = SURF_RGB(150, 156, 172),
     };
     st.font = widget_font();
+    st.font_active = widget_font();
+    st.face = n_args > 6 ? (surf_color)mp_obj_get_int(args[6])
+                         : SURF_RGB(47, 51, 62);
+    st.dim = n_args > 7 ? (surf_color)mp_obj_get_int(args[7])
+                        : SURF_RGB(28, 31, 38);
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(args[4], &len, &items);
@@ -2370,7 +2392,7 @@ static mp_obj_t mod_tabs(size_t n_args, const mp_obj_t *args)
     surf_tabs_on_change(t, widget_idx_cb, o);
     return MP_OBJ_FROM_PTR(o);
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_tabs_obj, 5, 6, mod_tabs);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_tabs_obj, 5, 8, mod_tabs);
 
 static mp_obj_t mod_checkbox(mp_obj_t x, mp_obj_t y)
 {

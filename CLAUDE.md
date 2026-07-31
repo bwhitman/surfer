@@ -385,11 +385,25 @@ and gets it wrong the first time a page is added after the fact. Here
 the page is the widget's: `surf_tabs_page(t, i)` hands back a group to
 fill and nothing else ever has to know it exists.
 
-- **The art is the BUTTON's** (`surf_button_style`, the same 9-patches
-  `surf_button_new` takes), so a tab matches the rest of the chrome and
-  bakes nothing new. The current tab wears the PRESSED face: an inset
-  control reading "you are here" is the oldest idiom there is and needs
-  no third state.
+- **The art is a TAB, and that is not decoration.** A tab is a card whose
+  bottom edge IS the page it belongs to: rounded at the top, dead flat at
+  the foot, drawn in the page's own background so the join disappears.
+  The first version reused the button's 9-patch — rounded all round, in
+  the button's baked colours — and came back from the bench as "more like
+  buttons than tabs", which was exactly right: nothing about it said the
+  page below was the same object.
+- **A8, so the colours are the CALLER'S.** `style->face` is meant to be
+  the page background and `style->dim` is every other tab; the widget
+  keeps two copies of the image struct with two tints, which is the
+  knob's trick for the knob's reason — a tint is a palette register on
+  the P4, so the second colour costs no asset and no pixels.
+  `surf_tabs_set_face` / `set_dim` move them for a caller whose theme
+  changes underneath.
+- **Two labels per tab, one hidden.** A label's colour is baked when the
+  node is made (`set_color` is a silent no-op on text), and the current
+  tab has to read louder than the rest — so the bright one and the dim
+  one are separate nodes, which also lets a caller hand a BOLD face to
+  the active one alone (`style->font_active`).
 - **ONE handler on the strip**, not one per tab. The index is arithmetic
   on the x that came in — dropdown does the same with its rows — so a
   five-tab bar costs five nodes for its faces rather than fifteen.

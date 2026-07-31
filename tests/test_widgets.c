@@ -688,12 +688,15 @@ static bool filled(surf_color c)
 static void test_tabs(void)
 {
     fresh(400, 300, 32);
-    surf_image face = {.pixels = NULL, .w = 32, .h = 32, .stride = 128,
-                       .format = SURF_FMT_ARGB8888};
+    surf_image face = {.pixels = NULL, .w = 24, .h = 24, .stride = 24,
+                       .format = SURF_FMT_A8};
     /* the synthetic face test_text.c builds — the built-in registry is
        a generated file the unit suite does not link */
-    surf_button_style st = {.normal = &face, .pressed = &face, .inset = 6,
-                            .font = &tfont, .text_color = 1};
+    surf_tabs_style st = {.patch = &face, .inset_side = 10, .inset_top = 10,
+                          .inset_bottom = 2, .font = &tfont,
+                          .face = SURF_RGB(40, 40, 48),
+                          .dim = SURF_RGB(20, 20, 24),
+                          .text_active = 1, .text = 1};
     const char *labels[3] = {"one", "two", "three"};
     surf_tabs *t = surf_tabs_new(surf_screen(), 0, 0, 300, 200, 40, &st,
                                  labels, 3);

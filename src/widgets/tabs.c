@@ -11,11 +11,25 @@
  * `surf_tabs_page(t, i)` hands you a group to fill and nothing else ever
  * has to know it exists.
  *
- * The art is the BUTTON's, deliberately — `surf_button_style`, the same
- * 9-patches `surf_button_new` uses — so a tab looks like the rest of the
- * chrome and no new asset is baked. The current tab wears the PRESSED
- * face: an inset control reading "you are here" is the oldest idiom
- * there is, and it needs no third state.
+ * THE ART IS A TAB, not a button, and that is not decoration. A tab is a
+ * card whose bottom edge IS the page it belongs to: rounded at the top,
+ * dead flat at the foot, drawn in the page's own background colour so
+ * the join disappears. The first version reused the button's 9-patch —
+ * rounded all round, in the button's baked colours — and came back from
+ * the bench as "more like buttons than tabs", which was exactly right:
+ * nothing about it said the page below was the same object.
+ *
+ * So the asset is A8 and the COLOURS ARE THE CALLER'S: `style->face` is
+ * meant to be the page background (the current tab vanishes into it),
+ * `style->dim` is every other tab. One image, two tinted copies — the
+ * knob's trick, for the knob's reason: a tint is a palette register on
+ * the P4, so two colours cost no second asset and no pixels.
+ *
+ * The label is TWO nodes, bright and dim, one hidden — because a label's
+ * colour is baked when the node is made (`set_color` is a silent no-op
+ * on text, which rally documents at length) and the current tab has to
+ * read louder than the rest. It also lets a caller hand in a bold face
+ * for the active one and nothing else.
  *
  * ONE handler on the strip rather than one per tab. The index is
  * arithmetic on the x that came in (dropdown does the same with its
@@ -29,10 +43,12 @@
 
 struct surf_tabs {
     surf_node  *root;      /* the whole thing: strip + pages */
-    surf_node  *strip;     /* the buttons */
-    surf_node **up;        /* per tab: the two faces and the legend */
+    surf_node  *strip;     /* the tabs */
+    surf_image  on, off;   /* our own tints over shared pixels (knob.c) */
+    surf_node **up;        /* per tab: the dim face and the bright one */
     surf_node **down;
-    surf_node **label;
+    surf_node **label;     /* ...and the two legends that go with them */
+    surf_node **label_on;
     surf_node **page;      /* per tab: what the caller fills */
     int32_t     count, index;
     int16_t     w, h, tab_h, tab_w;
@@ -50,6 +66,8 @@ static void tabs_faces(surf_tabs *t)
         bool on = (i == t->index) || (i == t->pressed);
         surf_node_set_hidden(t->up[i], on);
         surf_node_set_hidden(t->down[i], !on);
+        surf_node_set_hidden(t->label[i], on);
+        surf_node_set_hidden(t->label_on[i], !on);
     }
 }
 
@@ -106,10 +124,10 @@ static void tabs_touch(surf_node *n, const surf_touch *tch, void *user)
 
 surf_tabs *surf_tabs_new(surf_node *parent, int16_t x, int16_t y,
                          int16_t w, int16_t h, int16_t tab_h,
-                         const surf_button_style *style,
+                         const surf_tabs_style *style,
                          const char *const *labels, int32_t count)
 {
-    if (!parent || !style || !style->normal || !style->pressed || !style->font)
+    if (!parent || !style || !style->patch || !style->font)
         return NULL;
     if (count < 1 || w < count || tab_h < 1 || h <= tab_h)
         return NULL;
@@ -125,10 +143,18 @@ surf_tabs *surf_tabs_new(surf_node *parent, int16_t x, int16_t y,
     t->up = calloc((size_t)count, sizeof *t->up);
     t->down = calloc((size_t)count, sizeof *t->down);
     t->label = calloc((size_t)count, sizeof *t->label);
+    t->label_on = calloc((size_t)count, sizeof *t->label_on);
     t->page = calloc((size_t)count, sizeof *t->page);
     t->root = surf_group_new(x, y);
     t->strip = surf_group_new(0, 0);
-    if (!t->up || !t->down || !t->label || !t->page || !t->root || !t->strip) {
+    /* our own copies of the style's image struct: shared pixels, our own
+       tint, one per state — the same arrangement every A8 widget uses */
+    t->on = *style->patch;
+    t->on.tint = style->face ? style->face : SURF_RGB(47, 51, 62);
+    t->off = *style->patch;
+    t->off.tint = style->dim ? style->dim : SURF_RGB(30, 33, 40);
+    if (!t->up || !t->down || !t->label || !t->label_on || !t->page ||
+        !t->root || !t->strip) {
         surf_tabs_destroy(t);
         return NULL;
     }
@@ -137,33 +163,42 @@ surf_tabs *surf_tabs_new(surf_node *parent, int16_t x, int16_t y,
     surf_group_set_clip(t->strip, w, tab_h);
     surf_node_add(t->root, t->strip);
 
+    const surf_font *fon = style->font_active ? style->font_active
+                                              : style->font;
     for (int32_t i = 0; i < count; i++) {
         int16_t tx = (int16_t)(i * t->tab_w);
-        t->up[i] = surf_ninepatch_new(style->normal, tx, 0, t->tab_w, tab_h,
-                                      style->inset, style->inset,
-                                      style->inset, style->inset);
-        t->down[i] = surf_ninepatch_new(style->pressed, tx, 0, t->tab_w, tab_h,
-                                        style->inset, style->inset,
-                                        style->inset, style->inset);
-        t->label[i] = surf_text_new(style->font,
-                                    labels && labels[i] ? labels[i] : "",
-                                    tx, 0, style->text_color);
+        const char *lab = labels && labels[i] ? labels[i] : "";
+        /* the SIDE insets keep the corner curve unstretched; the bottom
+           inset is 2, because there is nothing down there to preserve */
+        t->up[i] = surf_ninepatch_new(&t->off, tx, 0, t->tab_w, tab_h,
+                                      style->inset_side, style->inset_top,
+                                      style->inset_side, style->inset_bottom);
+        t->down[i] = surf_ninepatch_new(&t->on, tx, 0, t->tab_w, tab_h,
+                                        style->inset_side, style->inset_top,
+                                        style->inset_side, style->inset_bottom);
+        t->label[i] = surf_text_new(style->font, lab, tx, 0, style->text);
+        t->label_on[i] = surf_text_new(fon, lab, tx, 0, style->text_active);
         /* a PAGE is a clipped group so its content cannot spill past the
          * area the caller asked for — and so it can carry a handler of
          * its own if the caller wants one */
         t->page[i] = surf_group_new(0, tab_h);
-        if (!t->up[i] || !t->down[i] || !t->label[i] || !t->page[i]) {
+        if (!t->up[i] || !t->down[i] || !t->label[i] || !t->label_on[i] ||
+            !t->page[i]) {
             surf_tabs_destroy(t);
             return NULL;
         }
         surf_group_set_clip(t->page[i], w, (int16_t)(h - tab_h));
-        surf_text_set_wrap(t->label[i], t->tab_w);
-        surf_text_set_align(t->label[i], SURF_ALIGN_CENTER);
-        surf_point ls = surf_node_size(t->label[i]);
-        surf_node_set_pos(t->label[i], tx, (int16_t)((tab_h - ls.y) / 2));
+        for (int k = 0; k < 2; k++) {
+            surf_node *lb = k ? t->label_on[i] : t->label[i];
+            surf_text_set_wrap(lb, t->tab_w);
+            surf_text_set_align(lb, SURF_ALIGN_CENTER);
+            surf_point ls = surf_node_size(lb);
+            surf_node_set_pos(lb, tx, (int16_t)((tab_h - ls.y) / 2));
+        }
         surf_node_add(t->strip, t->up[i]);
         surf_node_add(t->strip, t->down[i]);
         surf_node_add(t->strip, t->label[i]);
+        surf_node_add(t->strip, t->label_on[i]);
         surf_node_add(t->root, t->page[i]);
     }
     tabs_faces(t);
@@ -184,6 +219,7 @@ void surf_tabs_destroy(surf_tabs *t)
     free(t->up);
     free(t->down);
     free(t->label);
+    free(t->label_on);
     free(t->page);
     free(t);
 }
@@ -213,6 +249,29 @@ void surf_tabs_set_label(surf_tabs *t, int32_t i, const char *label)
     if (!t || i < 0 || i >= t->count)
         return;
     surf_text_set(t->label[i], label ? label : "");
+    surf_text_set(t->label_on[i], label ? label : "");
+}
+
+/* Retint, for a caller whose page background can change under it (a
+ * theme, a colour picker). TWO setters rather than one taking both,
+ * because the common case is moving the face alone and "leave the other"
+ * has no spare value to say it with: 0 is black, which is a colour
+ * somebody will want. The sprites already point at these images, so a
+ * repaint is the whole update. */
+void surf_tabs_set_face(surf_tabs *t, surf_color c)
+{
+    if (!t || t->on.tint == c)
+        return;
+    t->on.tint = c;
+    surf_node_damage(t->strip);
+}
+
+void surf_tabs_set_dim(surf_tabs *t, surf_color c)
+{
+    if (!t || t->off.tint == c)
+        return;
+    t->off.tint = c;
+    surf_node_damage(t->strip);
 }
 
 void surf_tabs_on_change(surf_tabs *t, surf_index_cb cb, void *user)

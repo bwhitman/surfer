@@ -132,6 +132,39 @@ def button_patch(pressed):
     return out
 
 
+# The TAB. Rounded at the TOP, dead flat at the bottom, because that is
+# the whole grammar of a tab: it is a card whose bottom edge is the page
+# it belongs to, so the join has to be seamless and the free corners have
+# to be the ones sticking up. A button's 9-patch is rounded all round and
+# reads as a button sitting near a panel, which is exactly the note this
+# came back with.
+#
+# A8, so the colour is the CALLER'S: the selected tab is drawn in the
+# page's own background and disappears into it, and the others in
+# something darker. One asset, two tints, and a caller can theme both
+# without a new bake.
+TAB_W, TAB_H = 24, 24
+TAB_R = 8                    # top-corner radius
+TAB_INSET_TOP = TAB_R + 2    # the 9-patch must not stretch the curve
+TAB_INSET_BOT = 2
+
+
+def tab_patch():
+    out = []
+    for y in range(TAB_H):
+        for x in range(TAB_W):
+            px, py = x + 0.5, y + 0.5
+            # ONE distance field: how far outside a box whose top corners
+            # are round. qx is the overshoot past the inner x-range, qy
+            # the overshoot ABOVE the inner top edge only — never below,
+            # so the foot is square and bleeds into the page.
+            qx = max(TAB_R - px, px - (TAB_W - TAB_R), 0.0)
+            qy = max(TAB_R - py, 0.0)
+            d = math.hypot(qx, qy) - TAB_R
+            out.append(clamp(max(0.0, min(1.0, 0.5 - d)) * 255))
+    return out
+
+
 def rounded_alpha(px, py, w, h, radius):
     qx = abs(px - w / 2.0) - (w / 2.0 - radius)
     qy = abs(py - h / 2.0) - (h / 2.0 - radius)
@@ -474,6 +507,12 @@ def main():
     print(f"#define WSEL_SIZE {SEL}")
     print("#define WBTN_SIZE 18")
     print("#define WBTN_INSET 6")
+    print(f"#define WTAB_W {TAB_W}")
+    print(f"#define WTAB_H {TAB_H}")
+    print(f"#define WTAB_INSET_TOP {TAB_INSET_TOP}")
+    print(f"#define WTAB_INSET_BOT {TAB_INSET_BOT}")
+    print(f"#define WTAB_INSET_SIDE {TAB_R + 2}")
+    emit8("widget_tab_px", tab_patch())
     emit8("widget_knob_px", knob_strip())
     emit8("widget_knobsm_px", knob_strip(KNOB_SM))
     emit("widget_btn_px", button_patch(False))

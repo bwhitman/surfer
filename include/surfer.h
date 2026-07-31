@@ -692,10 +692,23 @@ void       surf_knob_on_tap(surf_knob *k, surf_change_cb cb, void *user);
  * doing this by hand keeps its own shadow of what is showing. */
 typedef struct surf_tabs surf_tabs;
 
+/* The tab's own art: A8, rounded at the TOP and flat at the foot, so the
+ * current tab joins the page under it. Both faces come from ONE image
+ * with two tints — `face` is meant to be the PAGE's background, which is
+ * what makes the join invisible, and `dim` is everything else. */
+typedef struct {
+    const surf_image *patch;   /* A8 9-patch: rounded top, square bottom */
+    int16_t           inset_side, inset_top, inset_bottom;
+    const surf_font  *font;
+    const surf_font  *font_active;   /* NULL = the same face */
+    surf_color        face, dim;         /* current tab, the others */
+    surf_color        text_active, text;
+} surf_tabs_style;
+
 /* h is the WHOLE height, tab strip included; pages get h - tab_h. */
 surf_tabs *surf_tabs_new(surf_node *parent, int16_t x, int16_t y,
                          int16_t w, int16_t h, int16_t tab_h,
-                         const surf_button_style *style,
+                         const surf_tabs_style *style,
                          const char *const *labels, int32_t count);
 void       surf_tabs_destroy(surf_tabs *t);
 surf_node *surf_tabs_node(surf_tabs *t);
@@ -704,6 +717,8 @@ int32_t    surf_tabs_index(const surf_tabs *t);
 int32_t    surf_tabs_count(const surf_tabs *t);
 void       surf_tabs_set_index(surf_tabs *t, int32_t idx);  /* no cb */
 void       surf_tabs_set_label(surf_tabs *t, int32_t i, const char *label);
+void       surf_tabs_set_face(surf_tabs *t, surf_color c);  /* the current tab */
+void       surf_tabs_set_dim(surf_tabs *t, surf_color c);   /* all the others */
 void       surf_tabs_on_change(surf_tabs *t, surf_index_cb cb, void *user);
 
 typedef struct surf_selector surf_selector;
