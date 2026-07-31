@@ -172,7 +172,7 @@ typedef struct {
 extern const mp_obj_type_t surfer_font_type;
 
 enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON, W_SCROLLBAR,
-       W_LED, W_SELECTOR, W_COLORPICKER };
+       W_LED, W_SELECTOR, W_COLORPICKER, W_TABS };
 
 typedef struct {
     mp_obj_base_t base;
@@ -1257,6 +1257,7 @@ static void widget_cb(int32_t value, void *user)
     case W_DROPDOWN:
     case W_SCROLLBAR:
     case W_SELECTOR:
+    case W_TABS:
     case W_COLORPICKER:
     case W_LED:       /* has no callback, but be consistent */
     default:          arg = mp_obj_new_int(value); break;
@@ -1296,6 +1297,8 @@ static mp_obj_t widget_get_value(surfer_widget_obj_t *o)
         return mp_obj_new_float((mp_float_t)surf_led_level(o->w) / SURF_ONE);
     case W_SELECTOR:
         return MP_OBJ_NEW_SMALL_INT(surf_selector_index(o->w));
+    case W_TABS:
+        return MP_OBJ_NEW_SMALL_INT(surf_tabs_index(o->w));
     case W_COLORPICKER:
         return MP_OBJ_NEW_SMALL_INT(surf_colorpicker_color(o->w));
     case W_BUTTON:
@@ -1330,6 +1333,9 @@ static void widget_set_value(surfer_widget_obj_t *o, mp_obj_t v)
         break;
     case W_SELECTOR:
         surf_selector_set_index(o->w, mp_obj_get_int(v));
+        break;
+    case W_TABS:
+        surf_tabs_set_index(o->w, mp_obj_get_int(v));
         break;
     case W_COLORPICKER:
         surf_colorpicker_set_color(o->w, (surf_color)mp_obj_get_int(v));
@@ -1441,9 +1447,40 @@ static mp_obj_t widget_detach(mp_obj_t self_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(widget_detach_obj, widget_detach);
 
+/* tabs.page(i) -> Node: the group behind tab i, for the caller to fill.
+ * The widget shows and hides it; nothing else has to know it exists.
+ *
+ * Wrapped through the registry like every other node handed back from C,
+ * so `t.page(0) is t.page(0)` and a Python attribute set on it survives.
+ */
+static mp_obj_t widget_page(mp_obj_t self_in, mp_obj_t idx)
+{
+    surfer_widget_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (o->kind != W_TABS)
+        mp_raise_TypeError(MP_ERROR_TEXT("not a tabs widget"));
+    surf_node *p = surf_tabs_page(o->w, mp_obj_get_int(idx));
+    if (!p)
+        mp_raise_ValueError(MP_ERROR_TEXT("no such tab"));
+    return MP_OBJ_FROM_PTR(new_node_obj(p));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(widget_page_obj, widget_page);
+
+/* tabs.set_label(i, text) — a tab whose legend follows what is in it. */
+static mp_obj_t widget_set_label(mp_obj_t self_in, mp_obj_t idx, mp_obj_t text)
+{
+    surfer_widget_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (o->kind != W_TABS)
+        mp_raise_TypeError(MP_ERROR_TEXT("not a tabs widget"));
+    surf_tabs_set_label(o->w, mp_obj_get_int(idx), mp_obj_str_get_str(text));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(widget_set_label_obj, widget_set_label);
+
 static const mp_rom_map_elem_t widget_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_detach), MP_ROM_PTR(&widget_detach_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_range), MP_ROM_PTR(&widget_set_range_obj)},
+    {MP_ROM_QSTR(MP_QSTR_page), MP_ROM_PTR(&widget_page_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_label), MP_ROM_PTR(&widget_set_label_obj)},
 };
 static MP_DEFINE_CONST_DICT(widget_locals_dict, widget_locals_table);
 
@@ -2294,6 +2331,47 @@ static mp_obj_t mod_button(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_button_obj, 4, 5, mod_button);
 
+/* surfer.tabs(x, y, w, h, ["one", "two"], tab_h=36) -> Widget
+ *
+ * A strip of labelled buttons with a PAGE behind each: `t.page(i)` is a
+ * group to fill and the widget hides all but the current one. `.value`
+ * is the index, settable, and the callback reports one.
+ *
+ * `h` is the WHOLE height, tab strip included — a page gets h - tab_h,
+ * which is what a caller laying out a panel actually knows. */
+static mp_obj_t mod_tabs(size_t n_args, const mp_obj_t *args)
+{
+    static surf_button_style st = {
+        .normal = &btn_img, .pressed = &btnpr_img, .inset = WBTN_INSET,
+        .text_color = SURF_RGB(240, 242, 248),
+    };
+    st.font = widget_font();
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(args[4], &len, &items);
+    if (len == 0)
+        mp_raise_ValueError(MP_ERROR_TEXT("no tabs"));
+    const char **strs = m_new(const char *, len);
+    for (size_t i = 0; i < len; i++)
+        strs[i] = mp_obj_str_get_str(items[i]);
+    int16_t tab_h = n_args > 5 ? (int16_t)mp_obj_get_int(args[5]) : 36;
+    surf_tabs *t = surf_tabs_new(surf_screen(), 0, 0,
+                                 (int16_t)mp_obj_get_int(args[2]),
+                                 (int16_t)mp_obj_get_int(args[3]), tab_h,
+                                 &st, strs, (int32_t)len);
+    m_del(const char *, strs, len);
+    if (!t)
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("tabs create failed"));
+    surf_node *node = surf_tabs_node(t);
+    surf_node_detach(node);
+    surf_node_set_pos(node, (int16_t)mp_obj_get_int(args[0]),
+                      (int16_t)mp_obj_get_int(args[1]));
+    surfer_widget_obj_t *o = new_widget_obj(W_TABS, t, node);
+    surf_tabs_on_change(t, widget_idx_cb, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_tabs_obj, 5, 6, mod_tabs);
+
 static mp_obj_t mod_checkbox(mp_obj_t x, mp_obj_t y)
 {
     static const surf_checkbox_style st = {.strip = &check_img,
@@ -2451,6 +2529,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_button), MP_ROM_PTR(&mod_button_obj)},
     {MP_ROM_QSTR(MP_QSTR_led), MP_ROM_PTR(&mod_led_obj)},
     {MP_ROM_QSTR(MP_QSTR_selector), MP_ROM_PTR(&mod_selector_obj)},
+    {MP_ROM_QSTR(MP_QSTR_tabs), MP_ROM_PTR(&mod_tabs_obj)},
     {MP_ROM_QSTR(MP_QSTR_colorpicker), MP_ROM_PTR(&mod_colorpicker_obj)},
     /* capitalized aliases, DESIGN.md §3 taste */
     {MP_ROM_QSTR(MP_QSTR_Group), MP_ROM_PTR(&mod_group_obj)},

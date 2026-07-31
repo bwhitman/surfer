@@ -667,11 +667,100 @@ static void test_textinput_mask(void)
     surf_node_destroy(n);
 }
 
+static int32_t tab_reported;
+static void tab_cb(int32_t v, void *user) { (void)user; tab_reported = v; }
+
+/* Does a rect of this colour reach the screen this frame? `hidden` is
+ * write-only on a node — deliberately, and tulip5 leans on it — so the
+ * only honest way to ask "is that page showing" is to compose and see
+ * what the hal was told to fill. */
+static bool filled(surf_color c)
+{
+    for (int i = 0; i < nops; i++)
+        if (ops[i].op == 'F' && ops[i].c == c)
+            return true;
+    return false;
+}
+
+/* Tabs: the strip picks, and the WIDGET does the hiding. That second
+ * half is the whole reason it is a widget rather than four lines in a
+ * caller, so it is what this checks. */
+static void test_tabs(void)
+{
+    fresh(400, 300, 32);
+    surf_image face = {.pixels = NULL, .w = 32, .h = 32, .stride = 128,
+                       .format = SURF_FMT_ARGB8888};
+    /* the synthetic face test_text.c builds — the built-in registry is
+       a generated file the unit suite does not link */
+    surf_button_style st = {.normal = &face, .pressed = &face, .inset = 6,
+                            .font = &tfont, .text_color = 1};
+    const char *labels[3] = {"one", "two", "three"};
+    surf_tabs *t = surf_tabs_new(surf_screen(), 0, 0, 300, 200, 40, &st,
+                                 labels, 3);
+    OK(t != NULL);
+    OK(surf_tabs_count(t) == 3 && surf_tabs_index(t) == 0);
+    surf_tabs_on_change(t, tab_cb, NULL);
+
+    /* one page per tab, stable across calls */
+    surf_node *p0 = surf_tabs_page(t, 0), *p2 = surf_tabs_page(t, 2);
+    OK(p0 && p2 && p0 != p2 && surf_tabs_page(t, 0) == p0);
+    OK(surf_tabs_page(t, 3) == NULL && surf_tabs_page(t, -1) == NULL);
+
+    /* something recognisable on two of the pages */
+    /* BRIGHT and distinct: these are packed to 565 on the way to the
+       hal, so SURF_RGB(1, 2, 3) would arrive as 0 — the same value the
+       screen is cleared to, and a check that can never fail. */
+    const surf_color C0 = SURF_RGB(255, 0, 0), C2 = SURF_RGB(0, 255, 0);
+    surf_node_add(p0, surf_rect_new(0, 0, 100, 40, C0));
+    surf_node_add(p2, surf_rect_new(0, 0, 100, 40, C2));
+    nops = 0;
+    surf_tick();
+    OK(filled(C0) && !filled(C2));            /* page 0 is up */
+
+    /* a tap on the third tab: 300/3 = 100 wide each, so x=250 is in it */
+    tab_reported = -1;
+    surf_touch d = {.x = 250, .y = 20, .phase = SURF_TOUCH_DOWN, 0};
+    surf_touch u = {.x = 250, .y = 20, .phase = SURF_TOUCH_UP, 0};
+    surf_inject_touch(&d);
+    surf_inject_touch(&u);
+    OK(surf_tabs_index(t) == 2 && tab_reported == 2);
+    nops = 0;
+    surf_tick();
+    OK(filled(C2) && !filled(C0));            /* ...and the pages swapped */
+
+    /* a tap BELOW the strip is the page's business, not the strip's: a
+     * tab bar that switched on a touch anywhere in the panel would make
+     * every control under it change the page */
+    tab_reported = -1;
+    surf_touch pd = {.x = 50, .y = 120, .phase = SURF_TOUCH_DOWN, 0};
+    surf_touch pu = {.x = 50, .y = 120, .phase = SURF_TOUCH_UP, 0};
+    surf_inject_touch(&pd);
+    surf_inject_touch(&pu);
+    OK(surf_tabs_index(t) == 2 && tab_reported == -1);
+
+    /* set_index does NOT report — the caller already knows, and every
+     * other widget's setter follows the same rule */
+    surf_tabs_set_index(t, 0);
+    OK(surf_tabs_index(t) == 0 && tab_reported == -1);
+    nops = 0;
+    surf_tick();
+    OK(filled(C0) && !filled(C2));
+    surf_tabs_set_index(t, 99);                   /* out of range: ignored */
+    OK(surf_tabs_index(t) == 0);
+
+    surf_tabs_set_label(t, 1, "renamed");         /* no crash, no reindex */
+    OK(surf_tabs_index(t) == 0);
+
+    /* whatever the caller put in a page goes when the tabs do */
+    surf_tabs_destroy(t);
+}
+
 void run_widget_tests(void)
 {
     test_colorpicker();
     test_textinput_mask();
     test_led_and_selector();
+    test_tabs();
     test_scrollbar();
     test_filmstrip();
     test_ninepatch();

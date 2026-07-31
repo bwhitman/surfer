@@ -23,7 +23,8 @@ ask rather than silently diverging.
   All device allocations go through `hal->alloc_image`; never raw
   `heap_caps_malloc` in core code.
 - **The widget set stays small** (knob, slider, button, checkbox, dropdown,
-  label, textinput, scrollview, scrollbar, led, selector, colorpicker).
+  label, textinput, scrollview, scrollbar, led, selector, colorpicker,
+  tabs).
   Do not add widgets, node types, or hal ops without asking first.
 - **No new dependencies without asking.** Currently allowed: stb_truetype,
   stb_image (build tools only), SDL2, ESP-IDF, MicroPython headers.
@@ -368,6 +369,44 @@ travelled under 6px, decided at UP.
 
 Both are bound: `surfer.led(x, y, color)` and `surfer.selector(x, y, n)`,
 with `.value` a brightness (or True/False) and an index respectively.
+
+## Tabs, and the half a caller cannot do well
+
+`surf_tabs` is a strip of labelled buttons with a PAGE behind each, and
+the widget owns which page is showing. Added for tulip5's settings app,
+which had four panels tiled into one screen and no room for a fifth.
+
+**Drawing the strip is the easy half.** What is not is what happens
+underneath: every node of page 2 hidden while page 1 is up, and the swap
+in ONE place when the index changes. A caller doing that by hand keeps a
+list of groups AND its own shadow of which is showing — `hidden` is
+write-only on a node, deliberately, so there is nothing to read back —
+and gets it wrong the first time a page is added after the fact. Here
+the page is the widget's: `surf_tabs_page(t, i)` hands back a group to
+fill and nothing else ever has to know it exists.
+
+- **The art is the BUTTON's** (`surf_button_style`, the same 9-patches
+  `surf_button_new` takes), so a tab matches the rest of the chrome and
+  bakes nothing new. The current tab wears the PRESSED face: an inset
+  control reading "you are here" is the oldest idiom there is and needs
+  no third state.
+- **ONE handler on the strip**, not one per tab. The index is arithmetic
+  on the x that came in — dropdown does the same with its rows — so a
+  five-tab bar costs five nodes for its faces rather than fifteen.
+- **A touch below the strip is the page's business.** The handler is on
+  the strip and nothing else, or every control on a page would change
+  the page.
+- **A page is a clipped group**, so content cannot spill past the area
+  the caller asked for, and the group can carry a handler of its own.
+- `h` is the WHOLE height, tab strip included; pages get `h - tab_h`.
+  That is the number a caller laying out a panel actually knows.
+
+`test_tabs` in tests/test_widgets.c checks the hiding by COMPOSING and
+looking at what the hal was told to fill, since there is no way to read
+`hidden` back. Worth knowing if you write a test like it: the colours
+have to be bright. The first version used `SURF_RGB(1, 2, 3)`, which
+packs to 0 in 565 — the same value the screen is cleared to — so the
+check could not fail.
 
 ## The desktop window
 
