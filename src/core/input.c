@@ -62,6 +62,34 @@ static void deliver(surf_node *n, const surf_touch *t)
         n->on_touch(n, t, n->touch_user);
 }
 
+/* A WHEEL (or a two-finger trackpad push) over a scrollview.
+ *
+ * Drag was the only way to scroll anything here, which is right for a
+ * touchscreen and wrong for the two targets that have a mouse: on a
+ * laptop the natural gesture is two fingers, and it did nothing at all.
+ * The hal turns its wheel event into this; the walk is the dispatch's
+ * own — the first scrollable ancestor of whatever is under the pointer,
+ * so a list inside a panel scrolls the list and a page behind it stays
+ * put.
+ *
+ * It moves the view directly rather than faking a drag: a wheel has no
+ * press and no release, and a synthetic down/up pair would light up
+ * every row it passed over. */
+void surf_input_wheel(int16_t x, int16_t y, int16_t dx, int16_t dy)
+{
+    for (surf_node *n = surf_hit_test(x, y); n; n = n->parent) {
+        if (n->type != SURF_NODE_SCROLLVIEW)
+            continue;
+        bool cx = surf_scroll_can_x(n), cy = surf_scroll_can_y(n);
+        if (!cx && !cy)
+            continue;
+        surf_point off = surf_scrollview_offset(n);
+        surf_scrollview_set_offset(n, (int16_t)(cx ? off.x + dx : off.x),
+                                   (int16_t)(cy ? off.y + dy : off.y));
+        return;
+    }
+}
+
 void surf_input_dispatch(const surf_touch *t)
 {
     switch (t->phase) {

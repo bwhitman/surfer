@@ -14,6 +14,10 @@ EM_ASYNC_JS(void, surf_web_raf_yield, (void), {
 
 #include "hal_sdl.h"
 
+/* content pixels per wheel notch: a flick should cover a list rather
+ * than inch down it */
+#define WHEEL_PX 48
+
 #define TOUCH_RING 32
 
 static struct {
@@ -883,6 +887,18 @@ bool surf_hal_sdl_pump(void)
                 push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_MOVE);
             }
             break;
+        case SDL_MOUSEWHEEL: {
+            /* A trackpad's two fingers, or a wheel. SDL reports lines,
+             * not pixels, on this path — WHEEL_PX is what one notch
+             * moves, chosen so a flick covers a list rather than
+             * inching. Direction: content follows the fingers, which is
+             * what every list on this machine does under a drag. */
+            int mx = 0, my = 0;
+            SDL_GetMouseState(&mx, &my);
+            surf_input_wheel((int16_t)mx, (int16_t)my, (int16_t)(-e.wheel.x * WHEEL_PX),
+                             (int16_t)(-e.wheel.y * WHEEL_PX));
+            break;
+        }
         case SDL_MOUSEBUTTONUP:
             if (e.button.button == SDL_BUTTON_LEFT) {
                 S.mouse_down = false;

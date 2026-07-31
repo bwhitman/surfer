@@ -340,6 +340,10 @@ void surf_ninepatch_set_size(surf_node *n, int16_t w, int16_t h);
 /* input: touch routes to the hit node's nearest ancestor with a handler,
  * which holds pointer capture until UP (DESIGN.md §2.6) */
 surf_node *surf_hit_test(int16_t x, int16_t y);
+/* A wheel / two-finger push at (x, y), in pixels of content movement.
+ * Scrolls the first scrollable scrollview under the pointer — the hal
+ * calls this; nothing else needs to. */
+void surf_input_wheel(int16_t x, int16_t y, int16_t dx, int16_t dy);
 void surf_node_set_on_touch(surf_node *n, surf_touch_cb cb, void *user);
 void surf_node_abs_pos(const surf_node *n, int16_t *x, int16_t *y);
 surf_point surf_node_pos(const surf_node *n);
