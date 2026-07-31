@@ -8,7 +8,28 @@
  * winding (so overlapping stroke quads and round joins union cleanly).
  * AA is 4x vertical supersampling with exact fractional span coverage
  * horizontally. Float math and malloc are fine here for the same reason
- * they are in image.c: this is bake-time code, not the frame path. */
+ * they are in image.c: this is bake-time code, not the frame path.
+ *
+ * ...THAT SAID, tulip5's audioview draws a 256-point trace into an image
+ * every frame, and the first version of this rasterizer made that cost
+ * 113 ms ON THE DEVICE for one call. Two things were quadratic-ish and
+ * neither had to be:
+ *
+ *  - EVERY SCANLINE TESTED EVERY EDGE. A 256-point stroke is ~4000 edges
+ *    (a quad per segment plus a disc at every vertex), and the bbox of a
+ *    scope trace is the whole pane — so 250 rows x 4 subsamples x 4000
+ *    edges is four MILLION edge tests for a line drawing. Edges are
+ *    sorted by their top y now and walked with an active window, which
+ *    is the oldest trick in scanline rendering and takes the same
+ *    picture down to the few dozen edges that actually cross each row.
+ *  - EVERY SCANLINE CLEARED THE WHOLE COVERAGE BUFFER. memset of
+ *    dst->w * 2 bytes per row is half a megabyte per call at 1024 wide,
+ *    most of it zeroing what was already zero. Only the span that was
+ *    touched is cleared now.
+ *
+ * Measured after, same call: 113 ms -> 6.6 ms on the P4, 0.70 -> 0.12 ms
+ * on the desktop. It is still not frame-path code by design — but an app
+ * that wants a live trace can now have one. */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,9 +118,15 @@ static bool path_stroke(sh_path *p, const float *xy, int n, float hw)
         if (!path_poly(p, quad, 4))
             return false;
     }
-    for (int i = 0; i < n; i++)
-        if (!path_circle(p, xy[i * 2], xy[i * 2 + 1], hw))
-            return false;
+    /* Round joins and caps, but only where they can be SEEN. Below about
+     * a pixel and a half wide a disc at every vertex is invisible and
+     * costs ~12 edges a point — 3000 of them on a 256-point trace, which
+     * is most of the rasterizer's work for a line that looks identical
+     * without them. */
+    if (hw > 0.75f)
+        for (int i = 0; i < n; i++)
+            if (!path_circle(p, xy[i * 2], xy[i * 2 + 1], hw))
+                return false;
     return true;
 }
 
@@ -206,6 +233,29 @@ static int cross_cmp(const void *pa, const void *pb)
     return d < 0 ? -1 : d > 0 ? 1 : 0;
 }
 
+/* Insertion sort of edge INDICES by the top of each edge's y range.
+ * Insertion rather than qsort because there is no portable qsort_r to
+ * pass the edge array through, and because these lists are nearly sorted
+ * already — a stroked path is emitted in path order, which for anything
+ * a caller draws is close to y order. */
+static void qsort_r_edges(int *order, int n, const sh_edge *e)
+{
+    for (int i = 1; i < n; i++) {
+        int v = order[i];
+        float vy = e[v].y0 < e[v].y1 ? e[v].y0 : e[v].y1;
+        int j = i - 1;
+        while (j >= 0) {
+            const sh_edge *o = &e[order[j]];
+            float oy = o->y0 < o->y1 ? o->y0 : o->y1;
+            if (oy <= vy)
+                break;
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = v;
+    }
+}
+
 static void raster(surf_image *dst, sh_path *p, const surf_paint *paint)
 {
     if (!dst || !dst->pixels || !p->n)
@@ -216,23 +266,52 @@ static void raster(surf_image *dst, sh_path *p, const surf_paint *paint)
     if (y1 > dst->h) y1 = dst->h;
     if (y0 >= y1)
         return;
-    uint16_t *cov = malloc((size_t)dst->w * sizeof *cov);
+    uint16_t *cov = calloc((size_t)dst->w, sizeof *cov);
     sh_cross *cr = malloc((size_t)p->n * sizeof *cr);
-    if (!cov || !cr) {
+    /* THE ACTIVE EDGE WINDOW. `order` is every edge index sorted by the
+     * top of its y range; `act` is the ones that can cross the row being
+     * drawn. Without it each row tests every edge in the path, which for
+     * a stroked polyline is a quad and a disc per point — four million
+     * tests for a 256-point trace across a 250-row box. */
+    int *order = malloc((size_t)p->n * sizeof *order);
+    int *act = malloc((size_t)p->n * sizeof *act);
+    if (!cov || !cr || !order || !act) {
         free(cov);
         free(cr);
+        free(order);
+        free(act);
         return;
     }
+    for (int i = 0; i < p->n; i++)
+        order[i] = i;
+    qsort_r_edges(order, p->n, p->e);
+    int nact = 0, next = 0;
     sh_paint q = paint_prep(paint);
 
     for (int y = y0; y < y1; y++) {
-        memset(cov, 0, (size_t)dst->w * sizeof *cov);
+        /* admit every edge that starts at or above the bottom of this
+         * row, and retire the ones that ended above its top */
+        while (next < p->n) {
+            const sh_edge *e = &p->e[order[next]];
+            float top = e->y0 < e->y1 ? e->y0 : e->y1;
+            if (top >= (float)(y + 1))
+                break;
+            act[nact++] = order[next++];
+        }
+        for (int i = 0; i < nact; ) {
+            const sh_edge *e = &p->e[act[i]];
+            float bot = e->y0 > e->y1 ? e->y0 : e->y1;
+            if (bot <= (float)y)
+                act[i] = act[--nact];
+            else
+                i++;
+        }
         int row_xa = dst->w, row_xb = -1;
         for (int s = 0; s < 4; s++) {
             float sy = y + (s + 0.5f) / 4.0f;
             int nc = 0;
-            for (int i = 0; i < p->n; i++) {
-                const sh_edge *e = &p->e[i];
+            for (int ai = 0; ai < nact; ai++) {
+                const sh_edge *e = &p->e[act[ai]];
                 float ey0 = e->y0, ey1 = e->y1;
                 int dir = 1;
                 float ex0 = e->x0, ex1 = e->x1;
@@ -282,11 +361,19 @@ static void raster(surf_image *dst, sh_path *p, const surf_paint *paint)
                 }
             }
         }
-        if (row_xb >= row_xa)
+        if (row_xb >= row_xa) {
             composite_row(dst, y, cov, row_xa, row_xb, &q);
+            /* clear only what was written: a memset of the full width
+             * per row is half a megabyte a call at 1024 wide, nearly all
+             * of it zeroing zeroes */
+            memset(cov + row_xa, 0,
+                   (size_t)(row_xb - row_xa + 1) * sizeof *cov);
+        }
     }
     free(cov);
     free(cr);
+    free(order);
+    free(act);
 }
 
 /* ---- public ops (coords Q16 pixels) ---- */
