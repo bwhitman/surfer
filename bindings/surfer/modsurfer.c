@@ -36,6 +36,10 @@ static surf_image cap_img = {
     .pixels = (void *)widget_cap_px, .w = WCAP_W, .h = WCAP_H,
     .stride = WCAP_W, .format = SURF_FMT_A8,
 };
+static surf_image radio_img = {
+    .pixels = (void *)widget_radio_px, .w = WRADIO_SIZE * 2, .h = WRADIO_SIZE,
+    .stride = WRADIO_SIZE * 2 * 4, .format = SURF_FMT_ARGB8888,
+};
 static surf_image check_img = {
     .pixels = (void *)widget_check_px, .w = WCHECK_SIZE * 2, .h = WCHECK_SIZE,
     .stride = WCHECK_SIZE * 2 * 4, .format = SURF_FMT_ARGB8888,
@@ -137,6 +141,7 @@ static void prepare_assets(void)
     surfer_port_prepare_image(&slimtrackh_img);
     surfer_port_prepare_image(&slimcaph_img);
     surfer_port_prepare_image(&check_img);
+    surfer_port_prepare_image(&radio_img);
     surfer_port_prepare_image(&panel_img);
     surfer_port_prepare_image(&arrow_img);
     surfer_port_prepare_image(&btn_img);
@@ -179,7 +184,7 @@ typedef struct {
 extern const mp_obj_type_t surfer_font_type;
 
 enum { W_SLIDER, W_KNOB, W_CHECKBOX, W_DROPDOWN, W_BUTTON, W_SCROLLBAR,
-       W_LED, W_SELECTOR, W_COLORPICKER, W_TABS };
+       W_LED, W_SELECTOR, W_COLORPICKER, W_TABS, W_RADIO };
 
 typedef struct {
     mp_obj_base_t base;
@@ -1265,6 +1270,7 @@ static void widget_cb(int32_t value, void *user)
     case W_SCROLLBAR:
     case W_SELECTOR:
     case W_TABS:
+    case W_RADIO:
     case W_COLORPICKER:
     case W_LED:       /* has no callback, but be consistent */
     default:          arg = mp_obj_new_int(value); break;
@@ -1306,6 +1312,8 @@ static mp_obj_t widget_get_value(surfer_widget_obj_t *o)
         return MP_OBJ_NEW_SMALL_INT(surf_selector_index(o->w));
     case W_TABS:
         return MP_OBJ_NEW_SMALL_INT(surf_tabs_index(o->w));
+    case W_RADIO:
+        return MP_OBJ_NEW_SMALL_INT(surf_radio_index(o->w));
     case W_COLORPICKER:
         return MP_OBJ_NEW_SMALL_INT(surf_colorpicker_color(o->w));
     case W_BUTTON:
@@ -1343,6 +1351,9 @@ static void widget_set_value(surfer_widget_obj_t *o, mp_obj_t v)
         break;
     case W_TABS:
         surf_tabs_set_index(o->w, mp_obj_get_int(v));
+        break;
+    case W_RADIO:
+        surf_radio_set_index(o->w, mp_obj_get_int(v));
         break;
     case W_COLORPICKER:
         surf_colorpicker_set_color(o->w, (surf_color)mp_obj_get_int(v));
@@ -2394,6 +2405,45 @@ static mp_obj_t mod_tabs(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_tabs_obj, 5, 8, mod_tabs);
 
+/* surfer.radio(x, y, ["one", "two"], vertical=True) -> Widget
+ *
+ * N options, exactly one chosen. `.value` is the index, settable, and
+ * the callback reports one — the checkbox's sibling, and the thing to
+ * reach for when three checkboxes would be a lie about the choice.
+ *
+ * A ROW (vertical=False) is as wide as its labels, so ask the node what
+ * it measured (`w.node.w`) rather than assuming a pitch. */
+static mp_obj_t mod_radio(size_t n_args, const mp_obj_t *args)
+{
+    static surf_radio_style st = {
+        .strip = &radio_img, .frame_w = WRADIO_SIZE, .frame_h = WRADIO_SIZE,
+        .text_color = SURF_RGB(228, 232, 240), .gap = 10,
+    };
+    st.font = widget_font();
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(args[2], &len, &items);
+    if (len == 0)
+        mp_raise_ValueError(MP_ERROR_TEXT("no options"));
+    const char **strs = m_new(const char *, len);
+    for (size_t i = 0; i < len; i++)
+        strs[i] = mp_obj_str_get_str(items[i]);
+    bool vert = n_args > 3 ? mp_obj_is_true(args[3]) : true;
+    surf_radio *r = surf_radio_new(surf_screen(), 0, 0, &st, strs,
+                                   (int32_t)len, vert);
+    m_del(const char *, strs, len);
+    if (!r)
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("radio create failed"));
+    surf_node *node = surf_radio_node(r);
+    surf_node_detach(node);
+    surf_node_set_pos(node, (int16_t)mp_obj_get_int(args[0]),
+                      (int16_t)mp_obj_get_int(args[1]));
+    surfer_widget_obj_t *o = new_widget_obj(W_RADIO, r, node);
+    surf_radio_on_change(r, widget_idx_cb, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_radio_obj, 3, 4, mod_radio);
+
 static mp_obj_t mod_checkbox(mp_obj_t x, mp_obj_t y)
 {
     static const surf_checkbox_style st = {.strip = &check_img,
@@ -2552,6 +2602,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_led), MP_ROM_PTR(&mod_led_obj)},
     {MP_ROM_QSTR(MP_QSTR_selector), MP_ROM_PTR(&mod_selector_obj)},
     {MP_ROM_QSTR(MP_QSTR_tabs), MP_ROM_PTR(&mod_tabs_obj)},
+    {MP_ROM_QSTR(MP_QSTR_radio), MP_ROM_PTR(&mod_radio_obj)},
     {MP_ROM_QSTR(MP_QSTR_colorpicker), MP_ROM_PTR(&mod_colorpicker_obj)},
     /* capitalized aliases, DESIGN.md §3 taste */
     {MP_ROM_QSTR(MP_QSTR_Group), MP_ROM_PTR(&mod_group_obj)},
