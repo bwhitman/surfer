@@ -721,6 +721,32 @@ void       surf_tabs_set_face(surf_tabs *t, surf_color c);  /* the current tab *
 void       surf_tabs_set_dim(surf_tabs *t, surf_color c);   /* all the others */
 void       surf_tabs_on_change(surf_tabs *t, surf_index_cb cb, void *user);
 
+/* Radio: N options, exactly one chosen, in a column or a row. The
+ * checkbox's sibling — a checkbox answers yes/no about itself, a radio
+ * answers "which one" for a group, and the art says so. Both axes,
+ * because a settings panel wants a column and a strip wants a row. */
+typedef struct {
+    const surf_image *strip;     /* 2 frames: empty ring, ring + dot */
+    int16_t           frame_w, frame_h;
+    const surf_font  *font;
+    surf_color        text_color;
+    int16_t           gap;       /* between options; 8 if 0 */
+} surf_radio_style;
+
+typedef struct surf_radio surf_radio;
+
+surf_radio *surf_radio_new(surf_node *parent, int16_t x, int16_t y,
+                           const surf_radio_style *style,
+                           const char *const *labels, int32_t count,
+                           bool vertical);
+void       surf_radio_destroy(surf_radio *r);
+surf_node *surf_radio_node(surf_radio *r);
+int32_t    surf_radio_index(const surf_radio *r);
+int32_t    surf_radio_count(const surf_radio *r);
+surf_point surf_radio_size(const surf_radio *r);   /* as measured */
+void       surf_radio_set_index(surf_radio *r, int32_t idx);  /* no cb */
+void       surf_radio_on_change(surf_radio *r, surf_index_cb cb, void *user);
+
 typedef struct surf_selector surf_selector;
 
 surf_selector *surf_selector_new(surf_node *parent, int16_t x, int16_t y,

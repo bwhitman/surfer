@@ -758,12 +758,78 @@ static void test_tabs(void)
     surf_tabs_destroy(t);
 }
 
+static int32_t radio_reported;
+static void radio_cb(int32_t v, void *user) { (void)user; radio_reported = v; }
+
+/* Radio: one of N, in a column or a row. The row is the case worth
+ * testing — its options are as wide as their LABELS, so "which one is
+ * under this x" is measured rather than a pitch. */
+static void test_radio(void)
+{
+    fresh(400, 300, 32);
+    surf_image strip = {.pixels = NULL, .w = 24 * 2, .h = 24,
+                        .stride = 24 * 2 * 4, .format = SURF_FMT_ARGB8888};
+    surf_radio_style st = {.strip = &strip, .frame_w = 24, .frame_h = 24,
+                           .font = &tfont, .text_color = 1, .gap = 10};
+    const char *labels[3] = {"one", "two", "three"};
+
+    surf_radio *v = surf_radio_new(surf_screen(), 10, 10, &st, labels, 3, true);
+    OK(v != NULL && surf_radio_count(v) == 3 && surf_radio_index(v) == 0);
+    surf_radio_on_change(v, radio_cb, NULL);
+    surf_point sz = surf_radio_size(v);
+    OK(sz.x > 24 && sz.y >= 24 * 3);          /* three rows, label-wide */
+
+    /* the second row: a row is frame_h tall and gap apart */
+    radio_reported = -1;
+    surf_touch d = {.x = 20, .y = 10 + 24 + 10 + 5, .phase = SURF_TOUCH_DOWN, 0};
+    surf_touch u = {.x = 20, .y = 10 + 24 + 10 + 5, .phase = SURF_TOUCH_UP, 0};
+    surf_inject_touch(&d);
+    surf_inject_touch(&u);
+    OK(surf_radio_index(v) == 1 && radio_reported == 1);
+
+    /* set_index does NOT report, like every other widget here */
+    radio_reported = -1;
+    surf_radio_set_index(v, 2);
+    OK(surf_radio_index(v) == 2 && radio_reported == -1);
+    surf_radio_set_index(v, 9);                /* out of range: ignored */
+    OK(surf_radio_index(v) == 2);
+
+    /* ...and the ROW. Its width is the sum of its labels, so tapping
+     * past the first option's own extent must land on the second. */
+    surf_radio *h = surf_radio_new(surf_screen(), 10, 200, &st, labels, 3,
+                                   false);
+    OK(h != NULL);
+    surf_point hs = surf_radio_size(h);
+    OK(hs.x > sz.x && hs.y <= 24 + 4);         /* wide and one row tall */
+    surf_radio_on_change(h, radio_cb, NULL);
+    radio_reported = -1;
+    surf_touch d2 = {.x = (int16_t)(10 + hs.x - 20), .y = 205,
+                     .phase = SURF_TOUCH_DOWN, 0};
+    surf_touch u2 = {.x = (int16_t)(10 + hs.x - 20), .y = 205,
+                     .phase = SURF_TOUCH_UP, 0};
+    surf_inject_touch(&d2);
+    surf_inject_touch(&u2);
+    OK(surf_radio_index(h) == 2 && radio_reported == 2);
+
+    /* a tap outside changes nothing */
+    radio_reported = -1;
+    surf_touch d3 = {.x = 380, .y = 205, .phase = SURF_TOUCH_DOWN, 0};
+    surf_touch u3 = {.x = 380, .y = 205, .phase = SURF_TOUCH_UP, 0};
+    surf_inject_touch(&d3);
+    surf_inject_touch(&u3);
+    OK(surf_radio_index(h) == 2 && radio_reported == -1);
+
+    surf_radio_destroy(h);
+    surf_radio_destroy(v);
+}
+
 void run_widget_tests(void)
 {
     test_colorpicker();
     test_textinput_mask();
     test_led_and_selector();
     test_tabs();
+    test_radio();
     test_scrollbar();
     test_filmstrip();
     test_ninepatch();

@@ -308,6 +308,35 @@ def sbar(w, h, radius, col, alpha):
     return out
 
 
+RADIO = 24
+
+
+def radio_strip():
+    """Two frames of a radio button: an empty ring, and a ring with a
+    dot. ARGB like the checkbox beside it rather than A8, because the
+    same two greys and the same accent have to read the same way — a
+    radio and a checkbox on one panel that disagree about their own
+    colours look like two libraries."""
+    out = [0] * (RADIO * 2 * RADIO)
+    c = RADIO / 2.0
+    for frame in range(2):
+        for y in range(RADIO):
+            for x in range(RADIO):
+                px, py = x + 0.5, y + 0.5
+                r = math.hypot(px - c, py - c)
+                a = max(0.0, min(1.0, (c - 1.0 - r) * 1.6 + 0.5))
+                if a == 0.0:
+                    continue
+                col = (44, 47, 56)
+                if r > c - 3.2:            # the rim, the checkbox's grey
+                    col = (110, 118, 134)
+                if frame == 1 and r < c * 0.42:
+                    col = (110, 205, 160)
+                out[y * RADIO * 2 + frame * RADIO + x] = \
+                    (clamp(a * 255) << 24) | (col[0] << 16) | (col[1] << 8) | col[2]
+    return out
+
+
 def checkbox_strip():
     out = [0] * (CHECK * 2 * CHECK)
     for frame in range(2):
@@ -493,6 +522,7 @@ def main():
     print(f"#define WSLIMCAP_W {SLIM_CAP_W}")
     print(f"#define WSLIMCAP_H {SLIM_CAP_H}")
     print(f"#define WCHECK_SIZE {CHECK}")
+    print(f"#define WRADIO_SIZE {RADIO}")
     print(f"#define WPANEL_SIZE {PANEL}")
     print(f"#define WPANEL_INSET {PANEL_INSET}")
     print(f"#define WARROW_W {ARROW_W}")
@@ -512,6 +542,7 @@ def main():
     print(f"#define WTAB_INSET_TOP {TAB_INSET_TOP}")
     print(f"#define WTAB_INSET_BOT {TAB_INSET_BOT}")
     print(f"#define WTAB_INSET_SIDE {TAB_R + 2}")
+    emit("widget_radio_px", radio_strip())
     emit8("widget_tab_px", tab_patch())
     emit8("widget_knob_px", knob_strip())
     emit8("widget_knobsm_px", knob_strip(KNOB_SM))

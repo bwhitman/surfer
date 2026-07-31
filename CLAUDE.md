@@ -24,7 +24,7 @@ ask rather than silently diverging.
   `heap_caps_malloc` in core code.
 - **The widget set stays small** (knob, slider, button, checkbox, dropdown,
   label, textinput, scrollview, scrollbar, led, selector, colorpicker,
-  tabs).
+  tabs, radio).
   Do not add widgets, node types, or hal ops without asking first.
 - **No new dependencies without asking.** Currently allowed: stb_truetype,
   stb_image (build tools only), SDL2, ESP-IDF, MicroPython headers.
@@ -421,6 +421,31 @@ looking at what the hal was told to fill, since there is no way to read
 have to be bright. The first version used `SURF_RGB(1, 2, 3)`, which
 packs to 0 in 565 — the same value the screen is cleared to — so the
 check could not fail.
+
+## Radio: one of N, in a column or a row
+
+`surf_radio` is the checkbox's sibling and deliberately not a variant of
+it. A checkbox answers yes/no about ITSELF; a radio answers "which one"
+on behalf of a group, and every platform draws that distinction — a ring
+with a dot, not a box with a tick — so users read it without being told.
+Three checkboxes and a rule is not the same widget.
+
+- **Both axes.** A column is the settings-panel shape (macOS's
+  "Automatically / When scrolling / Always"); a row is what a strip
+  wants — `( ) AMY out  (o) Audio in` on one line. Only where the next
+  option starts differs, so it is one widget with a flag.
+- **A row's options are as wide as their LABELS**, so the per-option
+  extents are measured at build time and kept rather than being
+  arithmetic on a pitch the way a tab strip's are. `surf_radio_size()`
+  reports what it measured, because a caller laying out around one
+  cannot know it either.
+- **One handler on the root**, tabs' rule: a group and a closure per
+  option would be three nodes each for a widget that is mostly text.
+- **It fires on RELEASE**, like the checkbox and the button — a press
+  that slides off is a mind changed, not a choice made.
+- The art is a two-frame filmstrip in ARGB rather than A8, matching the
+  checkbox beside it: a radio and a checkbox on one panel that disagree
+  about their own greys look like two libraries.
 
 ## The desktop window
 
