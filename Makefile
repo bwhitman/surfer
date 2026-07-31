@@ -1,5 +1,11 @@
 # surfer — desktop build & test loop (see CLAUDE.md)
 
+# Build on every core. Nothing here is serial by nature and this is a
+# laptop with ten of them; MAKEFLAGS so a sub-make gets the jobserver
+# too, and so `make -j2` on the command line still wins.
+JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+MAKEFLAGS += -j$(JOBS)
+
 CC      ?= cc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Iinclude -Itools
