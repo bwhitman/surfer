@@ -2,15 +2,57 @@
 
 /* Touch → hit test → nearest ancestor that wants the gesture: a node with
  * a handler, or a scrollable scrollview (whichever comes first walking
- * up). The winner holds the pointer from DOWN to UP (DESIGN.md §2.6).
+ * up). The winner holds that CONTACT from DOWN to UP (DESIGN.md §2.6).
  *
  * When a handler wins inside a scrollview, the scrollview waits: once the
  * finger travels past STEAL_PX along an axis it can scroll, it steals the
  * gesture — the handler gets a synthetic UP and the drag becomes a
  * scroll. Handlers that own their drags (sliders, knobs, textinput
- * selection) set SURF_NF_GRAB and are never stolen from. */
+ * selection) set SURF_NF_GRAB and are never stolen from.
+ *
+ * CAPTURE IS PER CONTACT. There used to be one `capture` for the whole
+ * scene, which meant the first finger down owned the machine: three
+ * fingers on three faders moved one fader. Every piece of that state —
+ * the captured node, the scrollview waiting to steal, the position the
+ * gesture started from — is per finger now, because all three are
+ * answers to "what is THIS finger doing".
+ *
+ * A hal with no multitouch says nothing about contacts and its events
+ * carry id 0, which lands in one slot and behaves exactly as before. */
 
 #define STEAL_PX 8
+
+surf_contact *surf_contact_find(uint8_t id)
+{
+    for (int i = 0; i < SURF_MAX_CONTACTS; i++)
+        if (surf_g.contacts[i].used && surf_g.contacts[i].id == id)
+            return &surf_g.contacts[i];
+    return NULL;
+}
+
+/* A DOWN for an id already in flight REPLACES it rather than opening a
+ * second slot: a controller that misses an UP (the GT911 does, when a
+ * finger lifts during an i2c hiccup) would otherwise leak slots until
+ * the table is full and further fingers are silently ignored. */
+static surf_contact *contact_open(uint8_t id)
+{
+    surf_contact *c = surf_contact_find(id);
+    if (!c) {
+        for (int i = 0; i < SURF_MAX_CONTACTS; i++) {
+            if (!surf_g.contacts[i].used) {
+                c = &surf_g.contacts[i];
+                break;
+            }
+        }
+    }
+    if (!c)
+        return NULL;             /* more fingers than we follow: ignore */
+    c->used = true;
+    c->id = id;
+    c->capture = NULL;
+    c->steal_sv = NULL;
+    return c;
+}
 
 static void deliver(surf_node *n, const surf_touch *t)
 {
@@ -24,10 +66,11 @@ void surf_input_dispatch(const surf_touch *t)
 {
     switch (t->phase) {
     case SURF_TOUCH_DOWN: {
-        surf_g.capture = NULL;
-        surf_g.steal_sv = NULL;
-        surf_g.down_x = t->x;
-        surf_g.down_y = t->y;
+        surf_contact *ct = contact_open(t->id);
+        if (!ct)
+            return;
+        ct->down_x = t->x;
+        ct->down_y = t->y;
 
         surf_node *n = surf_hit_test(t->x, t->y);
         for (; n; n = n->parent) {
@@ -38,8 +81,8 @@ void surf_input_dispatch(const surf_touch *t)
                 break;
         }
         if (!n)
-            return;
-        surf_g.capture = n;
+            return;              /* the slot stays live but captures nothing */
+        ct->capture = n;
         if (n->type == SURF_NODE_SCROLLVIEW && !n->on_touch) {
             surf_scroll_begin(n, t);
             return;
@@ -49,7 +92,7 @@ void surf_input_dispatch(const surf_touch *t)
             for (surf_node *p = n->parent; p; p = p->parent) {
                 if (p->type == SURF_NODE_SCROLLVIEW &&
                     (surf_scroll_can_x(p) || surf_scroll_can_y(p))) {
-                    surf_g.steal_sv = p;
+                    ct->steal_sv = p;
                     break;
                 }
             }
@@ -57,20 +100,21 @@ void surf_input_dispatch(const surf_touch *t)
         break;
     }
     case SURF_TOUCH_MOVE: {
-        surf_node *c = surf_g.capture;
-        if (!c)
+        surf_contact *ct = surf_contact_find(t->id);
+        if (!ct || !ct->capture)
             return;
-        surf_node *sv = surf_g.steal_sv;
+        surf_node *c = ct->capture;
+        surf_node *sv = ct->steal_sv;
         if (sv) {
-            int dx = t->x - surf_g.down_x, dy = t->y - surf_g.down_y;
+            int dx = t->x - ct->down_x, dy = t->y - ct->down_y;
             int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
             bool steal = (ady >= adx) ? (ady > STEAL_PX && surf_scroll_can_y(sv))
                                       : (adx > STEAL_PX && surf_scroll_can_x(sv));
             if (steal) {
-                surf_touch up = {t->x, t->y, SURF_TOUCH_UP};
+                surf_touch up = {t->x, t->y, SURF_TOUCH_UP, t->id};
                 deliver(c, &up);
-                surf_g.capture = sv;
-                surf_g.steal_sv = NULL;
+                ct->capture = sv;
+                ct->steal_sv = NULL;
                 surf_scroll_begin(sv, t);
                 return;
             }
@@ -79,9 +123,13 @@ void surf_input_dispatch(const surf_touch *t)
         break;
     }
     case SURF_TOUCH_UP: {
-        surf_node *c = surf_g.capture;
-        surf_g.capture = NULL;
-        surf_g.steal_sv = NULL;
+        surf_contact *ct = surf_contact_find(t->id);
+        if (!ct)
+            return;
+        surf_node *c = ct->capture;
+        ct->used = false;
+        ct->capture = NULL;
+        ct->steal_sv = NULL;
         if (c)
             deliver(c, t);
         break;

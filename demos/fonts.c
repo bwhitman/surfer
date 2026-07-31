@@ -42,9 +42,9 @@ int main(int argc, char **argv)
     while (surf_hal_sdl_pump()) {
         if (te && frames == 3) {
             surf_input_dispatch(&(surf_touch){(int16_t)tap_x, (int16_t)tap_y,
-                                              SURF_TOUCH_DOWN});
+                                              SURF_TOUCH_DOWN, 0});
             surf_input_dispatch(&(surf_touch){(int16_t)tap_x, (int16_t)tap_y,
-                                              SURF_TOUCH_UP});
+                                              SURF_TOUCH_UP, 0});
         }
         surf_tick();
         if (max_frames && ++frames >= max_frames)

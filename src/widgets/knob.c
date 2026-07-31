@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "surfer.h"
+#include "widget_touch.h"
 
 /* Pixels of vertical drag for a full value sweep. */
 #define KNOB_DRAG_RANGE 200
@@ -35,6 +36,7 @@ struct surf_knob {
     void          *tap_user;
     int16_t        down_x, down_y;
     int32_t        moved;
+    uint8_t        busy;   /* the contact driving it; 0 = idle */
 };
 
 static int32_t clamp_q16(int32_t v)
@@ -79,6 +81,8 @@ static void knob_touch(surf_node *n, const surf_touch *t, void *user)
 {
     (void)n;
     surf_knob *k = user;
+    if (!surf_widget_claim(&k->busy, t))
+        return;                    /* a second finger on the same knob */
 
     if (k->mode == SURF_KNOB_DRAG_ANGULAR) {
         if (t->phase != SURF_TOUCH_UP)

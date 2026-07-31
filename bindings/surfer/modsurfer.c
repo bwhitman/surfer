@@ -832,6 +832,14 @@ static void node_touch_tramp(surf_node *n, const surf_touch *t, void *user)
     surfer_node_obj_t *o = user;
     if (o->touch_cb == mp_const_none)
         return;
+    /* THREE arguments, not four, even though the event now carries a
+     * contact id. Adding it would break every `lambda phase, x, y:` in
+     * every host, and MicroPython gives no portable way to ask a
+     * callable how many arguments it takes — so the id would have to be
+     * mandatory for everyone. The C widgets are where multitouch pays
+     * (three fingers, three faders, all in dispatch), and Python code
+     * that genuinely wants per-finger data has surfer.touches(), which
+     * reports every contact with its id already. */
     mp_obj_t args[3] = {
         MP_OBJ_NEW_SMALL_INT(t->phase),
         MP_OBJ_NEW_SMALL_INT(t->x),
@@ -2354,14 +2362,20 @@ static mp_obj_t mod_touches(void)
 static MP_DEFINE_CONST_FUN_OBJ_0(mod_touches_obj, mod_touches);
 
 /* test/demo hooks */
-static mp_obj_t mod_touch(mp_obj_t x, mp_obj_t y, mp_obj_t phase)
+/* surfer._touch(x, y, phase[, id]) — push one touch through the normal
+ * dispatch path. `id` is the CONTACT: capture is per contact, so a test
+ * drives three fingers by using three ids. It defaults to 0, which is
+ * what a mouse is and what every existing caller means. */
+static mp_obj_t mod_touch(size_t n_args, const mp_obj_t *args)
 {
-    surf_touch t = {(int16_t)mp_obj_get_int(x), (int16_t)mp_obj_get_int(y),
-                    (uint8_t)mp_obj_get_int(phase)};
+    surf_touch t = {(int16_t)mp_obj_get_int(args[0]),
+                    (int16_t)mp_obj_get_int(args[1]),
+                    (uint8_t)mp_obj_get_int(args[2]),
+                    (uint8_t)(n_args > 3 ? mp_obj_get_int(args[3]) : 0)};
     surf_inject_touch(&t);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_3(mod_touch_obj, mod_touch);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_touch_obj, 3, 4, mod_touch);
 
 /* surfer._key(kind, text="", shift=False): push one key into the same
  * queue a driver feeds, so surfer.keys() returns it. The counterpart of

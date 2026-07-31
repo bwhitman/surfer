@@ -44,10 +44,14 @@ static void node_free(surf_node *n)
      * calloc left them SURF_NODE_FREE, which is what tells them apart. */
     if (g_freed_cb && n->type != SURF_NODE_FREE)
         g_freed_cb(n, surf_node_index(n));
-    if (surf_g.capture == n)
-        surf_g.capture = NULL;
-    if (surf_g.steal_sv == n)
-        surf_g.steal_sv = NULL;
+    /* every contact, not just one: a destroyed node may be holding any
+     * of the fingers currently down */
+    for (int i = 0; i < SURF_MAX_CONTACTS; i++) {
+        if (surf_g.contacts[i].capture == n)
+            surf_g.contacts[i].capture = NULL;
+        if (surf_g.contacts[i].steal_sv == n)
+            surf_g.contacts[i].steal_sv = NULL;
+    }
     if (n->type == SURF_NODE_SCROLLVIEW)
         surf_scroll_forget(n);
     n->type = SURF_NODE_FREE;
@@ -368,8 +372,13 @@ void surf_node_detach(surf_node *child)
 {
     if (!child || !child->parent)
         return;
-    for (surf_node *c = surf_g.capture; c; c = c->parent)
-        if (c == child) { surf_g.capture = NULL; break; }
+    /* Detaching the captured node releases the capture — picking a card
+     * up raises it, raising is detach + re-add, and doing that in a DOWN
+     * handler killed the drag on its first move. Per contact now, and
+     * per contact it is the same rule. */
+    for (int i = 0; i < SURF_MAX_CONTACTS; i++)
+        for (surf_node *c = surf_g.contacts[i].capture; c; c = c->parent)
+            if (c == child) { surf_g.contacts[i].capture = NULL; break; }
     surf_damage_subtree(child);
     surf_node *p = child->parent;
     if (child->prev) child->prev->next = child->next; else p->first = child->next;

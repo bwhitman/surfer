@@ -156,6 +156,18 @@ typedef struct {
     surf_rect  vis;     /* visible part, pre-clipped */
 } surf_paint_ent;
 
+/* One finger's worth of gesture state. `used` rather than a NULL capture,
+ * because a contact can be live with nothing captured — a finger that
+ * landed on empty space still has to be remembered, so that its MOVEs are
+ * not mistaken for a fresh press. */
+typedef struct {
+    bool        used;
+    uint8_t     id;
+    surf_node  *capture;   /* node holding THIS contact, DOWN → UP */
+    surf_node  *steal_sv;  /* scrollview waiting to steal this gesture */
+    int16_t     down_x, down_y;
+} surf_contact;
+
 typedef struct {
     const surf_hal *hal;
     int16_t         w, h;
@@ -164,9 +176,9 @@ typedef struct {
     int             pool_cap;
     surf_node      *free_list;
     surf_node      *root;
-    surf_node      *capture;   /* node holding the pointer, DOWN → UP */
-    surf_node      *steal_sv;  /* scrollview waiting to steal this gesture */
-    int16_t         down_x, down_y;
+    /* One of these per finger. Capture is PER CONTACT, so three fingers
+     * on three sliders is three independent drags — see input.c. */
+    surf_contact    contacts[SURF_MAX_CONTACTS];
     surf_node      *scrollers[8];  /* scrollviews with live momentum/spring */
     int             nscrollers;
     surf_dirty      dirty;
@@ -175,6 +187,9 @@ typedef struct {
 } surf_ctx;
 
 extern surf_ctx surf_g;
+
+/* find the slot holding this contact id, or NULL */
+surf_contact *surf_contact_find(uint8_t id);
 
 void surf_input_dispatch(const surf_touch *t);
 

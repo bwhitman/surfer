@@ -53,6 +53,18 @@ static struct {
     bool                 was_down;
     int16_t              last_x, last_y;
     uint8_t              empty_reads;  /* release hysteresis counter */
+    /* per-contact tracking for the multitouch event stream; see
+     * h_poll_touch. Parallel to the single-pointer fields above, which
+     * the no-multi path still uses. */
+    struct {
+        bool    down;
+        uint8_t id;
+        int16_t x, y;
+        uint8_t missing;          /* consecutive polls without this id */
+        bool    sent_down;
+    } contacts[5];
+    uint8_t              qn, qr;   /* pending events, ring */
+    surf_touch           q[16];
 } S;
 
 static void h_fill(surf_rect dst, surf_color c)
@@ -550,10 +562,93 @@ static int h_touch_points(surf_touch_pt *out, int max)
     return n;
 }
 
+/* One event at a time out of a queue we refill from the controller.
+ *
+ * MULTITOUCH: every contact gets its own DOWN/MOVE/UP stream, keyed by
+ * the controller's track id, because dispatch captures per contact now
+ * (src/core/input.c) and three fingers on three faders is three drags.
+ * This used to synthesise ONE pointer from `s_pts[0]`, which was wrong
+ * twice over: it threw four fingers away, and s_pts[0] is not even a
+ * stable finger — lift the first of two and the remaining one shuffles
+ * down into slot 0, so the single pointer would TELEPORT across the
+ * screen mid-gesture rather than reporting an UP and a MOVE.
+ *
+ * The release hysteresis is per contact and stays for the reason it was
+ * added: the GT911 blinks a contact out for a poll or two when a finger
+ * rolls or lifts, and declaring UP on the first empty read synthesised a
+ * phantom second tap — visible as a toggle button flipping twice. */
+static void queue_event(int16_t x, int16_t y, uint8_t phase, uint8_t id)
+{
+    if (S.qn >= (uint8_t)(sizeof S.q / sizeof S.q[0]))
+        return;                     /* full: drop, rather than corrupt */
+    uint8_t w = (uint8_t)((S.qr + S.qn) % (sizeof S.q / sizeof S.q[0]));
+    S.q[w] = (surf_touch){x, y, phase, id};
+    S.qn++;
+}
+
+static void refill_multi(void)
+{
+    int n = S.cfg.touch_poll_multi(s_pts, P4_MAX_CONTACTS);
+    if (n < 0)
+        return;                     /* no fresh report: hold everything */
+    s_npts = n;
+
+    /* which tracked contacts are still present */
+    bool seen[5] = {false, false, false, false, false};
+    for (int i = 0; i < n; i++) {
+        int slot = -1;
+        for (int k = 0; k < 5; k++)
+            if (S.contacts[k].down && S.contacts[k].id == s_pts[i].id)
+                slot = k;
+        if (slot < 0) {
+            for (int k = 0; k < 5; k++)
+                if (!S.contacts[k].down) { slot = k; break; }
+            if (slot < 0)
+                continue;           /* more fingers than we follow */
+            S.contacts[slot].down = true;
+            S.contacts[slot].id = s_pts[i].id;
+            S.contacts[slot].sent_down = false;
+        }
+        seen[slot] = true;
+        S.contacts[slot].missing = 0;
+        if (!S.contacts[slot].sent_down) {
+            S.contacts[slot].sent_down = true;
+            S.contacts[slot].x = s_pts[i].x;
+            S.contacts[slot].y = s_pts[i].y;
+            queue_event(s_pts[i].x, s_pts[i].y, SURF_TOUCH_DOWN,
+                        S.contacts[slot].id);
+        } else if (s_pts[i].x != S.contacts[slot].x ||
+                   s_pts[i].y != S.contacts[slot].y) {
+            S.contacts[slot].x = s_pts[i].x;
+            S.contacts[slot].y = s_pts[i].y;
+            queue_event(s_pts[i].x, s_pts[i].y, SURF_TOUCH_MOVE,
+                        S.contacts[slot].id);
+        }
+    }
+    for (int k = 0; k < 5; k++) {
+        if (!S.contacts[k].down || seen[k])
+            continue;
+        if (++S.contacts[k].missing < TOUCH_RELEASE_POLLS)
+            continue;               /* a blink, not a lift */
+        S.contacts[k].down = false;
+        S.contacts[k].missing = 0;
+        if (S.contacts[k].sent_down)
+            queue_event(S.contacts[k].x, S.contacts[k].y, SURF_TOUCH_UP,
+                        S.contacts[k].id);
+    }
+}
+
 static bool h_poll_touch(surf_touch *out)
 {
     if (!S.cfg.touch_poll && !S.cfg.touch_poll_multi)
         return false;
+
+    if (S.qn) {                     /* drain what the last read produced */
+        *out = S.q[S.qr];
+        S.qr = (uint8_t)((S.qr + 1) % (sizeof S.q / sizeof S.q[0]));
+        S.qn--;
+        return true;
+    }
 
     static int64_t last_read;
     int64_t now = esp_timer_get_time();
@@ -561,34 +656,35 @@ static bool h_poll_touch(surf_touch *out)
         return false;
     last_read = now;
 
-    int16_t x, y;
-    bool down;
     if (S.cfg.touch_poll_multi) {
-        s_npts = S.cfg.touch_poll_multi(s_pts, P4_MAX_CONTACTS);
-        down = s_npts > 0;
-        if (down) {
-            x = s_pts[0].x;
-            y = s_pts[0].y;
-        }
-    } else {
-        down = S.cfg.touch_poll(&x, &y);
-        s_npts = down ? 1 : 0;
-        if (down)
-            s_pts[0] = (surf_touch_pt){x, y, 0};
+        refill_multi();
+        if (!S.qn)
+            return false;
+        *out = S.q[S.qr];
+        S.qr = (uint8_t)((S.qr + 1) % (sizeof S.q / sizeof S.q[0]));
+        S.qn--;
+        return true;
     }
+
+    /* single-pointer controller: contact 0, exactly as before */
+    int16_t x = 0, y = 0;
+    bool down = S.cfg.touch_poll(&x, &y);
+    s_npts = down ? 1 : 0;
+    if (down)
+        s_pts[0] = (surf_touch_pt){x, y, 0};
     if (down) {
         S.empty_reads = 0;
         if (!S.was_down) {
             S.was_down = true;
             S.last_x = x;
             S.last_y = y;
-            *out = (surf_touch){x, y, SURF_TOUCH_DOWN};
+            *out = (surf_touch){x, y, SURF_TOUCH_DOWN, 0};
             return true;
         }
         if (x != S.last_x || y != S.last_y) {
             S.last_x = x;
             S.last_y = y;
-            *out = (surf_touch){x, y, SURF_TOUCH_MOVE};
+            *out = (surf_touch){x, y, SURF_TOUCH_MOVE, 0};
             return true;
         }
         return false;
@@ -596,7 +692,7 @@ static bool h_poll_touch(surf_touch *out)
     if (S.was_down && ++S.empty_reads >= TOUCH_RELEASE_POLLS) {
         S.was_down = false;
         S.empty_reads = 0;
-        *out = (surf_touch){S.last_x, S.last_y, SURF_TOUCH_UP};
+        *out = (surf_touch){S.last_x, S.last_y, SURF_TOUCH_UP, 0};
         return true;
     }
     return false;

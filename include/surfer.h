@@ -89,7 +89,14 @@ typedef enum {
     SURF_TOUCH_UP   = 2,
 } surf_touch_phase;
 
-typedef struct { int16_t x, y; uint8_t phase; } surf_touch;
+/* `id` is the CONTACT this event belongs to — a controller track id,
+ * stable from DOWN to UP. It is last in the struct on purpose: every
+ * positional `(surf_touch){x, y, phase}` in the tree keeps compiling and
+ * gets contact 0, which is exactly right for a mouse. */
+typedef struct { int16_t x, y; uint8_t phase; uint8_t id; } surf_touch;
+/* How many fingers dispatch can follow at once. The GT911 panel reports
+ * five; a hal with more would simply have its extra contacts ignored. */
+#define SURF_MAX_CONTACTS 5
 /* one multitouch contact (surf_hal.touch_points / surf_touch_points);
  * id is the controller's track id, stable while the finger is down */
 typedef struct { int16_t x, y; uint8_t id; } surf_touch_pt;

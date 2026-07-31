@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 #include "surfer.h"
+#include "widget_touch.h"
 
 struct surf_colorpicker {
     surf_node    *root, *sq, *strip, *mark, *mark_in, *hmark;
@@ -26,6 +27,7 @@ struct surf_colorpicker {
     int32_t       h, s, v;          /* Q16: hue 0..1, sat 0..1, val 0..1 */
     surf_index_cb cb;               /* reports a packed surf_color */
     void         *user;
+    uint8_t       busy;   /* the contact driving it; 0 = idle */
 };
 
 #define MARK 9                      /* the little square that marks the pick */
@@ -130,6 +132,8 @@ static void cp_touch(surf_node *n, const surf_touch *t, void *user)
 {
     (void)n;
     surf_colorpicker *c = user;
+    if (!surf_widget_claim(&c->busy, t))
+        return;
     if (t->phase == SURF_TOUCH_UP)
         return;
     int16_t ax, ay;

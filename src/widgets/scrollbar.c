@@ -14,6 +14,7 @@
 #include <stdlib.h>
 
 #include "surfer.h"
+#include "widget_touch.h"
 
 struct surf_scrollbar {
     surf_node     *root, *track, *thumb;
@@ -24,6 +25,7 @@ struct surf_scrollbar {
     bool           dragging;
     surf_change_cb cb;
     void          *user;
+    uint8_t        busy;   /* the contact driving it; 0 = idle */
 };
 
 static int32_t clamp32(int32_t v, int32_t lo, int32_t hi)
@@ -79,6 +81,8 @@ static void sb_touch(surf_node *n, const surf_touch *t, void *user)
 {
     (void)n;
     surf_scrollbar *s = user;
+    if (!surf_widget_claim(&s->busy, t))
+        return;
     if (s->total <= s->visible)
         return;
     int16_t ax, ay;

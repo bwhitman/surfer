@@ -513,6 +513,83 @@ horizontal one on screen next to a vertical one:
   tulip5 bars snapped to the top when dragged instead of landing where
   the thumb was dropped. `.value` was always right, which is what hid it.
 
+## Capture is per CONTACT
+
+Three fingers on three faders is three independent drags. It was one:
+`surf_g.capture` was a single node for the whole scene, so the first
+finger down owned the machine and the other two were dropped. Reported
+from a bench panel of sixteen faders as "I can only move one".
+
+`surf_g.contacts[SURF_MAX_CONTACTS]` replaces it — five slots, keyed by
+the controller's track id. **Everything that was one is now per finger**:
+the captured node, the scrollview waiting to steal the gesture, and the
+position the gesture started from. All three are answers to "what is THIS
+finger doing", which is why none of them could stay global.
+
+`surf_touch` carries the id, and it is LAST in the struct on purpose:
+every positional `(surf_touch){x, y, phase}` keeps compiling and gets
+contact 0, which is exactly what a mouse is. (They are all written out
+explicitly now anyway — `-Wextra` warns on the short form, and a test
+that names its contact reads better beside one that uses three.)
+
+Three things this had to get right, and each is a way it can break:
+
+- **A DOWN for an id already in flight REPLACES its slot** rather than
+  opening a second. A controller that misses an UP — the GT911 does, when
+  a finger lifts during an i2c hiccup — would otherwise leak slots until
+  the table is full and every later finger is silently ignored.
+- **A contact with nothing captured is still LIVE.** A finger that lands
+  on empty space gets a slot with a NULL capture, so its MOVEs are
+  discarded rather than being mistaken for a fresh press. Hence `used`
+  rather than testing the capture pointer.
+- **Both capture-cleanup paths loop.** Destroying a node and detaching
+  one each used to clear the single capture; a destroyed node may be
+  holding any of the five.
+
+### ...and a widget follows ONE finger
+
+The other half, in `src/widgets/widget_touch.h`. Per-contact capture
+means two fingers on the SAME fader are two captures of the same node,
+and without a guard the cap jumps between them on every event and the
+value lands wherever the last one happened to be. So a widget claims the
+first contact that presses it and ignores every other until that one
+lifts — the second finger is dropped, not queued, which is what a
+physical control does.
+
+`busy` is the contact id **plus one**, so zero means idle and a calloc'd
+widget starts right with no constructor to remember. Worth the small
+ugliness: an `int8_t active = -1` would have needed a separate
+initialisation in each of the five draggable widgets and would have been
+silently wrong in whichever one got forgotten.
+
+### The hal owes dispatch a per-contact stream
+
+`hal_p4.c` used to synthesise ONE pointer from `s_pts[0]`, which was
+wrong twice over: it threw four fingers away, and **`s_pts[0]` is not a
+stable finger** — lift the first of two and the remaining one shuffles
+down into slot 0, so the single pointer TELEPORTED across the screen
+mid-gesture instead of reporting an UP and a MOVE. It now tracks up to
+five contacts by track id and queues DOWN/MOVE/UP per finger, draining
+one event per `poll_touch` call (the core already polls in a loop).
+
+The release hysteresis stayed and is now per contact, for the reason it
+was added: the GT911 blinks a contact out for a poll or two when a finger
+rolls or lifts, and declaring UP on the first empty read synthesised a
+phantom second tap — visible as a toggle button flipping twice.
+
+**MicroPython still gets three arguments**, `fn(phase, x, y)`. Adding the
+id would break every `lambda phase, x, y:` in every host, and there is no
+portable way to ask a callable how many arguments it takes, so it would
+have to be mandatory for everyone. The C widgets are where multitouch
+pays; Python that genuinely wants per-finger data has `surfer.touches()`,
+which reports every contact with its id. `surfer._touch(x, y, phase, id)`
+takes an optional contact so a test can drive three fingers.
+
+`test_multitouch` in tests/test_widgets.c is the regression: three
+sliders, three contacts, each dragging its own; an UP on one leaving the
+others captured; a MOVE for a contact that never went down doing nothing;
+and a second finger on an already-held slider being ignored.
+
 ## The tinted widgets: knob, selector, slider cap
 
 `.color` on a knob, a selector or a slider — and the LED, which got there

@@ -544,7 +544,7 @@ static void push_touch(int16_t x, int16_t y, uint8_t phase)
         x = (int16_t)(px * S.w / S.view.w);
         y = (int16_t)(py * S.h / S.view.h);
     }
-    S.ring[S.ring_w] = (surf_touch){x, y, phase};
+    S.ring[S.ring_w] = (surf_touch){x, y, phase, 0};  /* a mouse is contact 0 */
     S.ring_w = next;
 }
 

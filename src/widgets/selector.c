@@ -15,6 +15,7 @@
 #include <stdlib.h>
 
 #include "surfer.h"
+#include "widget_touch.h"
 
 #define SEL_DRAG_RANGE 160   /* px of drag for the full sweep */
 #define TAP_SLOP       6     /* px; more travel than this is a drag */
@@ -28,6 +29,7 @@ struct surf_selector {
     int16_t       down_y, moved;
     surf_index_cb cb;
     void         *user;
+    uint8_t       busy;   /* the contact driving it; 0 = idle */
 };
 
 static void sel_apply(surf_selector *s)
@@ -56,6 +58,8 @@ static void sel_touch(surf_node *n, const surf_touch *t, void *user)
 {
     (void)n;
     surf_selector *s = user;
+    if (!surf_widget_claim(&s->busy, t))
+        return;
     switch (t->phase) {
     case SURF_TOUCH_DOWN:
         s->down_y = t->y;

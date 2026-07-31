@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "surfer.h"
+#include "widget_touch.h"
 
 /* The house grey for a cap with no colour of its own. */
 #define CAP_DEFAULT_COLOR SURF_RGB(178, 182, 194)
@@ -16,6 +17,7 @@ struct surf_slider {
     int32_t        value;  /* Q16 */
     surf_change_cb cb;
     void          *user;
+    uint8_t        busy;   /* the contact driving it; 0 = idle */
 };
 
 static int32_t clamp_q16(int32_t v)
@@ -43,6 +45,8 @@ static void slider_touch(surf_node *n, const surf_touch *t, void *user)
 {
     (void)n;
     surf_slider *s = user;
+    if (!surf_widget_claim(&s->busy, t))
+        return;                    /* a second finger on the same fader */
     if (t->phase == SURF_TOUCH_UP)
         return;
 

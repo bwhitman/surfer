@@ -7,15 +7,15 @@
 
 static void drag(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int steps)
 {
-    mock_push_touch((surf_touch){x0, y0, SURF_TOUCH_DOWN});
+    mock_push_touch((surf_touch){x0, y0, SURF_TOUCH_DOWN, 0});
     surf_tick();
     for (int i = 1; i <= steps; i++) {
         mock_push_touch((surf_touch){
             (int16_t)(x0 + (x1 - x0) * i / steps),
-            (int16_t)(y0 + (y1 - y0) * i / steps), SURF_TOUCH_MOVE});
+            (int16_t)(y0 + (y1 - y0) * i / steps), SURF_TOUCH_MOVE, 0});
         surf_tick();
     }
-    mock_push_touch((surf_touch){x1, y1, SURF_TOUCH_UP});
+    mock_push_touch((surf_touch){x1, y1, SURF_TOUCH_UP, 0});
     surf_tick();
 }
 
@@ -215,10 +215,10 @@ static void test_fast_scrollview(void)
      * the second shift or a stale band tears into view */
     surf_scrollview_set_offset(sv, 0, 0);
     surf_tick();
-    surf_inject_touch(&(surf_touch){50, 100, SURF_TOUCH_DOWN});
+    surf_inject_touch(&(surf_touch){50, 100, SURF_TOUCH_DOWN, 0});
     nops = 0;
-    surf_inject_touch(&(surf_touch){50, 90, SURF_TOUCH_MOVE});  /* +10 px */
-    surf_inject_touch(&(surf_touch){50, 82, SURF_TOUCH_MOVE});  /* +8 px */
+    surf_inject_touch(&(surf_touch){50, 90, SURF_TOUCH_MOVE, 0});  /* +10 px */
+    surf_inject_touch(&(surf_touch){50, 82, SURF_TOUCH_MOVE, 0});  /* +8 px */
     {
         int shifts = 0;
         for (int i = 0; i < nops; i++)
@@ -233,7 +233,7 @@ static void test_fast_scrollview(void)
             covered = surf_rect_covers(surf_g.dirty.r[i], need);
         OK(covered);
     }
-    surf_inject_touch(&(surf_touch){50, 82, SURF_TOUCH_UP});
+    surf_inject_touch(&(surf_touch){50, 82, SURF_TOUCH_UP, 0});
     surf_tick();
     while (surf_g.nscrollers > 0)
         surf_tick();
