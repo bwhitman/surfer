@@ -640,6 +640,46 @@ ugliness: an `int8_t active = -1` would have needed a separate
 initialisation in each of the five draggable widgets and would have been
 silently wrong in whichever one got forgotten.
 
+### ...and so does the SDL one, on a touchscreen
+
+The desktop backend synthesised ONE contact from the mouse, which is
+right for a mouse and wrong for the two places this code meets a real
+touchscreen: a tablet running the SDL build, and — the case it was added
+for — **a phone browser**. emscripten's SDL turns page touches into
+`SDL_FINGER*` and synthesises a mouse from the PRIMARY finger only, so
+before this a second finger on the web build simply did not exist. Three
+fingers on three faders worked on the panel and not in a tab; every
+layer above was already per-contact, and the hal was the half that never
+fed it.
+
+`S.fing[SURF_MAX_CONTACTS]` maps SDL's `SDL_FingerID` — an int64 that
+counts up for ever — onto the five slots the core has, and the slot
+index IS the contact id, so it must be stable for the life of a finger.
+A DOWN for an id already in flight reuses its slot, the same rule (and
+the same reason) as the core's.
+
+Two things it must get right, and both are ways to make one finger into
+two:
+
+- **DIRECT devices only.** A mac trackpad is an SDL touch device as well
+  (`INDIRECT_ABSOLUTE`), so without `SDL_GetTouchDeviceType` a palm
+  resting on a laptop would inject contacts into whatever is on screen.
+  On a laptop a trackpad is a mouse here, and a wheel, and nothing else.
+- **The synthetic mouse is dropped.** SDL sends a mouse event for the
+  primary finger too; taking both would make one finger two contacts,
+  and the second would never lift cleanly. `which == SDL_TOUCH_MOUSEID`
+  is the test, rather than turning the synthesis off — a real mouse has
+  to keep working on the same build.
+
+Coordinates arrive NORMALISED to the window, so they are multiplied back
+into window points and go through the same letterbox mapping every click
+does.
+
+Verified in a browser by dispatching real `TouchEvent`s at the canvas:
+three contacts reported at once, one moving while the others stand
+still, the middle one lifting without disturbing the other two's ids,
+and the table empty at the end.
+
 ### The hal owes dispatch a per-contact stream
 
 `hal_p4.c` used to synthesise ONE pointer from `s_pts[0]`, which was

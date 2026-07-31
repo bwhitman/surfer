@@ -31,6 +31,16 @@ static struct {
     surf_sdl_key  keys[TOUCH_RING];
     int           key_r, key_w;
     bool          mouse_down;
+    /* Real fingers, on a touchscreen behind SDL (a tablet, and — the
+     * case this was added for — a phone browser). Slot index IS the
+     * contact id the core sees, so it must be stable for the life of a
+     * finger: SDL's own SDL_FingerID is an int64 that counts up for
+     * ever, and surfer's per-contact table is five slots wide. */
+    struct {
+        SDL_FingerID id;
+        int16_t      x, y;
+        bool         used;
+    } fing[SURF_MAX_CONTACTS];
     int16_t mouse_x, mouse_y;
     surf_rect     scrolled;     /* union of scroll_rect regions this frame */
     bool          has_scrolled;
@@ -374,13 +384,42 @@ static uint64_t h_now_us(void)
     return SDL_GetPerformanceCounter() * 1000000ull / SDL_GetPerformanceFrequency();
 }
 
-/* the desktop's multitouch: the held mouse is contact 0 */
+/* Every contact down right now: real fingers if there are any, and
+ * otherwise the held mouse as contact 0. This is what `surfer.touches()`
+ * reports, and the reason it is not just the event stream is that a
+ * caller wants the CURRENT state — paint and voices' keyboard both ask
+ * once a frame rather than tracking downs and ups themselves. */
 static int h_touch_points(surf_touch_pt *out, int max)
 {
-    if (!S.mouse_down || max <= 0)
-        return 0;
-    out[0] = (surf_touch_pt){S.mouse_x, S.mouse_y, 0};
-    return 1;
+    int n = 0;
+    for (int i = 0; i < SURF_MAX_CONTACTS && n < max; i++)
+        if (S.fing[i].used)
+            out[n++] = (surf_touch_pt){S.fing[i].x, S.fing[i].y, (uint8_t)i};
+    if (n == 0 && S.mouse_down && max > 0)
+        out[n++] = (surf_touch_pt){S.mouse_x, S.mouse_y, 0};
+    return n;
+}
+
+/* SDL's finger id is an int64 that counts up for ever; surfer's contact
+ * table is five slots. `down` opens one, and anything else looks up a
+ * finger already in flight. A DOWN for an id that is already here
+ * reuses its slot rather than opening a second — the same rule the core
+ * keeps, and for the same reason: a controller that misses an UP would
+ * otherwise leak slots until nothing new can be pressed. */
+static int finger_slot(SDL_FingerID id, bool down)
+{
+    for (int i = 0; i < SURF_MAX_CONTACTS; i++)
+        if (S.fing[i].used && S.fing[i].id == id)
+            return i;
+    if (!down)
+        return -1;
+    for (int i = 0; i < SURF_MAX_CONTACTS; i++)
+        if (!S.fing[i].used) {
+            S.fing[i].used = true;
+            S.fing[i].id = id;
+            return i;
+        }
+    return -1;                  /* a sixth finger is dropped, not queued */
 }
 
 static bool h_poll_touch(surf_touch *out)
@@ -537,7 +576,7 @@ static const surf_hal hal_sdl = {
  * SURF_SCALE is what keeps a click landing on what it looks like it hit
  * after a resize, or under SURF_NATIVE where the window is SMALLER than
  * the framebuffer. */
-static void push_touch(int16_t x, int16_t y, uint8_t phase)
+static void push_touch(int16_t x, int16_t y, uint8_t phase, uint8_t id)
 {
     int next = (S.ring_w + 1) % TOUCH_RING;
     if (next == S.ring_r)
@@ -548,7 +587,7 @@ static void push_touch(int16_t x, int16_t y, uint8_t phase)
         x = (int16_t)(px * S.w / S.view.w);
         y = (int16_t)(py * S.h / S.view.h);
     }
-    S.ring[S.ring_w] = (surf_touch){x, y, phase, 0};  /* a mouse is contact 0 */
+    S.ring[S.ring_w] = (surf_touch){x, y, phase, id};  /* a mouse is contact 0 */
     S.ring_w = next;
 }
 
@@ -872,19 +911,64 @@ bool surf_hal_sdl_pump(void)
             if ((unsigned char)e.text.text[0] >= 0x20)
                 push_key(SURF_KEY_TEXT, false, e.text.text);
             break;
+        /* A REAL TOUCHSCREEN, which on this backend means a phone or a
+         * tablet browser: emscripten's SDL turns page touches into
+         * SDL_FINGER* and synthesises a mouse from the PRIMARY one only,
+         * so before this a second finger simply did not exist. The core
+         * has been per-contact for a while (surf_g.contacts, five slots,
+         * a widget follows one finger) — the hal was the half that never
+         * fed it, so three fingers on three faders worked on the panel
+         * and not in a tab.
+         *
+         * DIRECT devices only. A mac trackpad is an SDL touch device too
+         * (INDIRECT_ABSOLUTE), and resting a palm on it would otherwise
+         * inject contacts into whatever is on screen — a laptop's
+         * trackpad is a mouse here and a wheel, nothing else.
+         *
+         * Coordinates arrive NORMALISED to the window; push_touch wants
+         * window points, and does the letterbox mapping from there. */
+        case SDL_FINGERDOWN:
+        case SDL_FINGERMOTION:
+        case SDL_FINGERUP: {
+            if (SDL_GetTouchDeviceType(e.tfinger.touchId) !=
+                SDL_TOUCH_DEVICE_DIRECT)
+                break;
+            bool down = (e.type == SDL_FINGERDOWN);
+            int slot = finger_slot(e.tfinger.fingerId, down);
+            if (slot < 0)
+                break;
+            int16_t x = (int16_t)(e.tfinger.x * (float)S.win_w);
+            int16_t y = (int16_t)(e.tfinger.y * (float)S.win_h);
+            S.fing[slot].x = x;
+            S.fing[slot].y = y;
+            push_touch(x, y, down ? SURF_TOUCH_DOWN
+                                  : (e.type == SDL_FINGERUP ? SURF_TOUCH_UP
+                                                            : SURF_TOUCH_MOVE),
+                       (uint8_t)slot);
+            if (e.type == SDL_FINGERUP)
+                S.fing[slot].used = false;
+            break;
+        }
         case SDL_MOUSEBUTTONDOWN:
+            /* SDL sends a synthetic mouse for the primary finger as
+             * well. Taking both would make one finger two contacts —
+             * and the second would never lift cleanly. */
+            if (e.button.which == SDL_TOUCH_MOUSEID)
+                break;
             if (e.button.button == SDL_BUTTON_LEFT) {
                 S.mouse_down = true;
                 S.mouse_x = (int16_t)e.button.x;
                 S.mouse_y = (int16_t)e.button.y;
-                push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_DOWN);
+                push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_DOWN, 0);
             }
             break;
         case SDL_MOUSEMOTION:
+            if (e.motion.which == SDL_TOUCH_MOUSEID)
+                break;
             if (S.mouse_down) {
                 S.mouse_x = (int16_t)e.motion.x;
                 S.mouse_y = (int16_t)e.motion.y;
-                push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_MOVE);
+                push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_MOVE, 0);
             }
             break;
         case SDL_MOUSEWHEEL: {
@@ -900,9 +984,11 @@ bool surf_hal_sdl_pump(void)
             break;
         }
         case SDL_MOUSEBUTTONUP:
+            if (e.button.which == SDL_TOUCH_MOUSEID)
+                break;
             if (e.button.button == SDL_BUTTON_LEFT) {
                 S.mouse_down = false;
-                push_touch((int16_t)e.button.x, (int16_t)e.button.y, SURF_TOUCH_UP);
+                push_touch((int16_t)e.button.x, (int16_t)e.button.y, SURF_TOUCH_UP, 0);
             }
             break;
         }
