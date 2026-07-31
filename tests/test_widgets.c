@@ -823,6 +823,90 @@ static void test_radio(void)
     surf_radio_destroy(v);
 }
 
+/* A handler that destroys the tree it is in, DURING a scrollview's
+ * gesture steal. tulip5's app launcher does exactly this: a row treats
+ * the synthetic UP as a tap, closes the popup, and the scrollview the
+ * dispatch was about to capture is freed under it.
+ *
+ * On a desktop heap the recycled slot was benign and nobody noticed. In
+ * wasm it is not: "RuntimeError: Out of bounds memory access
+ * (evaluating getWasmTableEntry(index)(a1,a2,a3))" — a call through a
+ * garbage function index, which takes the whole machine with it. */
+static surf_node *doomed_group;
+static int doomed_calls, ghost_calls;
+
+static void ghost_touch(surf_node *n, const surf_touch *t, void *user)
+{
+    (void)n; (void)t; (void)user;
+    ghost_calls++;
+}
+
+static void doomed_row_touch(surf_node *n, const surf_touch *t, void *user)
+{
+    (void)n; (void)user;
+    doomed_calls++;
+    if (t->phase == SURF_TOUCH_UP && doomed_group) {
+        surf_node_destroy(doomed_group);      /* ...including OURSELVES */
+        doomed_group = NULL;
+        /* AND THEN ALLOCATE, which is what makes this test bite on a
+         * desktop heap: the freed slots go back on the pool's free list,
+         * so these take them over. A dispatch still holding the old
+         * pointer now calls THIS handler — observable, rather than
+         * depending on what a recycled slot happens to contain. (In wasm
+         * what it contained was a garbage function index and the whole
+         * VM trapped, which is how tulip5 found it.) */
+        for (int i = 0; i < 8; i++) {
+            surf_node *ghost = surf_group_new(0, 0);
+            surf_group_set_clip(ghost, 200, 20);
+            surf_node_set_on_touch(ghost, ghost_touch, NULL);
+            surf_node_add(surf_screen(), ghost);
+        }
+    }
+}
+
+static void test_destroy_during_steal(void)
+{
+    fresh(400, 300, 32);
+    doomed_group = surf_group_new(0, 0);
+    surf_group_set_clip(doomed_group, 200, 100);
+    surf_node_add(surf_screen(), doomed_group);
+    surf_node *sv = surf_scrollview_new(0, 0, 200, 100);
+    surf_node_add(doomed_group, sv);
+    for (int i = 0; i < 20; i++) {           /* content taller than view */
+        surf_node *row = surf_group_new(0, (int16_t)(i * 20));
+        surf_group_set_clip(row, 200, 20);
+        surf_node_set_on_touch(row, doomed_row_touch, NULL);
+        /* a clipped group with no children has EMPTY bounds, so the
+         * scrollview would see no content and never steal anything —
+         * which is a fact about surf_node_subtree_bounds worth knowing
+         * when a list mysteriously refuses to scroll */
+        surf_node_add(row, surf_rect_new(0, 0, 200, 19, SURF_RGB(20, 20, 30)));
+        surf_node_add(sv, row);
+    }
+    surf_tick();
+
+    doomed_calls = 0;
+    ghost_calls = 0;
+    surf_touch d = {.x = 50, .y = 10, .phase = SURF_TOUCH_DOWN, 0};
+    surf_inject_touch(&d);
+    OK(doomed_calls == 1);
+    /* nine pixels: past STEAL_PX, so the scrollview takes the gesture
+     * and the row gets a synthetic UP — which destroys everything */
+    surf_touch m = {.x = 50, .y = 19, .phase = SURF_TOUCH_MOVE, 0};
+    surf_inject_touch(&m);
+    OK(doomed_group == NULL);
+
+    /* the moves after it must reach nobody at all, rather than a freed
+     * scrollview: this is the line that used to crash */
+    surf_touch m2 = {.x = 50, .y = 40, .phase = SURF_TOUCH_MOVE, 0};
+    surf_touch u = {.x = 50, .y = 40, .phase = SURF_TOUCH_UP, 0};
+    surf_inject_touch(&m2);
+    surf_inject_touch(&u);
+    surf_tick();
+    /* nothing may have been delivered through the freed capture */
+    OK(ghost_calls == 0);
+}
+
 void run_widget_tests(void)
 {
     test_colorpicker();
@@ -830,6 +914,7 @@ void run_widget_tests(void)
     test_led_and_selector();
     test_tabs();
     test_radio();
+    test_destroy_during_steal();
     test_scrollbar();
     test_filmstrip();
     test_ninepatch();

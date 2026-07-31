@@ -116,6 +116,12 @@ void surf_input_dispatch(const surf_touch *t)
             return;
         }
         n->on_touch(n, t, n->touch_user);
+        /* THE HANDLER MAY HAVE DESTROYED THE TREE IT WAS IN. node_free()
+         * clears any contact that pointed at a freed node, so if this
+         * contact no longer holds `n`, `n` and everything above it are
+         * gone and walking its parents would be a use-after-free. */
+        if (ct->capture != n)
+            return;
         if (!(n->flags & SURF_NF_GRAB)) {
             for (surf_node *p = n->parent; p; p = p->parent) {
                 if (p->type == SURF_NODE_SCROLLVIEW &&
@@ -141,6 +147,22 @@ void surf_input_dispatch(const surf_touch *t)
             if (steal) {
                 surf_touch up = {t->x, t->y, SURF_TOUCH_UP, t->id};
                 deliver(c, &up);
+                /* ...and the same hazard, in its worst form: a row that
+                 * reads this synthetic UP as a TAP can tear down the
+                 * very list it is in. `sv` and `c` are LOCAL COPIES made
+                 * before the callback, so node_free()'s clearing of the
+                 * contact does not reach them — this is the check that
+                 * does. Without it the next line captures a freed node
+                 * and every move after it writes through the pointer.
+                 *
+                 * tulip5's launcher found this on Safari, where the
+                 * recycled slot was not benign: a drag of nine pixels
+                 * took the whole machine down. */
+                if (ct->capture != c || ct->steal_sv != sv) {
+                    ct->capture = NULL;
+                    ct->steal_sv = NULL;
+                    return;
+                }
                 ct->capture = sv;
                 ct->steal_sv = NULL;
                 surf_scroll_begin(sv, t);
