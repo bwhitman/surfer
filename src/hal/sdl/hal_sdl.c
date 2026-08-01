@@ -882,24 +882,48 @@ bool surf_hal_sdl_pump(void)
                 if (chord)
                     break;
             }
-            switch (e.key.keysym.sym) {
-            case SDLK_ESCAPE:    return false;
-            case SDLK_LEFT:      push_key(SURF_KEY_LEFT, shift, NULL); break;
-            case SDLK_RIGHT:     push_key(SURF_KEY_RIGHT, shift, NULL); break;
-            case SDLK_UP:        push_key(SURF_KEY_UP, shift, NULL); break;
-            case SDLK_DOWN:      push_key(SURF_KEY_DOWN, shift, NULL); break;
-            case SDLK_PAGEUP:    push_key(SURF_KEY_PGUP, shift, NULL); break;
-            case SDLK_PAGEDOWN:  push_key(SURF_KEY_PGDN, shift, NULL); break;
-            case SDLK_HOME:      push_key(SURF_KEY_HOME, shift, NULL); break;
-            case SDLK_END:       push_key(SURF_KEY_END, shift, NULL); break;
-            case SDLK_BACKSPACE: push_key(SURF_KEY_BACKSPACE, shift, NULL); break;
-            case SDLK_DELETE:    push_key(SURF_KEY_DELETE, shift, NULL); break;
-            case SDLK_RETURN:    push_key(SURF_KEY_ENTER, shift, NULL); break;
+            /* BY SCANCODE, NOT KEYCODE, and that is a browser bug fix
+             * rather than a style choice.
+             *
+             * A scancode is the physical key; a keycode is what that key
+             * MEANS under the current layout, which SDL derives. On the
+             * desktop both are populated and either works. Under
+             * emscripten the derivation is not reliable for keys with no
+             * character — so `keysym.sym` came back as something other
+             * than SDLK_LEFT and every arrow was dropped.
+             *
+             * The symptom was beautifully specific and is what found it:
+             * arrows moved a GAMEPAD in padtest but not the caret in the
+             * editor or the REPL. Those are two different paths —
+             * surf_hal_sdl_keys_held() feeds the pad and has always read
+             * SDL_GetKeyboardState() by SCANCODE, while this queue fed
+             * everything else by keycode. The two disagreeing is the
+             * whole of the bug, so now they agree by construction.
+             *
+             * There is no layout ambiguity to lose: an arrow, Home, End,
+             * Enter and Backspace are the same physical key everywhere.
+             * ctrl+letter above still uses the keycode, which is right —
+             * WHICH letter is exactly the layout-dependent part. */
+            switch (e.key.keysym.scancode) {
+            case SDL_SCANCODE_ESCAPE:    return false;
+            case SDL_SCANCODE_LEFT:      push_key(SURF_KEY_LEFT, shift, NULL); break;
+            case SDL_SCANCODE_RIGHT:     push_key(SURF_KEY_RIGHT, shift, NULL); break;
+            case SDL_SCANCODE_UP:        push_key(SURF_KEY_UP, shift, NULL); break;
+            case SDL_SCANCODE_DOWN:      push_key(SURF_KEY_DOWN, shift, NULL); break;
+            case SDL_SCANCODE_PAGEUP:    push_key(SURF_KEY_PGUP, shift, NULL); break;
+            case SDL_SCANCODE_PAGEDOWN:  push_key(SURF_KEY_PGDN, shift, NULL); break;
+            case SDL_SCANCODE_HOME:      push_key(SURF_KEY_HOME, shift, NULL); break;
+            case SDL_SCANCODE_END:       push_key(SURF_KEY_END, shift, NULL); break;
+            case SDL_SCANCODE_BACKSPACE: push_key(SURF_KEY_BACKSPACE, shift, NULL); break;
+            case SDL_SCANCODE_DELETE:    push_key(SURF_KEY_DELETE, shift, NULL); break;
+            case SDL_SCANCODE_RETURN:
+            case SDL_SCANCODE_KP_ENTER:  push_key(SURF_KEY_ENTER, shift, NULL); break;
             /* Tab as text, the way a terminal delivers it. SDL_TEXTINPUT
              * does emit 0x09 on some platforms and not others, and the
              * control-character filter drops it either way — so it has to
              * come from here to arrive at all. */
-            case SDLK_TAB:       push_key(SURF_KEY_TEXT, shift, "\t"); break;
+            case SDL_SCANCODE_TAB: push_key(SURF_KEY_TEXT, shift, "\t"); break;
+            default: break;      /* -Wswitch: SDL_Scancode is an enum */
             }
             break;
         }
