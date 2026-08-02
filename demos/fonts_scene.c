@@ -116,16 +116,16 @@ static void build_page1(int16_t w)
     y = 56;
     y = grid_specimen(rx, y, colw, F("mono16"),
                       "textgrid - JetBrains Mono 16 AA (today's default)");
-    y = grid_specimen(rx, y, colw, F("mono16g"),
-                      "textgrid - JetBrains Mono 16 AA + gamma 0.55");
-    y = grid_specimen(rx, y, colw, F("mono16b"),
-                      "textgrid - JetBrains Mono 16, 1-bit cut 96");
     y = grid_specimen(rx, y, colw, F("bigblue12"),
-                      "textgrid - BigBlue Terminal 12, 1-bit (native size)");
-    y = grid_specimen(rx, y, colw, F("bigblue24"),
-                      "textgrid - BigBlue Terminal 24, 1-bit (2x native)");
-    grid_specimen(rx, y, colw, F("mono24"),
-                  "textgrid - JetBrains Mono 24 AA");
+                      "textgrid - BigBlue Terminal 8x12 (1-bit, native)");
+    y = grid_specimen(rx, y, colw, F("portfolio6x8"),
+                      "textgrid - Atari Portfolio 6x8 (the smallest here)");
+    y = grid_specimen(rx, y, colw, F("phoenix8x8"),
+                      "textgrid - Phoenix VGA 8x8");
+    y = grid_specimen(rx, y, colw, F("xga7x15"),
+                      "textgrid - IBM XGA-AI 7x15");
+    grid_specimen(rx, y, colw, F("toshiba9x16"),
+                  "textgrid - Toshiba Satellite 9x16");
 }
 
 /* ---- page 2: pixel-designed proportional faces ---- */
@@ -230,8 +230,8 @@ static void build_page3(int16_t w)
     y = label_specimen(rx, y, colw, F("ncenR12"),
                        "ncenR12 - New Century Schoolbook (serif)",
                        pangram, COL_TEXT);
-    y = grid_specimen(rx, y, colw, F("courR14"),
-                      "textgrid - courR14, Adobe Courier (mono BDF)");
+    y = grid_specimen(rx, y, colw, F("robotron8x16"),
+                      "textgrid - Robotron A7100 8x16 (CP437)");
     y = (int16_t)(y + 6);
     y = label_specimen(rx, y, colw, F("ui16"),
                        "reference - Roboto 16 AA (outline, antialiased)",

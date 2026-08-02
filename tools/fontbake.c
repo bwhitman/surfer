@@ -89,14 +89,31 @@
  * IBM graphics at 0x01..0x1F that a plain cp437 decoder reports as
  * control characters. */
 #define SURF_RANGE_BASE "32-126,160-255,8211,8212,8230"
-#define SURF_RANGE_CP437_EXTRA \
-    "402,915,920,931,934,937,945,948-949,960,963-964,966,8226,8252," \
-    "8319,8359,8592-8597,8616,8729-8730,8734-8735,8745,8776,8801," \
-    "8804-8805,8962,8976,8992-8993,9472,9474,9484,9488,9492,9496," \
-    "9500,9508,9516,9524,9532,9552-9580,9600,9604,9608,9612,9616-9619," \
-    "9632,9644,9650,9658,9660,9668,9675,9688-9689,9786-9788,9792,9794," \
-    "9824,9827,9829-9830,9834-9835"
-#define SURF_RANGE_MONO SURF_RANGE_BASE "," SURF_RANGE_CP437_EXTRA
+
+/* CP437's non-ASCII half, all 160 of it, derived from the codepage table
+ * rather than hand-picked -- including the IBM graphics at 0x01..0x1F
+ * (the suits, arrows and smileys) that a plain cp437 decoder reports as
+ * control characters. 55 of these ARE Latin-1 codepoints; the rest are
+ * the box drawing, the block/shade run, the Greek and the maths. */
+#define SURF_RANGE_CP437 \
+    "160-163,165,167,170-172,176-178,181-183,186-189,191,196-199,201," \
+    "209,214,220,223-226,228-239,241-244,246-247,249-252,255,402,915," \
+    "920,931,934,937,945,948-949,960,963-964,966,8226,8252,8319,8359," \
+    "8592-8597,8616,8729-8730,8734-8735,8745,8776,8801,8804-8805,8962," \
+    "8976,8992-8993,9472,9474,9484,9488,9492,9496,9500,9508,9516,9524," \
+    "9532,9552-9580,9600,9604,9608,9612,9616-9619,9632,9644,9650,9658," \
+    "9660,9668,9675,9688-9689,9786-9788,9792,9794,9824,9827,9829-9830," \
+    "9834-9835"
+
+/* MONO is ASCII + CP437 + the ellipsis, and deliberately NOT all of
+ * Latin-1: a terminal face wants the box-drawing half of the codepage,
+ * and the 41 Latin-1 characters CP437 never had (Latin-1 has 96, CP437
+ * carries 55 of them) are not what anyone reaches a fixed-width font
+ * for. A proportional face wants the exact opposite and gets BASE. That
+ * split is why there are two names rather than one range plus an
+ * extension -- MONO used to be BASE plus the rest of CP437, which gave
+ * every terminal face 43 glyphs it had no use for. */
+#define SURF_RANGE_MONO "32-126," SURF_RANGE_CP437 ",8230"
 
 static uint32_t cps[MAX_CPS];
 static int ncps;
@@ -480,10 +497,31 @@ static int bake_ttf(const char *path, float size, int em_mode)
         return 0;
     }
 
+    /* SKIP WHAT THE FACE HAS NOT GOT, which the FreeType and BDF front
+     * ends already do. stb packs whatever it is handed, and for a
+     * codepoint with no glyph that means .notdef — a hollow box, drawn
+     * from an outline that is not on the pixel grid, so it is
+     * ANTIALIASED. Two consequences, and the second is the expensive one:
+     * the atlas carries a notdef where surf_font_glyph would otherwise
+     * fall back to '?', and its partial coverage takes the whole atlas
+     * off the 1-bit path (SURF_FMT_A1 is decided by measuring). Measured
+     * on Px437_ToshibaSat_9x16, which has 269 of the 299 codepoints in
+     * the `mono` set: 0.4% gray and a 32 KB A8 atlas before, 0.0% and
+     * 8 KB of A1 after — a 4x flash saving bought by not baking thirty
+     * glyphs that were never wanted. */
     stbtt_packedchar *pc = malloc(sizeof *pc * (size_t)ncps);
     int *cplist = malloc(sizeof(int) * (size_t)ncps);
+    int nhave = 0;
     for (int i = 0; i < ncps; i++)
-        cplist[i] = (int)cps[i];
+        if (stbtt_FindGlyphIndex(&info, (int)cps[i]) != 0)
+            cplist[nhave++] = (int)cps[i];
+    if (nhave < ncps) {
+        fprintf(stderr, "fontbake: face has %d of %d requested codepoints\n",
+                nhave, ncps);
+        ncps = nhave;
+        for (int i = 0; i < ncps; i++)
+            cps[i] = (uint32_t)cplist[i];
+    }
     for (;;) {
         atlas = realloc(atlas, (size_t)aw * ah);
         stbtt_pack_context pctx;
@@ -713,12 +751,56 @@ int main(int argc, char **argv)
            name, szval, szdesc, mode, src);
     fprintf(out, "#include \"surfer.h\"\n\n");
 
-    fprintf(out, "static const uint8_t surf_font_%s_px[%d] = {\n", name, aw * ah);
-    for (int i = 0; i < aw * ah; i += 24) {
-        fprintf(out, "    ");
-        for (int j = i; j < i + 24 && j < aw * ah; j++)
-            fprintf(out, "%d,", atlas[j]);
-        fprintf(out, "\n");
+    /* A FULLY SOLID ATLAS IS STORED ONE BIT PER PIXEL.
+     *
+     * A bitmap face — a BDF, or a pixel outline baked at its exact ppem —
+     * has no partial coverage at all: fontbake reports gray 0.0%, every
+     * byte is 0 or 255, and seven eighths of the array is padding. That is
+     * the whole cost driver on the device, where the app partition is the
+     * binding constraint and font atlases are 1.5 MB of it.
+     *
+     * It is decided by MEASURING the atlas rather than by a flag, so a
+     * face cannot be marked 1-bit and then quietly smeared by a wrong
+     * ppem: if a single pixel is partial the whole atlas stays A8. An AA
+     * face (Roboto at any size) therefore never takes this path.
+     *
+     * Nothing downstream learns about it. surf_font_expand_a1() unpacks
+     * to A8 when the font is first used, which on the P4 costs nothing
+     * extra because the port ALREADY copies every atlas out of
+     * memory-mapped flash into PSRAM (the PPA cannot DMA from flash, and
+     * its blend modes are ARGB8888/A8/RGB565 — there is no A1 blend). So
+     * this is a pure flash saving: the RAM copy existed already. */
+    int a1 = 1;
+    for (int i = 0; i < aw * ah && a1; i++)
+        if (atlas[i] != 0 && atlas[i] != 255)
+            a1 = 0;
+
+    int a1_stride = (aw + 7) / 8;
+    int nbytes = a1 ? a1_stride * ah : aw * ah;
+    fprintf(out, "static const uint8_t surf_font_%s_px[%d] = {\n", name, nbytes);
+    if (a1) {
+        /* MSB first within each byte, rows padded to a byte boundary —
+         * the order surf_font_expand_a1() reads back. */
+        for (int y = 0; y < ah; y++) {
+            fprintf(out, "    ");
+            for (int b = 0; b < a1_stride; b++) {
+                unsigned v = 0;
+                for (int k = 0; k < 8; k++) {
+                    int x = b * 8 + k;
+                    if (x < aw && atlas[y * aw + x])
+                        v |= 0x80u >> k;
+                }
+                fprintf(out, "%u,", v);
+            }
+            fprintf(out, "\n");
+        }
+    } else {
+        for (int i = 0; i < aw * ah; i += 24) {
+            fprintf(out, "    ");
+            for (int j = i; j < i + 24 && j < aw * ah; j++)
+                fprintf(out, "%d,", atlas[j]);
+            fprintf(out, "\n");
+        }
     }
     fprintf(out, "};\n\n");
 
@@ -737,17 +819,18 @@ int main(int argc, char **argv)
 
     fprintf(out, "static const surf_font surf_font_%s = {\n", name);
     fprintf(out, "    .atlas = {.pixels = (void *)surf_font_%s_px, .w = %d, .h = %d,\n"
-           "              .stride = %d, .format = SURF_FMT_A8, .opaque = false},\n",
-           name, aw, ah, aw);
+           "              .stride = %d, .format = %s, .opaque = false},\n",
+           name, aw, ah, a1 ? a1_stride : aw,
+           a1 ? "SURF_FMT_A1" : "SURF_FMT_A8");
     fprintf(out, "    .ascent = %d, .descent = %d, .line_gap = %d,\n",
            ascent_px, descent_px, gap_px);
     fprintf(out, "    .glyphs = surf_font_%s_glyphs, .nglyphs = %d,\n", name, nglyphs);
     fprintf(out, "    .kerns = surf_font_%s_kerns, .nkerns = %d,\n", name, nkern);
     fprintf(out, "};\n");
 
-    fprintf(stderr, "fontbake: %-10s %5.1f%-6s %-9s -> %dx%d atlas, %d glyphs, "
+    fprintf(stderr, "fontbake: %-10s %5.1f%-6s %-9s -> %dx%d atlas %s %5d B, %d glyphs, "
             "cell %2dx%-2d, gray %5.1f%% solid %5.1f%%\n",
-            name, szval, szdesc, mode, aw, ah, nglyphs, m_adv, line_h,
-            gray_pct, solid_pct);
+            name, szval, szdesc, mode, aw, ah, a1 ? "A1" : "A8", nbytes,
+            nglyphs, m_adv, line_h, gray_pct, solid_pct);
     return 0;
 }

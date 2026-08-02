@@ -110,30 +110,9 @@ $(GEN_DIR)/font_ui16b.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	FONTBAKE_THRESHOLD=1 build/tools/fontbake ui16b 16 \
 		assets/fonts/Roboto-Regular.ttf $@
 
-$(GEN_DIR)/font_mono16g.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
-	@mkdir -p $(GEN_DIR)
-	FONTBAKE_GAMMA=0.55 build/tools/fontbake mono16g 16 \
-		assets/fonts/JetBrainsMono-Regular.ttf $@ mono
-
-$(GEN_DIR)/font_mono16b.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
-	@mkdir -p $(GEN_DIR)
-	FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96 build/tools/fontbake \
-		mono16b 16 assets/fonts/JetBrainsMono-Regular.ttf $@ mono
-
-# mono16 is code at desktop density, mono24 the same physical size on the
-# P4 panel — the mono pair to ui16/ui23.
-$(GEN_DIR)/font_mono24.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
-	@mkdir -p $(GEN_DIR)
-	$(HINT) build/tools/fontbake mono24 24 assets/fonts/JetBrainsMono-Regular.ttf $@ mono
-
 $(GEN_DIR)/font_bigblue12.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
 	@mkdir -p $(GEN_DIR)
 	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue12 12 \
-		assets/fonts/BigBlue_TerminalPlus.ttf $@ mono
-
-$(GEN_DIR)/font_bigblue24.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
-	@mkdir -p $(GEN_DIR)
-	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue24 24 \
 		assets/fonts/BigBlue_TerminalPlus.ttf $@ mono
 
 # Pixel-designed proportional faces (Kenney, CC0). These are drawn on a
@@ -180,6 +159,56 @@ $(GEN_DIR)/font_kpixel64.h: build/tools/fontbake assets/fonts/KenneyPixel.ttf
 	@mkdir -p $(GEN_DIR)
 	$(KPIX_BAKE) kpixel64 64 assets/fonts/KenneyPixel.ttf $@
 
+# ---- the oldschool PC faces (VileR's Ultimate Oldschool PC Font
+# Pack v2.2, CC BY-SA 4.0 -- assets/fonts/oldschool/). Every one is a
+# TEXT-MODE ROM face traced onto its own pixel grid, so it is baked
+# at ppem = unitsPerEm/100 and NOT hinted: at that exact size it is
+# 0.0% gray and lands on the 1-bit path, and FreeType's autohinter
+# would only smear a face that is already on the grid.
+# `mono` is ASCII + CP437 -- what these were drawn for. ----
+
+$(GEN_DIR)/font_portfolio6x8.h: build/tools/fontbake assets/fonts/oldschool/Px437_Portfolio_6x8.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake portfolio6x8 8 assets/fonts/oldschool/Px437_Portfolio_6x8.ttf $@ mono
+
+$(GEN_DIR)/font_apricot8x10.h: build/tools/fontbake assets/fonts/oldschool/Px437_Apricot_256L.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake apricot8x10 12 assets/fonts/oldschool/Px437_Apricot_256L.ttf $@ mono
+
+$(GEN_DIR)/font_phoenix8x8.h: build/tools/fontbake assets/fonts/oldschool/Px437_PhoenixVGA_8x8.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake phoenix8x8 8 assets/fonts/oldschool/Px437_PhoenixVGA_8x8.ttf $@ mono
+
+$(GEN_DIR)/font_xga7x15.h: build/tools/fontbake assets/fonts/oldschool/Px437_IBM_XGA-AI_7x15.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake xga7x15 16 assets/fonts/oldschool/Px437_IBM_XGA-AI_7x15.ttf $@ mono
+
+$(GEN_DIR)/font_robotron8x16.h: build/tools/fontbake assets/fonts/oldschool/Px437_Robotron_A7100.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake robotron8x16 16 assets/fonts/oldschool/Px437_Robotron_A7100.ttf $@ mono
+
+$(GEN_DIR)/font_fmtowns8x16.h: build/tools/fontbake assets/fonts/oldschool/Px437_FMTowns_re_8x16.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake fmtowns8x16 16 assets/fonts/oldschool/Px437_FMTowns_re_8x16.ttf $@ mono
+
+$(GEN_DIR)/font_toshiba9x16.h: build/tools/fontbake assets/fonts/oldschool/PxPlus_ToshibaSat_9x16.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake toshiba9x16 16 assets/fonts/oldschool/PxPlus_ToshibaSat_9x16.ttf $@ mono
+
+$(GEN_DIR)/font_dosv12x24.h: build/tools/fontbake assets/fonts/oldschool/Px437_DOS-V_re_JPN24.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake dosv12x24 24 assets/fonts/oldschool/Px437_DOS-V_re_JPN24.ttf $@ mono
+
+$(GEN_DIR)/font_cordata16x26.h: build/tools/fontbake assets/fonts/oldschool/PxPlus_Cordata_PPC-21.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake cordata16x26 32 assets/fonts/oldschool/PxPlus_Cordata_PPC-21.ttf $@ mono
+
+$(GEN_DIR)/font_wyse16x32.h: build/tools/fontbake assets/fonts/oldschool/Px437_Wyse700a-2y.ttf
+	@mkdir -p $(GEN_DIR)
+	build/tools/fontbake wyse16x32 32 assets/fonts/oldschool/Px437_Wyse700a-2y.ttf $@ mono
+
+# helvR12 are separately drawn faces, not one outline scaled, which is the
+# whole reason they read better than a thresholded outline at small sizes.
 # Adobe X11 bitmap fonts (BDF): fontbake copies these pixel-for-pixel, so
 # the SIZE argument is ignored — a BDF *is* one designed size. helvR10 and
 # helvR12 are separately drawn faces, not one outline scaled, which is the
@@ -195,23 +224,27 @@ $(GEN_DIR)/font_%.h: assets/fonts/bdf/%.bdf build/tools/fontbake
 	build/tools/fontbake $* 0 $< $@ base
 
 # all 24 Adobe X11 BDFs (4 families x 6 designed sizes)
-ADOBE_NAMES := $(foreach f,helvR helvB ncenR courR,\
+ADOBE_NAMES := $(foreach f,helvR helvB ncenR,\
 	$(foreach s,08 10 12 14 18 24,$(f)$(s)))
 ADOBE_GEN := $(addprefix $(GEN_DIR)/font_,$(addsuffix .h,$(ADOBE_NAMES)))
 
 # every font this build ships, by fontbake name. The registry
 # (surf_font_builtin) is generated from exactly this list.
-TTF_NAMES := ui12 ui16 ui16b ui23 ui28 ui36 ui48 mono16 mono16g mono16b mono24 \
-	bigblue12 bigblue24 kpixel16 kpixel32 kpixel48 kpixel64 \
-	kmini16 kmini32 khigh32 kblocks16
+TTF_NAMES := ui12 ui16 ui16b ui23 ui28 ui36 ui48 \
+	kpixel16 kpixel32 kpixel48 kpixel64 kmini16 kmini32 khigh32 kblocks16 \
+	mono16 bigblue12 \
+	portfolio6x8 apricot8x10 phoenix8x8 xga7x15 robotron8x16 fmtowns8x16 toshiba9x16 dosv12x24 cordata16x26 wyse16x32
 FONT_NAMES := $(TTF_NAMES) $(ADOBE_NAMES)
 
 FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 	$(GEN_DIR)/font_ui16b.h $(GEN_DIR)/font_ui23.h $(GEN_DIR)/font_ui28.h \
 	$(GEN_DIR)/font_ui36.h $(GEN_DIR)/font_ui48.h \
-	$(GEN_DIR)/font_mono16.h $(GEN_DIR)/font_mono16g.h \
-	$(GEN_DIR)/font_mono16b.h $(GEN_DIR)/font_mono24.h \
-	$(GEN_DIR)/font_bigblue12.h $(GEN_DIR)/font_bigblue24.h \
+	$(GEN_DIR)/font_mono16.h $(GEN_DIR)/font_bigblue12.h \
+	$(GEN_DIR)/font_portfolio6x8.h $(GEN_DIR)/font_apricot8x10.h \
+	$(GEN_DIR)/font_phoenix8x8.h $(GEN_DIR)/font_xga7x15.h \
+	$(GEN_DIR)/font_robotron8x16.h $(GEN_DIR)/font_fmtowns8x16.h \
+	$(GEN_DIR)/font_toshiba9x16.h $(GEN_DIR)/font_dosv12x24.h \
+	$(GEN_DIR)/font_cordata16x26.h $(GEN_DIR)/font_wyse16x32.h \
 	$(GEN_DIR)/font_kpixel16.h $(GEN_DIR)/font_kpixel32.h \
 	$(GEN_DIR)/font_kpixel48.h $(GEN_DIR)/font_kpixel64.h \
 	$(GEN_DIR)/font_kmini16.h $(GEN_DIR)/font_kmini32.h \

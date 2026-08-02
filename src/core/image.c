@@ -33,7 +33,8 @@ surf_image *surf_image_from_png(const void *data, size_t len)
         return NULL;
     }
     int32_t stride = ((int32_t)w * 4 + 63) & ~63;  /* device: 64B rows */
-    uint8_t *px = surf_g.hal->alloc_image((size_t)stride * h);
+    uint8_t *px = surf_g.hal ? surf_g.hal->alloc_image((size_t)stride * h)
+                            : NULL;
     if (!px) {
         stbi_image_free(rgba);
         free(img);
@@ -107,6 +108,49 @@ void surf_image_destroy(surf_image *img)
     if (img->pixels && surf_g.hal)
         surf_g.hal->free_image(img->pixels);
     free(img);
+}
+
+/* ---- 1-bit atlas expansion (load time; see SURF_FMT_A1) ---- */
+
+bool surf_image_expand_a1(surf_image *img)
+{
+    if (!img || img->format != SURF_FMT_A1)
+        return true;                       /* nothing to do */
+
+    const uint8_t *src = img->pixels;
+    int16_t w = img->w, h = img->h;
+    int32_t src_stride = img->stride;
+    /* 64-byte stride, the PPA rule: this buffer is blended straight from
+     * on the device, and the atlas is the caller's `stride` from here on. */
+    int32_t stride = ((int32_t)w + 63) & ~63;
+    uint8_t *px = surf_g.hal ? surf_g.hal->alloc_image((size_t)stride * h)
+                            : NULL;
+    if (!px) {
+        /* NEVER leave it as A1. The hal has no bytes-per-pixel for the
+         * format, so an A1 atlas that reaches a blit is read as A8 and
+         * draws its own bit-pattern as alpha — text comes out as
+         * coloured noise, which is how the init ordering bug below
+         * showed up. Zero size draws nothing, which is wrong but
+         * obviously wrong. Reached when surf_g.hal is not up yet:
+         * surfer.init() is the session boundary and this needs its
+         * allocator, so nothing may expand before it. */
+        img->format = SURF_FMT_A8;
+        img->w = img->h = 0;
+        img->stride = 0;
+        return false;
+    }
+    for (int16_t y = 0; y < h; y++) {
+        const uint8_t *sr = src + (size_t)y * src_stride;
+        uint8_t *dr = px + (size_t)y * stride;
+        for (int16_t x = 0; x < w; x++)
+            dr[x] = (sr[x >> 3] & (0x80u >> (x & 7))) ? 255 : 0;
+        for (int32_t x = w; x < stride; x++)
+            dr[x] = 0;
+    }
+    img->pixels = px;
+    img->stride = stride;
+    img->format = SURF_FMT_A8;
+    return true;
 }
 
 /* ---- load-time composition (never per frame) ---- */

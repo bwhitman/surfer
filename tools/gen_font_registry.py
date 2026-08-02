@@ -39,8 +39,18 @@ static void load_once(void)
 {
     if (loaded)
         return;
-    for (int i = 0; i < NBUILTIN; i++)
+    for (int i = 0; i < NBUILTIN; i++) {
         fonts[i] = *builtins[i].font;
+        /* A fully-solid atlas is stored one bit per pixel (SURF_FMT_A1)
+         * and unpacked here, once, before anything can look at it. It
+         * MUST happen before prepare(): the device hook memcpy's the
+         * atlas into PSRAM by stride*h, and the hal has no bytes-per-
+         * pixel for A1 -- it would copy an eighth of the pixels and read
+         * them as RGB565. Doing it here also means the port's copy is
+         * the only copy, so on the device this costs no RAM at all: that
+         * memcpy already existed. */
+        surf_image_expand_a1(&fonts[i].atlas);
+    }
     loaded = true;
 }
 

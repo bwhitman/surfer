@@ -23,6 +23,16 @@ typedef enum {
     SURF_FMT_RGB565   = 0,
     SURF_FMT_ARGB8888 = 1,
     SURF_FMT_A8       = 2,  /* alpha-only (glyph atlases); tinted on blend */
+    /* STORAGE ONLY, never a live image: a fully-solid glyph atlas packed
+     * one bit per pixel, MSB first, rows padded to a byte. fontbake emits
+     * it for any bake with no partial coverage (a BDF, or a pixel outline
+     * at its exact ppem) and surf_image_expand_a1() unpacks it to A8 the
+     * first time the font is looked up. Nothing below the font registry
+     * ever sees it — surf_image_new() refuses it, the hal has no bytes-
+     * per-pixel for it, and the PPA has no A1 blend mode. It exists
+     * because seven eighths of such an atlas is padding, and on the
+     * device the app partition is what runs out. */
+    SURF_FMT_A1       = 3,
 } surf_format;
 
 typedef struct {
@@ -401,6 +411,12 @@ const surf_font *surf_font_builtin_at(int idx);
  * (the P4's PPA can't DMA from memory-mapped flash) call this once at
  * startup to re-home every built-in atlas; later lookups see the
  * prepared copy. */
+/* Unpack a SURF_FMT_A1 atlas into a freshly allocated A8 one, in place.
+ * No-op (true) for any other format. False only if the allocation failed,
+ * in which case the image is left drawable-but-empty rather than
+ * half-converted. Load time only — never the frame path. */
+bool surf_image_expand_a1(surf_image *img);
+
 typedef void (*surf_font_prepare_fn)(surf_image *atlas);
 void surf_font_builtin_prepare(surf_font_prepare_fn fn);
 

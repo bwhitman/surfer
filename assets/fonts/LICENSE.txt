@@ -4,7 +4,7 @@ https://github.com/googlefonts/roboto-2
 JetBrainsMono-Regular.ttf — (c) JetBrains, SIL Open Font License 1.1
 https://github.com/JetBrains/JetBrainsMono
 
-bdf/{helvR,helvB,ncenR,courR}{08,10,12,14,18,24}.bdf — the Adobe X11
+bdf/{helvR,helvB,ncenR}{08,10,12,14,18,24}.bdf — the Adobe X11
 bitmap fonts (Helvetica, New Century Schoolbook, Courier), obtained from
 github.com/olikraus/u8g2 (tools/font/bdf/).
 
@@ -52,3 +52,28 @@ https://int10h.org/blog/2015/12/bigblue-terminal-oldschool-fixed-width-font/
 
   Bake at 12px — its design size — with FONTBAKE_THRESHOLD=1 for
   pixel-exact cells; 24px is exactly 2x.
+
+oldschool/*.ttf — VileR's "Ultimate Oldschool PC Font Pack" v2.2, from
+https://int10h.org/oldschool-pc-fonts/ . CC BY-SA 4.0; the full text is
+in oldschool/LICENSE-CC-BY-SA-4.0.txt.
+
+  Copyright (c) 2016-2020 VileR. The underlying raster typefaces are the
+  original IBM/OEM ROM faces and are not themselves copyrightable (see
+  the pack's own documentation); what is licensed is VileR's TrueType
+  reconstruction of them.
+
+  NOTE THE SHARE-ALIKE. These are the only assets here under a copyleft
+  licence — everything else is Apache-2.0, OFL, CC0 or the Adobe X11
+  terms — and a baked atlas is a derivative of the TTF. Attribution is
+  required wherever the fonts ship. Worth settling deliberately before a
+  commercial release, alongside BigBlue's unpinned provenance below.
+
+  Shipped: Px437_Portfolio_6x8, Px437_Apricot_256L, Px437_PhoenixVGA_8x8,
+  Px437_IBM_XGA-AI_7x15, Px437_Robotron_A7100, Px437_FMTowns_re_8x16,
+  PxPlus_ToshibaSat_9x16, Px437_DOS-V_re_JPN24, PxPlus_Cordata_PPC-21,
+  Px437_Wyse700a-2y.
+
+  The `Px` (pixel-outline) variants, never `Ac` (aspect-corrected, for
+  4:3 CRT pixel ratios — measured 57% gray on a square-pixel bake) and
+  never `Mx` (outline + embedded bitmap strikes, which our bake ignores
+  and which the autohinter then destroys).

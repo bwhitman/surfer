@@ -12,11 +12,12 @@ file(GLOB SURFER_CORE_SRCS
     ${SURFER_ROOT}/src/widgets/*.c)
 
 set(GENDIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
-set(TTF_NAMES ui12 ui16 ui16b ui23 ui28 mono16 mono16g mono16b mono24
-    bigblue12 bigblue24 kpixel16 kpixel32 kpixel48 kpixel64
+set(TTF_NAMES ui12 ui16 ui16b ui23 ui28 mono16 bigblue12
+    portfolio6x8 apricot8x10 phoenix8x8 xga7x15 robotron8x16 fmtowns8x16 toshiba9x16 dosv12x24 cordata16x26 wyse16x32
+    kpixel16 kpixel32 kpixel48 kpixel64
     kmini16 kmini32 khigh32 kblocks16)
 set(ADOBE_NAMES "")
-foreach(fam helvR helvB ncenR courR)
+foreach(fam helvR helvB ncenR)
     foreach(sz 08 10 12 14 18 24)
         list(APPEND ADOBE_NAMES ${fam}${sz})
     endforeach()
@@ -123,14 +124,26 @@ surfer_font(ui23 23 ${ROBOTO} ENV ${FONT_HINT})
 surfer_font(ui28 28 ${ROBOTO} ENV ${FONT_HINT})
 surfer_font(mono16 16 ${JBMONO} RANGES mono ENV ${FONT_HINT})
 surfer_font(ui12 12 ${ROBOTO} ENV ${FONT_HINT})
-surfer_font(mono24 24 ${JBMONO} RANGES mono ENV ${FONT_HINT})
 # specimen-only bakes: the same faces through each knob that matters, so
 # these stay UNHINTED — each shows what its knob does to a raw outline
 surfer_font(ui16b 16 ${ROBOTO} ENV FONTBAKE_THRESHOLD=1)
-surfer_font(mono16g 16 ${JBMONO} RANGES mono ENV FONTBAKE_GAMMA=0.55)
-surfer_font(mono16b 16 ${JBMONO} RANGES mono ENV FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96)
 surfer_font(bigblue12 12 ${BIGBLUE} RANGES mono ENV FONTBAKE_THRESHOLD=1)
-surfer_font(bigblue24 24 ${BIGBLUE} RANGES mono ENV FONTBAKE_THRESHOLD=1)
+
+# The oldschool PC faces (VileR's pack, CC BY-SA 4.0). ppem is
+# unitsPerEm/100 and they are NOT hinted: at that exact size each is
+# 0.0% gray and lands on the 1-bit path, and the autohinter would only
+# smear a face already on the grid. Keep in step with the Makefile.
+set(OLDSCHOOL ${SURFER_ROOT}/assets/fonts/oldschool)
+surfer_font(portfolio6x8 8 ${OLDSCHOOL}/Px437_Portfolio_6x8.ttf RANGES mono)
+surfer_font(apricot8x10 12 ${OLDSCHOOL}/Px437_Apricot_256L.ttf RANGES mono)
+surfer_font(phoenix8x8 8 ${OLDSCHOOL}/Px437_PhoenixVGA_8x8.ttf RANGES mono)
+surfer_font(xga7x15 16 ${OLDSCHOOL}/Px437_IBM_XGA-AI_7x15.ttf RANGES mono)
+surfer_font(robotron8x16 16 ${OLDSCHOOL}/Px437_Robotron_A7100.ttf RANGES mono)
+surfer_font(fmtowns8x16 16 ${OLDSCHOOL}/Px437_FMTowns_re_8x16.ttf RANGES mono)
+surfer_font(toshiba9x16 16 ${OLDSCHOOL}/PxPlus_ToshibaSat_9x16.ttf RANGES mono)
+surfer_font(dosv12x24 24 ${OLDSCHOOL}/Px437_DOS-V_re_JPN24.ttf RANGES mono)
+surfer_font(cordata16x26 32 ${OLDSCHOOL}/PxPlus_Cordata_PPC-21.ttf RANGES mono)
+surfer_font(wyse16x32 32 ${OLDSCHOOL}/Px437_Wyse700a-2y.ttf RANGES mono)
 
 # page 2: pixel-designed proportional faces (Kenney, CC0). Their grid is
 # defined in em units, so only an exact ppem lands stems on whole pixels

@@ -1829,9 +1829,16 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
     g_scr_h = h;
     if (!g_hal)
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("display init failed"));
-    prepare_assets();
+    /* surf_init FIRST, then the assets. prepare_assets() re-homes every
+     * atlas, and a 1-bit font atlas is UNPACKED on the way (see
+     * SURF_FMT_A1) — which needs an allocator, and the core's is
+     * surf_g.hal, set by surf_init. Re-homing first left every A1 atlas
+     * packed, and a packed atlas read as A8 draws its bits as alpha:
+     * text came out as coloured noise. Nothing in surf_init reads an
+     * atlas, so the order is free. */
     if (!surf_init(g_hal, w, h, &cfg))
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("surf init failed"));
+    prepare_assets();
     registry_init();
     inited = true;
     return mp_const_none;

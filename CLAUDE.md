@@ -817,16 +817,55 @@ detect it with pkg-config and fall back to unhinted with a warning; keep
 the two in step or the panel gets fuzzier text than the SDL preview did.
 Other knobs: `FONTBAKE_GAMMA`, `FONTBAKE_THRESHOLD[_CUT]`.
 
+**Two ranges, and which one a face gets is decided by its SHAPE.**
+`SURF_RANGE_BASE` (proportional) is ASCII + the Latin-1 supplement +
+dashes + ellipsis, 194 codepoints. `SURF_RANGE_MONO` (fixed width) is
+ASCII + **CP437** + ellipsis, 256 — box drawing, the block/shade run,
+arrows, the card suits, and the 55 Latin-1 characters CP437 happens to
+carry. Deliberately not the union: a terminal face has no use for the 41
+Latin-1 characters CP437 never had, and a proportional face has none for
+box drawing. Both are `#define`s in `tools/fontbake.c` so the Makefile
+and `ports/esp32p4/main/CMakeLists.txt` cannot drift; a build file asks
+by name (`fontbake NAME PPEM src.ttf out.h mono`).
+
+**A fully-solid atlas is stored ONE BIT PER PIXEL** (`SURF_FMT_A1`),
+decided by MEASURING the bake rather than by a flag, so a face cannot be
+marked 1-bit and then smeared by a wrong ppem. `surf_image_expand_a1()`
+unpacks it to A8 the first time the registry hands the font out; nothing
+below that ever sees A1 (the PPA has no A1 blend and the hal no
+bytes-per-pixel for it). On the device this is FREE — the port already
+copies every atlas out of memory-mapped flash into PSRAM, so the unpack
+replaces a memcpy into an allocation that already existed. It took the
+45 atlases from 3.17 MB to 0.98 MB. **It must happen after
+`surfer.init()`**, which is where the allocator appears: expanding before
+it left atlases packed, and a packed atlas blitted as A8 draws its own
+bits as alpha — text as coloured noise. `mod_init` calls `surf_init`
+before `prepare_assets` for exactly this reason.
+
 Sources: Roboto (ui12/16/16b/23/28/36/48 — the 36 and 48 are display
 sizes, plain AA, where partial coverage reads as a smooth curve rather
 than the lumpiness thresholding an off-grid outline gives at small
-sizes) + JetBrains Mono (outline, AA), BigBlue Terminal (bitmap mono),
-4 Kenney pixel faces (CC0), and 24 Adobe X11 BDFs — helvR/helvB/
-ncenR/courR at 08/10/12/14/18/24, each a separately *designed* size.
+sizes) + JetBrains Mono (mono16, the one AA fixed-width face and the
+house default), BigBlue Terminal (bigblue12), **ten oldschool PC ROM
+faces** (VileR's pack, CC BY-SA 4.0 — see assets/fonts/LICENSE.txt, and
+note it is the only copyleft asset here), 4 Kenney pixel faces (CC0),
+and 18 Adobe X11 BDFs — helvR/helvB/ncenR at 08/10/12/14/18/24, each a
+separately *designed* size.
+
+**The oldschool faces bake at ppem = unitsPerEm/100 and are NEVER
+hinted.** That number is not the cell height — an 8x14 face has em 1600
+and wants ppem 16, while an 8x8 one has em 800 and wants 8; get it wrong
+and the bake is 39-80% gray instead of 0.0%. Use the `Px` (pixel
+outline) variants: `Ac` is aspect-corrected for 4:3 CRTs and measures
+57% gray on a square-pixel bake, and `Mx` carries embedded bitmap
+strikes our bake ignores and the autohinter then destroys (97% gray).
+`PxPlus` covers all of CP437 and Latin-1; `Px437` covers CP437 only, and
+fontbake skips what a face has not got.
 `assets/fonts/LICENSE.txt` has the terms; BigBlue's provenance is still
-unpinned (TODO before shipping). The UI ramp is hinted; the *specimen*
-bakes (ui16b, mono16g, mono16b) deliberately are not — each exists to
-show what its knob does to a raw outline. The pixel faces never are: the
+unpinned (TODO before shipping) and the oldschool pack is share-alike.
+The UI ramp is hinted; `ui16b` (the one surviving *specimen* bake)
+deliberately is not — it exists to show what thresholding does to a raw
+outline. The pixel faces and the oldschool ROM faces never are: the
 grid-fit they want is the one they were drawn on.
 
 **ui16 and ui23 are the same physical size on different screens**, which
@@ -834,7 +873,9 @@ is why the ramp carries both rather than scaling one. The desktop window
 puts a framebuffer pixel on a 110-140dpi point (it varies with the
 display-scaling setting); the P4's 7" 1024x600 panel
 is 169dpi. So ui16/mono16 are the desktop body sizes (~10pt) and
-ui23/mono24 the panel's.
+ui23 the panel's; there is one AA fixed-width face (mono16) and the
+rest of the fixed-width set is pixel faces, which have exactly one size
+each by construction.
 
 **One TU owns every atlas.** `tools/gen_font_registry.py` emits
 `font_registry.c`, which includes all the font headers and implements
@@ -869,7 +910,7 @@ Setting it at import time is what killed the P4X on every soft reset.
 
 MicroPython takes a font as a name, a `Font` object, or a legacy index
 anywhere: `surfer.label(s, x, y, c, "helvR12")`,
-`surfer.textgrid(cols, rows, fg, bg, "courR14")`, `surfer.font(name_or_blob)`,
+`surfer.textgrid(cols, rows, fg, bg, "toshiba9x16")`, `surfer.font(name_or_blob)`,
 `surfer.fonts([mono_only])`. `surf_font_is_mono` gates the textgrid — it
 sizes its cell from 'M', so a proportional face is refused.
 
