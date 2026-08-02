@@ -21,7 +21,14 @@
  *              one outline scaled. No AA is possible by construction.
  *
  * ranges: comma-separated codepoint spans, e.g. "32-126,8230".
- * Default: ASCII 32-126 plus U+2026 (ellipsis, needed for ellipsize).
+ * Default: SURF_RANGE_BASE below — printable ASCII, the Latin-1
+ * supplement, en/em dash and the ellipsis (which ellipsize needs).
+ *
+ * A face that lacks a requested codepoint is not an error: the FreeType
+ * and BDF front ends skip it, so asking for Latin-1 from a font that has
+ * none costs nothing. (The stb_truetype path does emit an empty entry
+ * per missing codepoint, which is why the hinted FT path is preferred
+ * wherever a wide range is asked for.)
  *
  * Env knobs (TTF only unless noted; all off by default):
  *   FONTBAKE_HINT=full       grid-fit through FreeType's autohinter, so a
@@ -65,6 +72,31 @@
 #include "stb/stb_truetype.h"
 
 #define MAX_CPS 4096
+
+/* The two sets every caller picks from, here rather than in a Makefile so
+ * the desktop build and the esp32p4 CMake build cannot drift — they bake
+ * the same faces and the specimen scene is shared source.
+ *
+ * BASE is what any font gets: printable ASCII, the Latin-1 supplement
+ * (U+00A0..U+00FF — accented text, currency, the degree sign), en/em dash
+ * and the ellipsis.
+ *
+ * MONO adds the rest of CP437 for the monospace faces, which is what a
+ * terminal or a TUI actually wants: box drawing, the block/shade run,
+ * the arrows and the card suits. It is CP437's repertoire MINUS what is
+ * already in ASCII and Latin-1, so there is no overlap to pay for twice.
+ * Derived from the codepage table rather than hand-picked, including the
+ * IBM graphics at 0x01..0x1F that a plain cp437 decoder reports as
+ * control characters. */
+#define SURF_RANGE_BASE "32-126,160-255,8211,8212,8230"
+#define SURF_RANGE_CP437_EXTRA \
+    "402,915,920,931,934,937,945,948-949,960,963-964,966,8226,8252," \
+    "8319,8359,8592-8597,8616,8729-8730,8734-8735,8745,8776,8801," \
+    "8804-8805,8962,8976,8992-8993,9472,9474,9484,9488,9492,9496," \
+    "9500,9508,9516,9524,9532,9552-9580,9600,9604,9608,9612,9616-9619," \
+    "9632,9644,9650,9658,9660,9668,9675,9688-9689,9786-9788,9792,9794," \
+    "9824,9827,9829-9830,9834-9835"
+#define SURF_RANGE_MONO SURF_RANGE_BASE "," SURF_RANGE_CP437_EXTRA
 
 static uint32_t cps[MAX_CPS];
 static int ncps;
@@ -527,7 +559,16 @@ int main(int argc, char **argv)
         hint = NULL;
     if (hint && !strcmp(hint, "1"))
         hint = "full";
-    parse_ranges(argc > 5 ? argv[5] : "32-126,8230");
+    /* `mono` and `base` name the two sets above, so a build file asks for
+     * one by name instead of carrying a copy of a 340-character span list
+     * that would then have to be kept in step in two places. An explicit
+     * span list still works and still means exactly itself. */
+    const char *rq = argc > 5 ? argv[5] : SURF_RANGE_BASE;
+    if (!strcmp(rq, "mono"))
+        rq = SURF_RANGE_MONO;
+    else if (!strcmp(rq, "base"))
+        rq = SURF_RANGE_BASE;
+    parse_ranges(rq);
 
     size_t sl = strlen(src);
     int is_bdf = sl >= 4 && strcasecmp(src + sl - 4, ".bdf") == 0;

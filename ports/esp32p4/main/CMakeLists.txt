@@ -95,6 +95,10 @@ set(JBMONO ${SURFER_ROOT}/assets/fonts/JetBrainsMono-Regular.ttf)
 set(BIGBLUE ${SURFER_ROOT}/assets/fonts/BigBlue_TerminalPlus.ttf)
 
 # surfer_font(<name> <size> <ttf> [RANGES <spans>] [ENV <VAR=VAL>...])
+# RANGES takes `base` (the default: ASCII + Latin-1 + dashes/ellipsis),
+# `mono` (that plus the rest of CP437 -- box drawing, blocks, arrows,
+# suits) or an explicit span list. The two names are defined ONCE, in
+# tools/fontbake.c, so this file and the desktop Makefile cannot drift.
 # Same bakes as the desktop Makefile — keep the two in step: the specimen
 # scene is shared source and names these fonts by header.
 set(SURFER_FONT_HEADERS "")
@@ -117,17 +121,16 @@ endmacro()
 surfer_font(ui16 16 ${ROBOTO} ENV ${FONT_HINT})
 surfer_font(ui23 23 ${ROBOTO} ENV ${FONT_HINT})
 surfer_font(ui28 28 ${ROBOTO} ENV ${FONT_HINT})
-surfer_font(mono16 16 ${JBMONO} RANGES "32-126,167,181,8211,8212,8230"
-    ENV ${FONT_HINT})
+surfer_font(mono16 16 ${JBMONO} RANGES mono ENV ${FONT_HINT})
 surfer_font(ui12 12 ${ROBOTO} ENV ${FONT_HINT})
-surfer_font(mono24 24 ${JBMONO} ENV ${FONT_HINT})
+surfer_font(mono24 24 ${JBMONO} RANGES mono ENV ${FONT_HINT})
 # specimen-only bakes: the same faces through each knob that matters, so
 # these stay UNHINTED — each shows what its knob does to a raw outline
 surfer_font(ui16b 16 ${ROBOTO} ENV FONTBAKE_THRESHOLD=1)
-surfer_font(mono16g 16 ${JBMONO} ENV FONTBAKE_GAMMA=0.55)
-surfer_font(mono16b 16 ${JBMONO} ENV FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96)
-surfer_font(bigblue12 12 ${BIGBLUE} ENV FONTBAKE_THRESHOLD=1)
-surfer_font(bigblue24 24 ${BIGBLUE} ENV FONTBAKE_THRESHOLD=1)
+surfer_font(mono16g 16 ${JBMONO} RANGES mono ENV FONTBAKE_GAMMA=0.55)
+surfer_font(mono16b 16 ${JBMONO} RANGES mono ENV FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96)
+surfer_font(bigblue12 12 ${BIGBLUE} RANGES mono ENV FONTBAKE_THRESHOLD=1)
+surfer_font(bigblue24 24 ${BIGBLUE} RANGES mono ENV FONTBAKE_THRESHOLD=1)
 
 # page 2: pixel-designed proportional faces (Kenney, CC0). Their grid is
 # defined in em units, so only an exact ppem lands stems on whole pixels

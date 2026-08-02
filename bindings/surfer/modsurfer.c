@@ -2036,8 +2036,33 @@ static mp_obj_t font_destroy(mp_obj_t self_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(font_destroy_obj, font_destroy);
 
+/* .codepoints() -> [cp, ...], ascending — every glyph this face carries.
+ *
+ * The bake range is a build-time decision (see tools/fontbake.c) and the
+ * atlas is the only record of what it was, so without this there is no
+ * way to ask a font what it can draw: a missing glyph renders as '?' and
+ * is indistinguishable from a font that genuinely has '?' there. That
+ * makes a font browser impossible to write and a missing-glyph bug
+ * impossible to see, which is why this exists.
+ *
+ * The table is already sorted ascending (fontbake insertion-sorts it,
+ * because the runtime binary-searches), so the list comes out in order
+ * with no work here. */
+static mp_obj_t font_codepoints(mp_obj_t self_in)
+{
+    surfer_font_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (!o->font)
+        return mp_obj_new_list(0, NULL);
+    mp_obj_t l = mp_obj_new_list(0, NULL);
+    for (int32_t i = 0; i < o->font->nglyphs; i++)
+        mp_obj_list_append(l, MP_OBJ_NEW_SMALL_INT(o->font->glyphs[i].cp));
+    return l;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(font_codepoints_obj, font_codepoints);
+
 static const mp_rom_map_elem_t font_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_destroy), MP_ROM_PTR(&font_destroy_obj)},
+    {MP_ROM_QSTR(MP_QSTR_codepoints), MP_ROM_PTR(&font_codepoints_obj)},
 };
 static MP_DEFINE_CONST_DICT(font_locals_dict, font_locals_table);
 

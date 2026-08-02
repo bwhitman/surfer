@@ -93,8 +93,7 @@ $(GEN_DIR)/font_ui48.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 
 $(GEN_DIR)/font_mono16.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	$(HINT) build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ \
-		"32-126,167,181,8211,8212,8230"
+	$(HINT) build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ mono
 
 # ---- font-specimen bakes (demos/fonts.c): the same faces through the
 # knobs that matter — plain AA, gamma-boosted AA, 1-bit, and a true
@@ -114,28 +113,28 @@ $(GEN_DIR)/font_ui16b.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 $(GEN_DIR)/font_mono16g.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
 	FONTBAKE_GAMMA=0.55 build/tools/fontbake mono16g 16 \
-		assets/fonts/JetBrainsMono-Regular.ttf $@
+		assets/fonts/JetBrainsMono-Regular.ttf $@ mono
 
 $(GEN_DIR)/font_mono16b.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
 	FONTBAKE_THRESHOLD=1 FONTBAKE_THRESHOLD_CUT=96 build/tools/fontbake \
-		mono16b 16 assets/fonts/JetBrainsMono-Regular.ttf $@
+		mono16b 16 assets/fonts/JetBrainsMono-Regular.ttf $@ mono
 
 # mono16 is code at desktop density, mono24 the same physical size on the
 # P4 panel — the mono pair to ui16/ui23.
 $(GEN_DIR)/font_mono24.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
 	@mkdir -p $(GEN_DIR)
-	$(HINT) build/tools/fontbake mono24 24 assets/fonts/JetBrainsMono-Regular.ttf $@
+	$(HINT) build/tools/fontbake mono24 24 assets/fonts/JetBrainsMono-Regular.ttf $@ mono
 
 $(GEN_DIR)/font_bigblue12.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
 	@mkdir -p $(GEN_DIR)
 	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue12 12 \
-		assets/fonts/BigBlue_TerminalPlus.ttf $@
+		assets/fonts/BigBlue_TerminalPlus.ttf $@ mono
 
 $(GEN_DIR)/font_bigblue24.h: build/tools/fontbake assets/fonts/BigBlue_TerminalPlus.ttf
 	@mkdir -p $(GEN_DIR)
 	FONTBAKE_THRESHOLD=1 build/tools/fontbake bigblue24 24 \
-		assets/fonts/BigBlue_TerminalPlus.ttf $@
+		assets/fonts/BigBlue_TerminalPlus.ttf $@ mono
 
 # Pixel-designed proportional faces (Kenney, CC0). These are drawn on a
 # pixel grid defined in em units, so only an exact ppem lands stems on
@@ -186,9 +185,14 @@ $(GEN_DIR)/font_kpixel64.h: build/tools/fontbake assets/fonts/KenneyPixel.ttf
 # helvR12 are separately drawn faces, not one outline scaled, which is the
 # whole reason they read better than a thresholded outline at small sizes.
 # Pattern rule: explicit rules above win for the TTF bakes.
+# The Adobe BDFs get `base` only. They are ISO10646-1 and carry Latin-1
+# comfortably, but not CP437's box drawing — courR came out 232 glyphs of
+# a requested 299, i.e. a third of what a terminal wants simply absent.
+# These are desktop-only (the device bakes no BDF), so this costs no
+# flash either way; the mono terminal faces are bigblue and JetBrains.
 $(GEN_DIR)/font_%.h: assets/fonts/bdf/%.bdf build/tools/fontbake
 	@mkdir -p $(GEN_DIR)
-	build/tools/fontbake $* 0 $< $@
+	build/tools/fontbake $* 0 $< $@ base
 
 # all 24 Adobe X11 BDFs (4 families x 6 designed sizes)
 ADOBE_NAMES := $(foreach f,helvR helvB ncenR courR,\
