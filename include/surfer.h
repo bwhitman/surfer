@@ -210,6 +210,13 @@ typedef enum {
     SURFER_KEY_LEFT, SURFER_KEY_RIGHT, SURFER_KEY_UP, SURFER_KEY_DOWN,
     SURFER_KEY_PGUP, SURFER_KEY_PGDN, SURFER_KEY_HOME, SURFER_KEY_END,
     SURFER_KEY_BACKSPACE, SURFER_KEY_DELETE, SURFER_KEY_ENTER,
+    /* Esc is a KEY, not text. It used to close the desktop window from
+     * inside the SDL pump -- convenient for a C demo, catastrophic for a
+     * host: on tulip5 one Esc took down the machine, every running app
+     * and anything unsaved, from a key people press to mean "cancel
+     * what I just started". A host that wants it to quit can do that
+     * itself now, and one that wants to CANCEL something can have it. */
+    SURFER_KEY_ESC,
 } surfer_key_kind;
 typedef struct { uint8_t kind; bool shift; char utf8[8]; } surfer_key;
 

@@ -905,7 +905,13 @@ bool surf_hal_sdl_pump(void)
              * ctrl+letter above still uses the keycode, which is right —
              * WHICH letter is exactly the layout-dependent part. */
             switch (e.key.keysym.scancode) {
-            case SDL_SCANCODE_ESCAPE:    return false;
+            /* NOT `return false`. That closed the window from inside
+             * the pump, which is a fine way for a C demo to exit and a
+             * terrible one for a host: on tulip5 it took down the REPL,
+             * every running app and anything unsaved. Esc is a key; what
+             * it MEANS is the host's business. The demos close on the
+             * window button and on ctrl+C as they always could. */
+            case SDL_SCANCODE_ESCAPE:    push_key(SURF_KEY_ESC, shift, NULL); break;
             case SDL_SCANCODE_LEFT:      push_key(SURF_KEY_LEFT, shift, NULL); break;
             case SDL_SCANCODE_RIGHT:     push_key(SURF_KEY_RIGHT, shift, NULL); break;
             case SDL_SCANCODE_UP:        push_key(SURF_KEY_UP, shift, NULL); break;

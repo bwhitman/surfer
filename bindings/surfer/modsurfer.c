@@ -2664,6 +2664,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_KEY_BACKSPACE), MP_ROM_INT(9)},
     {MP_ROM_QSTR(MP_QSTR_KEY_DELETE), MP_ROM_INT(10)},
     {MP_ROM_QSTR(MP_QSTR_KEY_ENTER), MP_ROM_INT(11)},
+    {MP_ROM_QSTR(MP_QSTR_KEY_ESC), MP_ROM_INT(12)},
     /* fonts */
     {MP_ROM_QSTR(MP_QSTR_FONT_UI16), MP_ROM_INT(0)},
     {MP_ROM_QSTR(MP_QSTR_FONT_UI28), MP_ROM_INT(1)},

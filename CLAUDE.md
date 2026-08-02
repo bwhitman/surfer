@@ -344,6 +344,16 @@ have separate C setters that each ignore the other's node.
 feeds — the counterpart of `_touch`, and the only way a headless test can
 reach anything that reads the keyboard.
 
+**`KEY_ESC` is a key, not a window command.** The SDL pump used to
+`return false` on Escape, which closes the window — fine for a C demo,
+catastrophic for a host: on tulip5 one Esc took down the REPL, every
+running app and anything unsaved, from the key people press to mean
+"cancel what I just started". It is queued like Home or End now and what
+it MEANS belongs to the host; the demos still close on the window button
+and on ctrl+C. The device path agrees by construction (HID usage 0x29 in
+tulip5's `usb_input.c`) — a chord that works on one platform and not the
+other is the exact shape of the old ctrl+letter bug.
+
 ## LED and selector
 
 Two panel controls, added together for tulip5's TB-303.
