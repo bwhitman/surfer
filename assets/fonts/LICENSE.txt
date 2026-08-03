@@ -1,8 +1,28 @@
 Roboto-Regular.ttf — Copyright 2015 Google Inc., Apache License 2.0
 https://github.com/googlefonts/roboto-2
 
+DejaVuSansMono.ttf — the DejaVu fonts, a Bitstream Vera derivative.
+https://dejavu-fonts.github.io/
+This is the house fixed-width face (`mono16`). It is here rather than
+JetBrains Mono because a terminal face has to carry the whole of CP437
+and JetBrains Mono is missing 21 of it — the card suits, the smileys and
+the music notes among them.
+
+  Fonts are (c) Bitstream (see below). DejaVu changes are in public
+  domain. Permission is hereby granted, free of charge, to any person
+  obtaining a copy of the fonts accompanying this license ("Fonts") and
+  associated documentation files (the "Font Software"), to reproduce and
+  distribute the Font Software, including without limitation the rights
+  to use, copy, merge, publish, distribute, and/or sell copies of the
+  Font Software, and to permit persons to whom the Font Software is
+  furnished to do so, subject to the following conditions: the above
+  copyright and trademark notices and this permission notice shall be
+  included in all copies of one or more of the Font Software typefaces.
+
 JetBrainsMono-Regular.ttf — (c) JetBrains, SIL Open Font License 1.1
 https://github.com/JetBrains/JetBrainsMono
+Kept in the tree: it is a fine coding face and the only thing wrong with
+it here was the codepage.
 
 bdf/{helvR,helvB,ncenR}{08,10,12,14,18,24}.bdf — the Adobe X11
 bitmap fonts (Helvetica, New Century Schoolbook, Courier), obtained from

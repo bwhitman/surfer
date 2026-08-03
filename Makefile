@@ -91,9 +91,24 @@ $(GEN_DIR)/font_ui48.h: build/tools/fontbake assets/fonts/Roboto-Regular.ttf
 	@mkdir -p $(GEN_DIR)
 	$(HINT) build/tools/fontbake ui48 48 assets/fonts/Roboto-Regular.ttf $@
 
-$(GEN_DIR)/font_mono16.h: build/tools/fontbake assets/fonts/JetBrainsMono-Regular.ttf
+# THE HOUSE MONO MUST CARRY CP437, and JetBrains Mono does not. It is
+# missing 21 of SURF_RANGE_MONO — the smileys, all four card suits, both
+# music notes, the sun, the gender signs, the inverse bullets — i.e.
+# exactly the half of the codepage a terminal face is wanted for. The
+# range was applied to it regardless, so the bake emitted .notdef and
+# `font.codepoints()` reported 256 while drawing tofu; friend's little
+# note animation came back off the bench as two boxes.
+#
+# DejaVu Sans Mono covers the whole range, and at 0.602 em advance
+# against JetBrains' 0.600 the CELL WIDTH is unchanged — so every column
+# count computed from cell_w (the console, the editor, friend, tracker)
+# stays where it was. It is shorter, so 16 ppem yields more ROWS than
+# before; that is a strict improvement for a console and costs no layout,
+# because everything here sizes itself from the cell rather than
+# hardcoding it.
+$(GEN_DIR)/font_mono16.h: build/tools/fontbake assets/fonts/DejaVuSansMono.ttf
 	@mkdir -p $(GEN_DIR)
-	$(HINT) build/tools/fontbake mono16 16 assets/fonts/JetBrainsMono-Regular.ttf $@ mono
+	$(HINT) build/tools/fontbake mono16 16 assets/fonts/DejaVuSansMono.ttf $@ mono
 
 # ---- font-specimen bakes (demos/fonts.c): the same faces through the
 # knobs that matter — plain AA, gamma-boosted AA, 1-bit, and a true
