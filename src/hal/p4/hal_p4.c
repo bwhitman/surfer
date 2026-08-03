@@ -1,9 +1,11 @@
 /* ESP32-P4 hal: every frame op is a PPA job. fill → fill engine, blit →
  * SRM (1:1, with ARGB8888→RGB565 conversion for free), blend → blend
- * engine (per-pixel fg alpha over RGB565 bg). Blocking transfer mode
- * keeps cross-engine ordering correct; M2 measures whether queueing is
- * ever needed. CPU never touches the compose buffer, so the only cache
- * sync in the system is surf_hal_p4_sync() after asset uploads. */
+ * engine (per-pixel fg alpha over RGB565 bg). Each op is awaited before
+ * the next is submitted, which is what keeps cross-engine ordering
+ * correct; the wait is ours and bounded rather than the driver's and
+ * unbounded (see ppa_begin/ppa_end). CPU never touches the compose
+ * buffer, so the only cache sync in the system is surf_hal_p4_sync()
+ * after asset uploads. */
 #include <string.h>
 
 #include "driver/ppa.h"
@@ -40,6 +42,7 @@ static struct {
     uint32_t             frame_no;
     uint32_t             fb_stamp[3];    /* frame each buffer is current to */
     ppa_client_handle_t  fill_cl, srm_cl, blend_cl;
+    SemaphoreHandle_t    ppa_sem;   /* one op in flight; see ppa_begin */
     esp_async_fbcpy_handle_t fbcpy;
     SemaphoreHandle_t    fbcpy_sem;
     bool                 scrolled;  /* force a full damage-forward at present */
@@ -67,6 +70,104 @@ static struct {
     surf_touch           q[16];
 } S;
 
+/* ---- one PPA op, waited for -----------------------------------------
+ *
+ * Same shape as fbcpy_sync below, same reason, different engine — and
+ * this is the one the mirrored-sprite freeze goes through.
+ *
+ * PPA_TRANS_MODE_BLOCKING waits inside IDF's driver on portMAX_DELAY for
+ * a semaphore the 2D-DMA completion ISR gives, and every call site here
+ * threw the return code away. IDF says what that costs, in ppa_core.c's
+ * ppa_engine_acquire:
+ *
+ *   // TODO: Register PPA interrupt? Useful for SRM parameter error. If
+ *   // SRM parameter error, blocks at 2D-DMA, transaction can never
+ *   // finish, stuck... need a way to force end
+ *
+ * And it is worse than one lost op: the wedged transaction is never
+ * removed from its engine's queue, so the engine semaphore is never
+ * given back and EVERY later op on that engine blocks behind it. One bad
+ * SRM takes the whole compositor with it — panel still scanning out the
+ * last frame, REPL dead, ctrl-C ignored, no watchdog (a task blocked on
+ * a semaphore is not a CPU spin) and nothing logged.
+ *
+ * ONE semaphore, given by ONE callback, shared by all three clients: the
+ * hal submits an op and waits for it before submitting the next, so
+ * there is never more than one in flight and there is nothing to
+ * disambiguate. Deliberately NOT routed through the driver's per-op
+ * `user_data` — that is the shape a first attempt at this took, and a
+ * callback handed the wrong semaphore wakes nobody, which presents not
+ * as a hang but as every op sitting out its full timeout: the frame rate
+ * collapses while the picture still, confusingly, comes out right.
+ *
+ * DRAIN BEFORE STARTING, for fbcpy_sync's reason: after a timeout the
+ * op may still complete and give, and that give must not satisfy the
+ * next wait.
+ *
+ * ppa_dead LATCHES and is one-way, because there is no public API to
+ * reset a stalled SRM engine — once the hardware has stopped completing,
+ * every later op would cost a full timeout for nothing and a frame would
+ * take minutes. Latched, the picture freezes and THE MACHINE STAYS UP:
+ * the REPL answers, ctrl-C works, and the counters below say what
+ * happened. That is the whole point — not to fix a wedge, but to turn a
+ * dead board into a frozen picture you can ask questions of. */
+#define PPA_TIMEOUT_MS 200
+
+uint32_t surf_hal_p4_ppa_timeouts;
+uint32_t surf_hal_p4_ppa_errors;
+uint32_t surf_hal_p4_ppa_skipped;
+bool     surf_hal_p4_ppa_dead;
+
+static bool ppa_done(ppa_client_handle_t c, ppa_event_data_t *ev, void *arg)
+{
+    (void)c; (void)ev; (void)arg;
+    BaseType_t hp = pdFALSE;
+    xSemaphoreGiveFromISR(S.ppa_sem, &hp);
+    return hp == pdTRUE;
+}
+
+static bool ppa_begin(void)
+{
+    if (surf_hal_p4_ppa_dead || !S.ppa_sem) {
+        surf_hal_p4_ppa_skipped++;
+        return false;
+    }
+    xSemaphoreTake(S.ppa_sem, 0);   /* drop a give left by a timed-out op */
+    return true;
+}
+
+static void ppa_end(esp_err_t submitted)
+{
+    if (submitted != ESP_OK) {
+        /* rejected before the hardware saw it — a bad rect, or a pending
+         * slot still held by a wedged transaction. Never a hang. */
+        surf_hal_p4_ppa_errors++;
+        return;
+    }
+    if (xSemaphoreTake(S.ppa_sem, pdMS_TO_TICKS(PPA_TIMEOUT_MS)) == pdTRUE)
+        return;
+    surf_hal_p4_ppa_timeouts++;
+    surf_hal_p4_ppa_dead = true;
+}
+
+static void ppa_fill_sync(const ppa_fill_oper_config_t *op)
+{
+    if (ppa_begin())
+        ppa_end(ppa_do_fill(S.fill_cl, op));
+}
+
+static void ppa_srm_sync(const ppa_srm_oper_config_t *op)
+{
+    if (ppa_begin())
+        ppa_end(ppa_do_scale_rotate_mirror(S.srm_cl, op));
+}
+
+static void ppa_blend_sync(const ppa_blend_oper_config_t *op)
+{
+    if (ppa_begin())
+        ppa_end(ppa_do_blend(S.blend_cl, op));
+}
+
 static void h_fill(surf_rect dst, surf_color c)
 {
     ppa_fill_oper_config_t op = {
@@ -87,9 +188,9 @@ static void h_fill(surf_rect dst, surf_color c)
             .g = (uint8_t)(((c >> 5) << 2) & 0xfc),
             .b = (uint8_t)((c << 3) & 0xf8),
         },
-        .mode = PPA_TRANS_MODE_BLOCKING,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-    ppa_do_fill(S.fill_cl, &op);
+    ppa_fill_sync(&op);
 }
 
 static ppa_srm_color_mode_t srm_cm(const surf_image *img)
@@ -124,9 +225,9 @@ static void srm_copy(const surf_image *src, surf_rect sr, void *dst_buf,
         .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
         .scale_x = 1.0f,
         .scale_y = 1.0f,
-        .mode = PPA_TRANS_MODE_BLOCKING,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-    ppa_do_scale_rotate_mirror(S.srm_cl, &op);
+    ppa_srm_sync(&op);
 }
 
 static void h_blit(const surf_image *src, surf_rect sr, surf_point dst)
@@ -194,9 +295,9 @@ static void h_blend(const surf_image *src, surf_rect sr, surf_point dst, uint8_t
             .g = (uint8_t)(((src->tint >> 5) << 2) & 0xfc),
             .b = (uint8_t)((src->tint << 3) & 0xf8),
         },
-        .mode = PPA_TRANS_MODE_BLOCKING,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-    ppa_do_blend(S.blend_cl, &op);
+    ppa_blend_sync(&op);
 }
 
 /* Transformed sprites: the PPA's SRM engine scales/rotates but cannot
@@ -248,9 +349,9 @@ static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
         .fill_block_w = (uint32_t)dst_r.w,
         .fill_block_h = (uint32_t)dst_r.h,
         .fill_argb_color = {.val = 0},
-        .mode = PPA_TRANS_MODE_BLOCKING,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-    ppa_do_fill(S.fill_cl, &clr);
+    ppa_fill_sync(&clr);
 
     /* footprint before rotation — SRM wants pre-rotation scale factors */
     int32_t w0 = (rot & 1) ? dst_r.h : dst_r.w;
@@ -280,9 +381,9 @@ static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
         .scale_y = (float)h0 / (float)sr.h,
         .mirror_x = (mirror & 1) != 0,
         .mirror_y = (mirror & 2) != 0,
-        .mode = PPA_TRANS_MODE_BLOCKING,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-    ppa_do_scale_rotate_mirror(S.srm_cl, &srm);
+    ppa_srm_sync(&srm);
 
     surf_image scratch = {
         .pixels = S_xform.buf,
@@ -576,7 +677,8 @@ static void h_present(const surf_rect *dirty, int n)
 
 static void h_wait_idle(void)
 {
-    /* Blocking transfer mode: every job has completed on return. */
+    /* Nothing to wait for: every op is awaited at its own call site, so
+     * the engines are already idle whenever core code can ask. */
 }
 
 static uint64_t h_now_us(void)
@@ -988,6 +1090,19 @@ const surf_hal *surf_hal_p4_init(const surf_hal_p4_cfg *cfg)
     if (ppa_register_client(&fill_c, &S.fill_cl) != ESP_OK ||
         ppa_register_client(&srm_c, &S.srm_cl) != ESP_OK ||
         ppa_register_client(&blend_c, &S.blend_cl) != ESP_OK)
+        return NULL;
+
+    /* the completion signal our own bounded wait rides on. max_pending
+     * stays at the default 1: the hal never has two ops in flight, and a
+     * client whose slot is still held by a wedged transaction then fails
+     * its next submit outright instead of queueing behind it. */
+    S.ppa_sem = xSemaphoreCreateBinary();
+    if (!S.ppa_sem)
+        return NULL;
+    ppa_event_callbacks_t ppa_cbs = {.on_trans_done = ppa_done};
+    if (ppa_client_register_event_callbacks(S.fill_cl, &ppa_cbs) != ESP_OK ||
+        ppa_client_register_event_callbacks(S.srm_cl, &ppa_cbs) != ESP_OK ||
+        ppa_client_register_event_callbacks(S.blend_cl, &ppa_cbs) != ESP_OK)
         return NULL;
     return &hal_p4;
 }

@@ -40,9 +40,21 @@ void surf_hal_p4_sync(const void *buf, size_t bytes);
  * reading it back (screenshots): PPA/DMA2D wrote it behind the cache. */
 void surf_hal_p4_fb_invalidate(void);
 
-#endif /* SURF_HAL_P4_H */
-
 /* DMA2D copies that gave up waiting for completion. Zero on a healthy
  * machine; non-zero means the compositor took the timeout path that
  * stops a lost completion becoming a frozen screen. */
 extern uint32_t surf_hal_p4_fbcpy_timeouts;
+
+/* The same accounting for the PPA. A wedged engine never gives its
+ * completion back, so before these existed the compositor simply stopped
+ * inside C with the panel still lit. Zero on a healthy machine.
+ *   ppa_timeouts  ops that never completed — the engine is gone
+ *   ppa_errors    ops the driver rejected before the hardware saw them
+ *   ppa_skipped   ops not attempted, because ppa_dead was already set
+ *   ppa_dead      latched by the first timeout, one-way (no reset API) */
+extern uint32_t surf_hal_p4_ppa_timeouts;
+extern uint32_t surf_hal_p4_ppa_errors;
+extern uint32_t surf_hal_p4_ppa_skipped;
+extern bool     surf_hal_p4_ppa_dead;
+
+#endif /* SURF_HAL_P4_H */
