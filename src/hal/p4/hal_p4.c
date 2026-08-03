@@ -314,6 +314,50 @@ static bool fbcpy_done(esp_async_fbcpy_handle_t mcp, esp_async_fbcpy_event_data_
     return hp == pdTRUE;
 }
 
+
+/* ---- one DMA2D copy, waited for -------------------------------------
+ *
+ * **THE SEMAPHORE IS BINARY, AND THAT IS THE HAZARD.** `fbcpy_done`
+ * gives it from the completion ISR; a give onto an already-full binary
+ * semaphore is DISCARDED, not counted. So if the handshake ever drifts
+ * by one — a give landing with no take waiting — the next give is lost
+ * and the take after it waits on something that will never arrive. With
+ * portMAX_DELAY that is not a dropped frame, it is a dead machine: the
+ * compositor blocks inside C and the panel keeps scanning out the last
+ * framebuffer.
+ *
+ * Two changes, and the first is the actual fix:
+ *
+ *   DRAIN BEFORE STARTING. A stale give from a previous transfer would
+ *   otherwise satisfy THIS wait immediately, handing the caller a buffer
+ *   that DMA2D is still writing into — and leaving the drift in place to
+ *   strand a later frame.
+ *
+ *   BOUND THE WAIT. The vsync take beside this one has always had a
+ *   40 ms timeout; these three had none. A copy that has not landed in
+ *   100 ms is not going to, and a torn frame beats a hang.
+ *
+ * Found while chasing a different freeze (a mirrored sprite wedging the
+ * PPA SRM path) — this is NOT that bug and does not fix it. It is a
+ * latent hazard on its own and is fixed here on its own merits.
+ */
+#define FBCPY_TIMEOUT_MS 100
+
+/* copies that gave up waiting; 0 on a healthy machine */
+uint32_t surf_hal_p4_fbcpy_timeouts;
+
+static void fbcpy_sync(const esp_async_fbcpy_trans_desc_t *t)
+{
+    if (!S.fbcpy)
+        return;
+    xSemaphoreTake(S.fbcpy_sem, 0);          /* discard any stale give */
+    if (esp_async_fbcpy(S.fbcpy, (esp_async_fbcpy_trans_desc_t *)t,
+                        fbcpy_done, S.fbcpy_sem) != ESP_OK)
+        return;
+    if (xSemaphoreTake(S.fbcpy_sem, pdMS_TO_TICKS(FBCPY_TIMEOUT_MS)) != pdTRUE)
+        surf_hal_p4_fbcpy_timeouts++;
+}
+
 /* The end-of-frame ISR is when the DPI DMA latches the most recently
  * flipped buffer; recording it tells present which buffer is on glass. */
 static bool vsync_cb(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *ev,
@@ -401,8 +445,7 @@ static void fwd_copy(int src_fb, int dst_fb, surf_rect r)
             .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565),
         },
     };
-    if (esp_async_fbcpy(S.fbcpy, &t, fbcpy_done, S.fbcpy_sem) == ESP_OK)
-        xSemaphoreTake(S.fbcpy_sem, portMAX_DELAY);
+    fbcpy_sync(&t);
 }
 
 /* Flip to the buffer we just composed (draw_bitmap with an in-fb pointer is
@@ -727,8 +770,7 @@ static void shift_strip(surf_rect src, int16_t dst_y)
             .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565),
         },
     };
-    if (esp_async_fbcpy(S.fbcpy, &t, fbcpy_done, S.fbcpy_sem) == ESP_OK)
-        xSemaphoreTake(S.fbcpy_sem, portMAX_DELAY);
+    fbcpy_sync(&t);
 }
 
 /* one DMA2D copy from an arbitrary source buffer into the back buffer */
@@ -751,8 +793,7 @@ static void cross_copy(void *src_buf, surf_rect src, int16_t dst_x, int16_t dst_
             .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565),
         },
     };
-    if (esp_async_fbcpy(S.fbcpy, &t, fbcpy_done, S.fbcpy_sem) == ESP_OK)
-        xSemaphoreTake(S.fbcpy_sem, portMAX_DELAY);
+    fbcpy_sync(&t);
 }
 
 /* Shift pixels inside r by dy (content up when dy > 0) with DMA2D.

@@ -41,3 +41,8 @@ void surf_hal_p4_sync(const void *buf, size_t bytes);
 void surf_hal_p4_fb_invalidate(void);
 
 #endif /* SURF_HAL_P4_H */
+
+/* DMA2D copies that gave up waiting for completion. Zero on a healthy
+ * machine; non-zero means the compositor took the timeout path that
+ * stops a lost completion becoming a frozen screen. */
+extern uint32_t surf_hal_p4_fbcpy_timeouts;
