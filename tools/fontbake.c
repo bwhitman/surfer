@@ -130,6 +130,11 @@ typedef struct {
 
 static bglyph glyphs[MAX_CPS];
 static int nglyphs;
+/* Codepoints ASKED FOR that the source face has not got. See the
+ * FreeType loop below for why this has to be counted rather than
+ * discovered at runtime. */
+static int nmissing;
+static uint32_t missing[32];
 
 static unsigned char *atlas;
 static int aw = 128, ah = 128;
@@ -393,6 +398,27 @@ static int bake_ft(const char *path, float ppem, const char *mode)
     static rawglyph g[MAX_CPS];
     int n = 0;
     for (int i = 0; i < ncps; i++) {
+        /* **FT_Load_Char SUCCEEDS ON A CODEPOINT THE FACE HAS NOT GOT.**
+         * It falls back to glyph 0 — .notdef, the empty box — and
+         * renders it happily, so the box gets baked, the atlas reports
+         * the codepoint as PRESENT, and `font.codepoints()` lies. Then
+         * nothing downstream can tell: the only symptom is tofu on the
+         * glass.
+         *
+         * That is not hypothetical. mono16 was JetBrains Mono, which
+         * lacks 21 of the CP437 set (the card suits, the smileys, both
+         * music notes); it baked 256 glyphs, claimed all 256, and drew
+         * boxes. It took someone looking at a panel to find it.
+         *
+         * The stb path below has always skipped these. This is the same
+         * check on the hinted path, which is the one everything ships
+         * with. */
+        if (FT_Get_Char_Index(face, cps[i]) == 0) {
+            if (nmissing < (int)(sizeof missing / sizeof *missing))
+                missing[nmissing] = cps[i];
+            nmissing++;
+            continue;
+        }
         if (FT_Load_Char(face, cps[i], load))
             continue;
         FT_GlyphSlot s = face->glyph;
@@ -828,9 +854,29 @@ int main(int argc, char **argv)
     fprintf(out, "    .kerns = surf_font_%s_kerns, .nkerns = %d,\n", name, nkern);
     fprintf(out, "};\n");
 
+    /* WARN, DO NOT FAIL. Seven of the oldschool ROM faces are missing
+     * exactly one requested codepoint — U+2026, the ellipsis, which
+     * SURF_RANGE_MONO appends and which real CP437 never had. Failing
+     * would break a build over a character those fonts are right not to
+     * carry. Naming them in the build output is enough: what went wrong
+     * before was silence, not tolerance. */
+    if (nmissing) {
+        int shown = nmissing < (int)(sizeof missing / sizeof *missing)
+                  ? nmissing : (int)(sizeof missing / sizeof *missing);
+        fprintf(stderr, "fontbake: %s: %d requested codepoint%s NOT in the "
+                "source face, skipped (they would have baked as .notdef):",
+                name, nmissing, nmissing == 1 ? " is" : "s are");
+        for (int i = 0; i < shown; i++)
+            fprintf(stderr, " U+%04X", missing[i]);
+        if (nmissing > shown)
+            fprintf(stderr, " ...");
+        fprintf(stderr, "\n");
+    }
+
     fprintf(stderr, "fontbake: %-10s %5.1f%-6s %-9s -> %dx%d atlas %s %5d B, %d glyphs, "
-            "cell %2dx%-2d, gray %5.1f%% solid %5.1f%%\n",
+            "cell %2dx%-2d, gray %5.1f%% solid %5.1f%%%s\n",
             name, szval, szdesc, mode, aw, ah, a1 ? "A1" : "A8", nbytes,
-            nglyphs, m_adv, line_h, gray_pct, solid_pct);
+            nglyphs, m_adv, line_h, gray_pct, solid_pct,
+            nmissing ? "  (see the skipped codepoints above)" : "");
     return 0;
 }
