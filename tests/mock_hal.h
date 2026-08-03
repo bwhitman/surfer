@@ -27,6 +27,10 @@ extern int     test_checks, test_failures;
 extern uint16_t mock_fb[512 * 512];  /* fb_ptr target; stride = init width */
 extern int16_t  mock_w, mock_h;
 
+extern const void *mock_sync_buf;   /* last surf_image_flush target */
+extern size_t      mock_sync_bytes;
+extern int         mock_sync_calls;
+
 void mock_push_touch(surf_touch t);
 void fresh(int16_t w, int16_t h, int max_nodes);  /* re-init, drain, clear ops */
 bool rect_eq(surf_rect a, surf_rect b);

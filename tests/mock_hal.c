@@ -48,6 +48,18 @@ static bool m_poll_touch(surf_touch *out)
     return true;
 }
 static void *m_alloc_image(size_t b) { return malloc(b); }
+/* surf_image_flush() reaches the hal through here; the test asserts it was
+ * called with the WHOLE allocation, because a partial writeback is the bug
+ * that shows up only on the panel. */
+const void *mock_sync_buf;
+size_t      mock_sync_bytes;
+int         mock_sync_calls;
+static void m_sync_image(const void *buf, size_t bytes)
+{
+    mock_sync_buf = buf;
+    mock_sync_bytes = bytes;
+    mock_sync_calls++;
+}
 static void m_free_image(void *p) { free(p); }
 static void *m_fb_ptr(int32_t *stride)
 {
@@ -89,6 +101,7 @@ const surf_hal mock_hal = {
     .wait_idle = m_wait_idle, .now_us = m_now_us,
     .poll_touch = m_poll_touch,
     .alloc_image = m_alloc_image, .free_image = m_free_image,
+    .sync_image = m_sync_image,
     .fb_ptr = m_fb_ptr, .scroll_rect = m_scroll_rect,
     .band_shift = m_band_shift, .wait_frame = m_wait_frame,
 };

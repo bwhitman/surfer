@@ -22,6 +22,15 @@ ask rather than silently diverging.
   stride), with explicit `esp_cache_msync` after CPU writes before PPA reads.
   All device allocations go through `hal->alloc_image`; never raw
   `heap_caps_malloc` in core code.
+  The generic form of that writeback is **`surf_image_flush(img)`** (hal op
+  `sync_image`, optional and NULL where the blitter is the CPU). Call it after
+  writing an image's pixels yourself and before damaging the node that shows
+  it. It exists because the hal's older note — "CPU never touches the compose
+  buffer, so the only cache sync in the system is after asset uploads" — held
+  only while every image was written ONCE. It stops holding the moment
+  something renders into an image every frame, which is what the MicroPython
+  `Image` buffer below is for. Getting this wrong is invisible on SDL and on
+  web and tears on the panel, so the rule is to call it always.
 - **The widget set stays small** (knob, slider, button, checkbox, dropdown,
   label, textinput, scrollview, scrollbar, led, selector, colorpicker,
   tabs, radio).

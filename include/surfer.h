@@ -62,6 +62,22 @@ void        surf_image_destroy(surf_image *img);
  * SURF_FMT_ARGB8888 starts fully transparent. blit alpha-composites
  * src over dst (565/ARGB/A8 sources). */
 surf_image *surf_image_new(int16_t w, int16_t h, surf_format format);
+
+/* Publish CPU writes to img->pixels so the drawing path can read them.
+ *
+ * Call it after writing an image's pixels YOURSELF — through the `pixels`
+ * pointer, or through the MicroPython Image buffer — and before the node
+ * showing that image is damaged. It is a no-op on backends whose blitter
+ * reads the same memory the CPU wrote (SDL, web) and a cache writeback where
+ * the blitter is a DMA engine (the P4's PPA), so the portable rule is simply
+ * to call it: a caller that gets it right on a laptop and wrong on the panel
+ * is the exact bug this exists to prevent.
+ *
+ * surf_image_fill/blit/poly and friends do NOT call it for you -- they are
+ * often used in runs, and one flush after the last of them beats one per
+ * call. */
+void surf_image_flush(const surf_image *img);
+
 void surf_image_fill(surf_image *dst, surf_rect r, surf_color c);
 void surf_image_blit(surf_image *dst, const surf_image *src, surf_rect src_r,
                      int16_t x, int16_t y);
@@ -135,6 +151,18 @@ typedef struct {
     int (*touch_points)(surf_touch_pt *out, int max);
     void *(*alloc_image)(size_t bytes);  /* 64-byte aligned */
     void (*free_image)(void *p);
+    /* Optional (may be NULL): make CPU writes to an image's pixels visible
+     * to whatever reads them for drawing — a cache writeback on a backend
+     * whose blitter is a DMA engine, nothing at all where the compositor
+     * reads the same memory the CPU wrote.
+     *
+     * The hal's own note says "CPU never touches the compose buffer, so the
+     * only cache sync in the system is after asset uploads", and that held
+     * while every image was written once and then only read. It stops
+     * holding the moment something renders INTO an image every frame — a
+     * scope trace, a video decoder, an emulator — which is what
+     * surf_image_flush() and the MicroPython Image buffer exist for. */
+    void (*sync_image)(const void *buf, size_t bytes);
     /* Optional (may be NULL): CPU pointer to the current RGB565 compose
      * target. Exists for exactly one caller — the textgrid fast path —
      * because the PPA's ~85µs-per-op floor makes per-glyph blits ~15×

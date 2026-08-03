@@ -178,6 +178,18 @@ surf_image *surf_image_new(int16_t w, int16_t h, surf_format format)
     return img;
 }
 
+/* Publish CPU writes to an image's pixels. See the note in surfer.h: this is
+ * the one call standing between "renders into an image every frame" and the
+ * P4's PPA reading a line the CPU only ever left in cache. Backends whose
+ * blitter is the CPU leave sync_image NULL and this costs a branch. */
+void surf_image_flush(const surf_image *img)
+{
+    if (!img || !img->pixels)
+        return;
+    if (surf_g.hal && surf_g.hal->sync_image)
+        surf_g.hal->sync_image(img->pixels, (size_t)img->stride * img->h);
+}
+
 void surf_image_fill(surf_image *dst, surf_rect r, surf_color c)
 {
     if (!dst || !dst->pixels)

@@ -92,8 +92,46 @@ static void test_sprite_pan_skips_hidden_branches(void)
     surf_node_destroy(cam);
 }
 
+/* surf_image_flush(): the contract a software renderer depends on.
+ *
+ * Anything that writes an image's own pixels every frame -- a scope, a video
+ * decoder, an emulator -- has to publish them before the blitter reads. On a
+ * backend whose blitter IS the CPU that is free, which is exactly why it
+ * needs a test: the call can be forgotten and nothing on a desktop will ever
+ * notice. Here the mock hal records it, so a flush that stops reaching the
+ * hal is a red test rather than a torn picture on hardware. */
+static void test_image_flush(void)
+{
+    fresh(200, 200, 16);
+
+    surf_image *im = surf_image_new(37, 11, SURF_FMT_RGB565);
+    OK(im != NULL);
+    if (!im)
+        return;
+
+    mock_sync_calls = 0;
+    mock_sync_buf = NULL;
+    mock_sync_bytes = 0;
+
+    surf_image_flush(im);
+    OK(mock_sync_calls == 1);
+    /* the WHOLE allocation, stride included -- not w * 2 * h. A hal that
+     * pads rows (the P4 aligns both ways) would leave the tail of every row
+     * unwritten if this used the visible width. */
+    OK(mock_sync_buf == im->pixels);
+    OK(mock_sync_bytes == (size_t)im->stride * im->h);
+
+    /* defensive, and cheap: neither a NULL image nor one whose pixels are
+     * gone may reach the hal */
+    surf_image_flush(NULL);
+    OK(mock_sync_calls == 1);
+
+    surf_image_destroy(im);
+}
+
 void run_sprite_tests(void)
 {
+    test_image_flush();
     test_sprite_pan_damages_other_branches();
     test_sprite_pan_skips_hidden_branches();
     fresh(200, 200, 16);

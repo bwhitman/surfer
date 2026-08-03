@@ -991,6 +991,16 @@ void surf_hal_p4_sync(const void *buf, size_t bytes)
                     ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 }
 
+/* hal->sync_image: the same writeback, reached generically. The header note
+ * above says the only cache sync in the system is after asset uploads, and
+ * that was true while every image was written once. Anything rendering INTO
+ * an image per frame (a scope, a video decoder, an emulator) writes through
+ * the cache and the PPA reads physical memory, so it has to land first. */
+static void h_sync_image(const void *buf, size_t bytes)
+{
+    surf_hal_p4_sync(buf, bytes);
+}
+
 /* Streaming band shift (layers): ONE cross-buffer DMA2D copy from the
  * just-presented frame at the shifted offset — no overlap hazard in
  * either direction, and per the hal contract present does NOT forward
@@ -1037,6 +1047,7 @@ static surf_hal hal_p4 = {
     .touch_points = h_touch_points,
     .alloc_image = h_alloc_image,
     .free_image = h_free_image,
+    .sync_image = h_sync_image,
     .fb_ptr = h_fb_ptr,
     .scroll_rect = h_scroll_rect,
     .band_shift = h_band_shift,

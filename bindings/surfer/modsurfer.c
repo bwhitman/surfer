@@ -1200,7 +1200,59 @@ static mp_obj_t image_bezier(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(image_bezier_obj, 3, 4, image_bezier);
 
+/* img.flush() — publish pixels written through the buffer below.
+ *
+ * A no-op where the compositor reads the same memory the CPU wrote (SDL,
+ * web), a cache writeback where the blitter is a DMA engine (the P4's PPA).
+ * Call it after writing and before damaging the node, and the same code is
+ * correct on a laptop and on the panel — which is the point, because getting
+ * it wrong is invisible on the laptop. */
+static mp_obj_t image_flush(mp_obj_t self_in)
+{
+    surfer_image_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (!o->img)
+        mp_raise_ValueError(MP_ERROR_TEXT("image destroyed"));
+    surf_image_flush(o->img);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(image_flush_obj, image_flush);
+
+/* The buffer protocol over an Image's own pixels: memoryview(img), or
+ * mp_get_buffer() from another C module.
+ *
+ * This is what a software renderer needs and what Image had no answer for —
+ * it could be drawn into with poly/line/fill and read back not at all, so
+ * anything wanting to put its OWN pixels on the screen (a video decoder, a
+ * camera, an emulator) had to reach through the binding's private struct.
+ *
+ * WRITABLE deliberately: read-only would make it a screenshot API, which
+ * surfer already has in fb_read. Two things a caller must know, and both are
+ * why `stride` is exposed beside it:
+ *
+ *   * ROWS ARE `stride` BYTES APART, NOT w*2. On the P4 every image
+ *     allocation is 64-byte aligned in both directions, so a 100px RGB565
+ *     row is 200 bytes of pixels inside a 256-byte stride. Code that assumes
+ *     w*2 works on the desktop and shears on the panel.
+ *   * the format is img.format — RGB565 is 2 bytes a pixel, ARGB8888 is 4,
+ *     A8 is 1.
+ *
+ * len covers the whole allocation (h * stride), including any tail padding,
+ * because that is what the pointer owns. */
+static mp_int_t image_get_buffer(mp_obj_t self_in, mp_buffer_info_t *bufinfo,
+                                 mp_uint_t flags)
+{
+    (void)flags;
+    surfer_image_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (!o->img || !o->img->pixels)
+        return 1;  /* destroyed: raises "object with buffer protocol required" */
+    bufinfo->buf = o->img->pixels;
+    bufinfo->len = (size_t)o->img->stride * o->img->h;
+    bufinfo->typecode = 'B';
+    return 0;
+}
+
 static const mp_rom_map_elem_t image_locals_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_flush), MP_ROM_PTR(&image_flush_obj)},
     {MP_ROM_QSTR(MP_QSTR_poly), MP_ROM_PTR(&image_poly_obj)},
     {MP_ROM_QSTR(MP_QSTR_line), MP_ROM_PTR(&image_line_obj)},
     {MP_ROM_QSTR(MP_QSTR_lines), MP_ROM_PTR(&image_lines_obj)},
@@ -1229,6 +1281,20 @@ static void image_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             dest[0] = MP_OBJ_NEW_SMALL_INT(o->img->tint);
             return;
         }
+        /* BYTES per row, and not w * bytes-per-pixel: on the P4 an image is
+         * 64-byte aligned in both directions, so a 100px RGB565 row is 200
+         * bytes of pixels inside a 256-byte stride. Anyone walking the
+         * buffer above needs this number rather than an assumption that
+         * happens to hold on a desktop. */
+        if (attr == MP_QSTR_stride) {
+            dest[0] = MP_OBJ_NEW_SMALL_INT(o->img->stride);
+            return;
+        }
+        /* surfer.RGB565 / .ARGB / .A8 — how wide a pixel in that buffer is */
+        if (attr == MP_QSTR_format) {
+            dest[0] = MP_OBJ_NEW_SMALL_INT(o->img->format);
+            return;
+        }
     }
     /* store: img.tint = rgb565 (A8 masks: the color the alpha draws in;
      * retint + sprite.damage() per frame = hardware color cycling) */
@@ -1243,7 +1309,8 @@ static void image_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
 }
 
 MP_DEFINE_CONST_OBJ_TYPE(surfer_image_type, MP_QSTR_Image, MP_TYPE_FLAG_NONE,
-                         attr, image_attr, locals_dict, &image_locals_dict);
+                         attr, image_attr, buffer, image_get_buffer,
+                         locals_dict, &image_locals_dict);
 
 /* ---- Widget ---- */
 
