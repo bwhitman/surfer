@@ -360,8 +360,54 @@ static void test_dropdown(void)
     surf_dropdown_destroy(d);
 }
 
+/* A wheel scrolls the scrollview under it, and what no scrollview takes
+ * is QUEUED for the application. The second half is what makes a wheel
+ * mean something other than scrolling — zooming a picture, stepping a
+ * value — and the first half is what keeps a dialog's own list working
+ * while it does. */
+static void test_wheel_queue(void)
+{
+    fresh(200, 200, 64);
+    surf_node *sv = surf_scrollview_new(10, 10, 100, 100);
+    surf_node_add(surf_screen(), sv);
+    surf_node_add(sv, surf_rect_new(0, 0, 40, 300, 1));
+    surf_tick();
+
+    surf_wheel w;
+    OK(!surf_wheel_poll(&w));               /* nothing pending to begin with */
+
+    surf_input_wheel(50, 50, 0, 30);        /* over the list: it scrolls */
+    OK(surf_scrollview_offset(sv).y == 30);
+    OK(!surf_wheel_poll(&w));               /* ...and the app hears nothing */
+
+    surf_input_wheel(160, 160, 0, 30);      /* over bare screen: the app's */
+    OK(surf_scrollview_offset(sv).y == 30);
+    OK(surf_wheel_poll(&w));
+    OK(w.x == 160 && w.y == 160 && w.dx == 0 && w.dy == 30);
+    OK(!surf_wheel_poll(&w));               /* drained, like keys() */
+
+    /* A scrollview that cannot move is not a consumer: the wheel falls
+     * through to the app rather than being swallowed by a dead list. */
+    surf_node *flat = surf_scrollview_new(120, 10, 40, 40);
+    surf_node_add(surf_screen(), flat);
+    surf_node_add(flat, surf_rect_new(0, 0, 10, 10, 2));
+    surf_tick();
+    surf_input_wheel(130, 20, 0, 30);
+    OK(surf_wheel_poll(&w) && w.x == 130);
+
+    /* Overflow drops rather than wrapping — a wheel nobody drains is a
+     * wheel nobody wants. */
+    for (int i = 0; i < 200; i++)
+        surf_input_wheel(160, 160, 0, 1);
+    int n = 0;
+    while (surf_wheel_poll(&w))
+        n++;
+    OK(n > 0 && n < 200);
+}
+
 void run_scroll_tests(void)
 {
+    test_wheel_queue();
     test_scroll_compose_hit();
     test_scroll_drag_steal();
     test_axis_lock();

@@ -1950,6 +1950,52 @@ static mp_obj_t mod_keys(void)
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mod_keys_obj, mod_keys);
 
+/* surfer.wheel() -> [(x, y, dx, dy), ...]: wheel / two-finger pushes
+ * that NO SCROLLVIEW TOOK, drained like keys().
+ *
+ * The scrollviews under the pointer get first refusal, so a dialog's
+ * file list still scrolls while the same gesture over the app behind it
+ * arrives here — the bargain touch already makes. dx/dy are pixels of
+ * CONTENT movement, the direction a drag would have gone, and x/y are
+ * framebuffer pixels, mapped exactly as a touch is.
+ *
+ * It is what a wheel means when it does not mean scrolling: zoom a
+ * picture, step a value, spin a knob. On a laptop it is also the only
+ * two-finger gesture there IS — the SDL hal feeds touches() from DIRECT
+ * touch devices only, so a trackpad is a mouse and a wheel and a pinch
+ * there can never arrive. */
+static mp_obj_t mod_wheel(void)
+{
+    mp_obj_t list = mp_obj_new_list(0, NULL);
+    surf_wheel w;
+    while (surf_wheel_poll(&w)) {
+        mp_obj_t t[4] = {
+            MP_OBJ_NEW_SMALL_INT(w.x), MP_OBJ_NEW_SMALL_INT(w.y),
+            MP_OBJ_NEW_SMALL_INT(w.dx), MP_OBJ_NEW_SMALL_INT(w.dy),
+        };
+        mp_obj_list_append(list, mp_obj_new_tuple(4, t));
+    }
+    return list;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mod_wheel_obj, mod_wheel);
+
+/* surfer._wheel(x, y, dx, dy) — push one through the normal path, so a
+ * headless test can reach anything that reads a wheel. The counterpart
+ * of _touch and _key, and it goes through surf_input_wheel rather than
+ * straight into the queue: a test should find out that a scrollview
+ * under the pointer eats it. */
+static mp_obj_t mod_wheel_inject(size_t n_args, const mp_obj_t *args)
+{
+    (void)n_args;
+    surf_input_wheel((int16_t)mp_obj_get_int(args[0]),
+                     (int16_t)mp_obj_get_int(args[1]),
+                     (int16_t)mp_obj_get_int(args[2]),
+                     (int16_t)mp_obj_get_int(args[3]));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_wheel_inject_obj, 4, 4,
+                                           mod_wheel_inject);
+
 /* surfer.keys_held() -> ((kind, text), ...): keys DOWN right now.
  * Events (keys()) are for typing; this is for games — poll it per
  * frame and move + fire at once. */
@@ -2675,6 +2721,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&mod_init_obj)},
     {MP_ROM_QSTR(MP_QSTR_tick), MP_ROM_PTR(&mod_tick_obj)},
     {MP_ROM_QSTR(MP_QSTR_keys), MP_ROM_PTR(&mod_keys_obj)},
+    {MP_ROM_QSTR(MP_QSTR_wheel), MP_ROM_PTR(&mod_wheel_obj)},
     {MP_ROM_QSTR(MP_QSTR_frame_rate), MP_ROM_PTR(&mod_frame_rate_obj)},
     {MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&mod_cpu_obj)},
     {MP_ROM_QSTR(MP_QSTR_keys_held), MP_ROM_PTR(&mod_keys_held_obj)},
@@ -2734,6 +2781,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_ColorPicker), MP_ROM_PTR(&mod_colorpicker_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch), MP_ROM_PTR(&mod_touch_obj)},
     {MP_ROM_QSTR(MP_QSTR__key), MP_ROM_PTR(&mod_key_obj)},
+    {MP_ROM_QSTR(MP_QSTR__wheel), MP_ROM_PTR(&mod_wheel_inject_obj)},
     {MP_ROM_QSTR(MP_QSTR_touches), MP_ROM_PTR(&mod_touches_obj)},
     {MP_ROM_QSTR(MP_QSTR_screenshot), MP_ROM_PTR(&mod_screenshot_obj)},
     /* key kinds (match surf_sdl_key_kind) */

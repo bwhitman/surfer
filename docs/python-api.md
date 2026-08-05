@@ -29,6 +29,9 @@ surfer.rgb(r, g, b)          # 0-255 each → packed RGB565 color int
 surfer.screenshot(path)      # dump the framebuffer as binary PPM → bool
                              # (desktop/web; on the P4 use fb_read + Python IO)
 surfer.fb_read(x, y, w, h)   # framebuffer region → RGB888 bytes, every port
+surfer.wheel()               # drain wheel/two-finger pushes NO scrollview took
+                             # → [(x, y, dx, dy), ...]; dx/dy are pixels of
+                             # content movement, x/y framebuffer pixels
 surfer._touch(x, y, phase)   # inject a synthetic touch (tests / on-screen keyboards)
 ```
 
@@ -376,6 +379,35 @@ call `keys()` once per frame anyway to drain the event queue.
 
 Key events from `surfer.keys()` are `(kind, text, shift)`; `text` holds
 the typed characters when `kind == KEY_TEXT`, else `""`.
+
+## The wheel
+
+```python
+for x, y, dx, dy in surfer.wheel():
+    if in_my_box(x, y):
+        zoom -= dy / 40.0
+```
+
+`surfer.wheel()` drains wheel and two-finger pushes **that no scrollview
+took**. The scrollviews under the pointer get first refusal — the same
+bargain touch makes, so a dialog's file list still scrolls while the
+same gesture over the app behind it arrives here — and what is left is
+the app's to interpret: zoom a picture, step a value, spin a knob.
+
+`dx`/`dy` are pixels of content movement, the direction a drag would
+have gone; `x`/`y` are framebuffer pixels, mapped exactly as a touch is.
+Drain it every frame, like `keys()`.
+
+**On a laptop this is the only two-finger gesture there is.** The SDL
+backend feeds `touches()` from `SDL_TOUCH_DEVICE_DIRECT` devices only —
+a trackpad is `INDIRECT_ABSOLUTE`, and taking it would inject a contact
+every time a palm rested on it — so a pinch cannot arrive on the desktop
+and a two-finger scroll can. Anything offering pinch-to-zoom on a panel
+should offer the wheel beside it.
+
+`surfer._wheel(x, y, dx, dy)` injects one through the normal path
+(`_touch`/`_key`'s counterpart), so a headless test finds out that a
+scrollview under the pointer eats it.
 
 ## repl.py helpers
 

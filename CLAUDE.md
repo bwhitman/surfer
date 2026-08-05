@@ -699,6 +699,36 @@ three contacts reported at once, one moving while the others stand
 still, the middle one lifting without disturbing the other two's ids,
 and the table empty at the end.
 
+### ...so the wheel is the desktop's second finger
+
+The rule above has a consequence worth stating on its own: **a PINCH
+CANNOT HAPPEN ON A LAPTOP.** Two fingers on a trackpad are an
+INDIRECT_ABSOLUTE touch device we deliberately ignore, and what SDL
+sends instead is a wheel. So anything offering pinch-to-zoom on the
+panel needs a second way in on the desktop, and the wheel is the same
+gesture with the same hand — the one the hal can actually deliver.
+
+`surf_input_wheel` therefore **queues what no scrollview took**, drained
+by `surf_wheel_poll` (`surfer.wheel()` in Python, `surfer._wheel` to
+inject one). The scrollviews under the pointer still get first refusal,
+which is touch's own bargain — a dialog's file list scrolls while the
+same gesture over the app behind it reaches the app — and what is left
+over is the app's to mean something else with: zoom a picture, step a
+value, spin a knob. One ring, the key queue's shape, dropped on overflow
+and reset with the session.
+
+It also fixed a coordinate bug the queue would otherwise have exported.
+The SDL wheel path took the pointer straight from `SDL_GetMouseState`
+and hit-tested with it, skipping the letterbox mapping every click goes
+through — so on any display where the drawable is not the window 1:1
+(every retina Mac) it scrolled whatever sat at roughly double the
+pointer's position. `map_pt` is that mapping, factored out of
+`push_touch`, and both callers use it now.
+
+`test_wheel_queue` in tests/test_scroll.c is the regression: a scrollable
+list eats it, a list with nothing to scroll does not, bare screen queues
+it, the queue drains once, and overflow drops rather than wrapping.
+
 ### The hal owes dispatch a per-contact stream
 
 `hal_p4.c` used to synthesise ONE pointer from `s_pts[0]`, which was

@@ -74,7 +74,22 @@ static void deliver(surf_node *n, const surf_touch *t)
  *
  * It moves the view directly rather than faking a drag: a wheel has no
  * press and no release, and a synthetic down/up pair would light up
- * every row it passed over. */
+ * every row it passed over.
+ *
+ * AND WHAT NO SCROLLVIEW TAKES IS QUEUED FOR THE APPLICATION, because
+ * scrolling a list is not the only thing a wheel can mean: over a
+ * picture it is a zoom, over a value it is a step. That is touch's own
+ * bargain — the widget under the pointer wins and the app gets what
+ * nothing claimed — so a dialog's file list still scrolls under the
+ * wheel while the same gesture over the app behind it reaches the app.
+ * One ring, the key queue's shape, drained by surf_wheel_poll. */
+#define WHEEL_Q_LEN 32
+
+static struct {
+    surf_wheel   q[WHEEL_Q_LEN];
+    volatile int head, tail;
+} WH;
+
 void surf_input_wheel(int16_t x, int16_t y, int16_t dx, int16_t dy)
 {
     for (surf_node *n = surf_hit_test(x, y); n; n = n->parent) {
@@ -88,6 +103,27 @@ void surf_input_wheel(int16_t x, int16_t y, int16_t dx, int16_t dy)
                                    (int16_t)(cy ? off.y + dy : off.y));
         return;
     }
+    int nt = (WH.tail + 1) % WHEEL_Q_LEN;
+    if (nt == WH.head)
+        return;              /* full: drop, the way typing outrunning the
+                              * reader drops a key. A wheel nobody is
+                              * draining is a wheel nobody wants. */
+    WH.q[WH.tail] = (surf_wheel){x, y, dx, dy};
+    WH.tail = nt;
+}
+
+bool surf_wheel_poll(surf_wheel *out)
+{
+    if (WH.head == WH.tail)
+        return false;
+    *out = WH.q[WH.head];
+    WH.head = (WH.head + 1) % WHEEL_Q_LEN;
+    return true;
+}
+
+void surf_wheel_reset(void)
+{
+    WH.head = WH.tail = 0;
 }
 
 void surf_input_dispatch(const surf_touch *t)

@@ -417,8 +417,19 @@ void surf_ninepatch_set_size(surf_node *n, int16_t w, int16_t h);
 surf_node *surf_hit_test(int16_t x, int16_t y);
 /* A wheel / two-finger push at (x, y), in pixels of content movement.
  * Scrolls the first scrollable scrollview under the pointer — the hal
- * calls this; nothing else needs to. */
+ * calls this; nothing else needs to.
+ *
+ * WHAT NO SCROLLVIEW TAKES IS QUEUED for the application, and drained
+ * with surf_wheel_poll (surfer.wheel() in Python). That is the same
+ * bargain touch already makes — a widget under the pointer wins, and
+ * what nothing claimed is the app's to interpret — and it is what lets
+ * a wheel mean something other than scrolling: zooming a picture,
+ * stepping a value, spinning a knob. Coordinates are FRAMEBUFFER
+ * pixels, mapped by the hal exactly as a touch is. */
 void surf_input_wheel(int16_t x, int16_t y, int16_t dx, int16_t dy);
+typedef struct { int16_t x, y, dx, dy; } surf_wheel;
+bool surf_wheel_poll(surf_wheel *out);      /* drain one unclaimed event */
+void surf_wheel_reset(void);                /* drop the queue (new session) */
 void surf_node_set_on_touch(surf_node *n, surf_touch_cb cb, void *user);
 void surf_node_abs_pos(const surf_node *n, int16_t *x, int16_t *y);
 surf_point surf_node_pos(const surf_node *n);
