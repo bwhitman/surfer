@@ -129,8 +129,99 @@ static void test_image_flush(void)
     surf_image_destroy(im);
 }
 
+/* A filmstrip that PLAYS itself, and the bookkeeping that keeps the
+ * per-tick scan from running for animations nobody owns. */
+static void test_filmstrip_play(void)
+{
+    fresh(200, 200, 64);
+    static uint32_t px[8 * 4 * 8];
+    surf_image strip = {.pixels = px, .w = 8 * 4, .h = 8, .stride = 8 * 4 * 4,
+                        .format = SURF_FMT_ARGB8888, .opaque = true};
+    surf_node *n = surf_filmstrip_new(&strip, 8, 8, 10, 10);
+    surf_node_add(surf_screen(), n);
+    /* the node is one FRAME, not the whole sheet */
+    OK(surf_node_size(n).x == 8 && surf_node_size(n).y == 8);
+
+    surf_filmstrip_set_frame(n, 2);
+    OK(surf_filmstrip_frame(n) == 2);
+    surf_filmstrip_set_frame(n, 99);
+    OK(surf_filmstrip_frame(n) == 3);          /* clamped to the last cel */
+    surf_filmstrip_set_frame(n, -5);
+    OK(surf_filmstrip_frame(n) == 0);
+
+    /* fps 0 is the default and the frame is the caller's */
+    OK(surf_filmstrip_fps(n) == 0);
+    mock_advance_us(1000000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 0);
+
+    surf_filmstrip_set_fps(n, SURF_ONE * 10);  /* 10 fps = 100 ms a cel */
+    surf_tick();                               /* anchors the clock */
+    OK(surf_filmstrip_frame(n) == 0);
+    mock_advance_us(100000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 1);
+    mock_advance_us(100000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 2);
+    /* WRAPS rather than stopping at the end */
+    mock_advance_us(200000);
+    surf_tick();
+    mock_advance_us(0);
+    OK(surf_filmstrip_frame(n) == 3 || surf_filmstrip_frame(n) == 0);
+
+    /* A LATE frame is dropped, not replayed: a tab hidden for a minute
+     * must not flip through thousands of cels to catch up. */
+    surf_filmstrip_set_frame(n, 0);
+    mock_advance_us(60ull * 1000000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) < 4);
+
+    /* and the count goes back when the node dies, or the per-tick scan
+     * runs for ever for an animation nobody owns */
+    surf_node_destroy(n);
+    surf_tick();
+    OK(1);
+}
+
+/* An image can be written as a PNG and read straight back. */
+static void test_png_round_trip(void)
+{
+    fresh(64, 64, 64);
+    surf_image *img = surf_image_new(9, 5, SURF_FMT_ARGB8888);
+    OK(img != NULL);
+    surf_image_fill(img, (surf_rect){0, 0, 9, 5}, SURF_RGB(255, 0, 0));
+    surf_image_fill(img, (surf_rect){2, 1, 3, 2}, SURF_RGB(0, 0, 255));
+    size_t len = 0;
+    void *png = surf_image_to_png(img, &len);
+    OK(png != NULL && len > 8);
+    OK(((const unsigned char *)png)[0] == 0x89
+       && ((const unsigned char *)png)[1] == 'P');
+    surf_image *back = surf_image_from_png(png, len);
+    OK(back != NULL);
+    OK(back && back->w == 9 && back->h == 5);
+    if (back) {
+        /* The blue patch is where it was put -- a decoder that read the
+         * stride wrong still gives the right SIZE, so position is the
+         * thing worth asserting.
+         *
+         * 0xf8 and not 0xff: the colour went in as RGB565 through
+         * surf_image_fill, which widens 5 bits to 8 by SHIFTING, so 0x1f
+         * becomes 0xf8. The encoder is faithful to the pixels it is
+         * given and does not invent the missing three bits back. */
+        uint32_t p = ((const uint32_t *)((const uint8_t *)back->pixels
+                                         + 1 * back->stride))[3];
+        OK((p & 0xffffff) == 0x0000f8);
+        surf_image_destroy(back);
+    }
+    surf_image_png_free(png);
+    surf_image_destroy(img);
+}
+
 void run_sprite_tests(void)
 {
+    test_filmstrip_play();
+    test_png_round_trip();
     test_image_flush();
     test_sprite_pan_damages_other_branches();
     test_sprite_pan_skips_hidden_branches();

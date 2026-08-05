@@ -318,6 +318,61 @@ because surfer is a general UI library and nothing stops a host from
 animating a hidden group; the cost of being wrong is the whole screen
 smearing, and the fix is one predicate.
 
+## Animation is the filmstrip node, finally bound
+
+`surf_filmstrip` has been in the core since M1 — it is how checkbox,
+knob, led and selector are drawn — and was never reachable from Python,
+so a strip of frames was a sprite you `set_src`'d by hand every frame.
+`surfer.filmstrip(img, frame_w, frame_h, x, y)` binds it, with `.frame`
+to pick a cel and `.fps` to play one. No new node type; the animation
+support a host wants was already sitting here.
+
+- **`fps` 0 is the default and means the CALLER owns the frame.** That is
+  what a cel editor wants, and what a game stepping a walk cycle off its
+  own physics wants. Anything else advances from `surf_tick` and wraps.
+- **A COUNT of playing strips** (`surf_g.playing`), so the per-tick scan
+  costs nothing at all when nothing is playing — which is almost always.
+  Without it every tick would walk the whole 4096-node pool to find out
+  that no animation exists. `node_free` gives the count back, or the
+  scan keeps running for an animation nobody owns.
+- **Late frames are DROPPED, not replayed.** A backgrounded tab or a
+  long stall would otherwise flip through thousands of cels catching up
+  on a cycle nobody watched.
+- The mock hal's clock used to be frozen at 0, which is fine for
+  everything that only reads it and useless for anything that waits on
+  it. `mock_advance_us()` drives it now; `test_filmstrip_play` is the
+  regression.
+
+## An image can be saved now
+
+`surf_image_to_png` / `surfer.write_png(img)` — the other half of
+`surf_image_from_png`. An image can be drawn into (the shape API, a
+caller writing its own pixels through the MicroPython buffer) and until
+this there was no way to get one back out, so anything that made a
+picture could show it and never keep it.
+
+**It is C because that was measured, not assumed.** The same encoder in
+MicroPython costs 8 ms for a 320x48 strip on a DESKTOP against 0.51 ms
+here, and 43 ms for 704x64 against 1.52 ms — on a device that runs
+Python-heavy loops 20-60x slower again. And it does not merely get slow:
+the pure-Python path has to build the whole raw image as one bytearray
+before deflating, which for a 2556x284 sheet is 2.9 MB and raised
+MemoryError on the laptop. The C path encodes that same sheet in 22 ms.
+
+`stb_image_write.h` is vendored beside `stb_image.h` — same author, same
+public-domain terms, and the decoder was already a runtime dependency.
+`STBI_WRITE_NO_STDIO`, so no `fopen` is linked on a device that has no C
+filesystem: the only entry point compiled is the to-memory one, which is
+what a binding wants anyway.
+
+Two details worth keeping: A8 encodes as white-with-that-alpha, because
+an A8 image is a MASK whose colour lives in the node's tint and baking
+the tint in would save a picture nobody drew. And the encoder is
+faithful to the pixels it is given — a colour that went in through
+`surf_image_fill` as RGB565 comes out 0xf8 rather than 0xff, since that
+call widens 5 bits to 8 by shifting, and the encoder does not invent the
+missing three bits back.
+
 ## Textinput, from MicroPython
 
 `surfer.textinput(x, y, w, color, font)` is the editable-text node, and

@@ -49,6 +49,17 @@ typedef struct {
  * (opaque flag set when the file has no transparency). Destroy only
  * after every node using the image is gone. */
 surf_image *surf_image_from_png(const void *data, size_t len);
+
+/* ...and back out again: any image this library holds, encoded as a PNG
+ * in memory. Free what it returns with surf_image_png_free.
+ *
+ * An image can be drawn into (the shape API, or a caller writing its own
+ * pixels through the MicroPython buffer) and until this there was no way
+ * to save one, so anything that made a picture could show it and never
+ * keep it. A8 encodes as white-with-that-alpha, since an A8 image is a
+ * mask whose colour lives in the node's tint. */
+void *surf_image_to_png(const surf_image *img, size_t *len);
+void  surf_image_png_free(void *png);
 /* The PNG's alpha channel as an A8 mask: draws in the image's `tint`
  * color — a one-entry palette the P4 blends in hardware. Retint + damage
  * the sprite each frame for Amiga-style color cycling. */
@@ -409,6 +420,12 @@ uint8_t surf_sprite_rot(const surf_node *n);
 uint8_t surf_sprite_mirror(const surf_node *n);
 void surf_group_set_clip(surf_node *g, int16_t w, int16_t h);  /* 0×0 disables */
 void surf_filmstrip_set_frame(surf_node *n, int16_t frame);
+/* Play it: frames per second in Q16, 0 (the default) to leave the frame
+ * to the caller. A playing strip advances from surf_tick and wraps;
+ * late frames are dropped rather than replayed. */
+void    surf_filmstrip_set_fps(surf_node *n, int32_t fps_q16);
+int32_t surf_filmstrip_fps(const surf_node *n);
+void    surf_filmstrip_tick(void);
 int16_t surf_filmstrip_frame(const surf_node *n);
 void surf_ninepatch_set_size(surf_node *n, int16_t w, int16_t h);
 

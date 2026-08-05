@@ -70,6 +70,12 @@ struct surf_node {
             const surf_image *img;
             int16_t fw, fh;      /* frame size; node w/h mirror these */
             int16_t frame, nframes, per_row;
+            /* PLAYBACK, and it is optional: fps 0 means the caller owns
+             * the frame — which is what an editor picking a cel wants,
+             * and what a game stepping a walk cycle off its own physics
+             * wants. Non-zero and surf_filmstrip_tick advances it. */
+            int32_t  fps_q16;
+            uint64_t due_us;     /* when the next frame is owed */
         } strip;
         struct {
             const surf_image *img;
@@ -174,6 +180,7 @@ typedef struct {
     surf_color      bg;
     surf_node      *pool;
     int             pool_cap;
+    int             playing;   /* filmstrips with fps != 0 (node.c) */
     surf_node      *free_list;
     surf_node      *root;
     /* One of these per finger. Capture is PER CONTACT, so three fingers

@@ -160,6 +160,51 @@ s.fast_scroll(True)   # ...and pan it as one DMA band shift per frame —
                       # fps compute rate this way.
 ```
 
+## Filmstrips (animation)
+
+An animation is one image with uniform frames laid out left to right —
+which is what the widgets have always been drawn from, and is now
+reachable from Python:
+
+```python
+strip = surfer.image(open("walk.png", "rb").read())
+f = surfer.filmstrip(strip, 64, 48, x, y)   # image, frame w, frame h, x, y
+screen.add(f)
+f.w, f.h              # ONE FRAME (64x48), not the whole sheet
+f.frame = 2           # pick a cel; clamped to the last one
+f.fps = 12.0          # ...or play it: advances from tick() and wraps
+f.fps = 0             # back to manual — what a cel EDITOR wants
+```
+
+`fps` 0 is the default and hands the frame to the caller, which is also
+what a game stepping a walk cycle off its own physics wants. A playing
+strip costs nothing when nothing is playing (the per-tick scan is
+skipped entirely at a count of zero), and **late frames are dropped
+rather than replayed** — a tab hidden for a minute must not flip through
+thousands of cels to catch up.
+
+## Saving an image
+
+```python
+open("out.png", "wb").write(surfer.write_png(img))
+```
+
+The other half of `surfer.image()`. An image can be drawn into — by the
+shape API, or by writing its own pixels through the buffer above — and
+until this there was no way to get one back out, so anything that made a
+picture could show it and never keep it.
+
+It is C rather than a few lines of Python because that was measured:
+the same encoder in MicroPython costs 8 ms for a 320x48 strip on a
+*desktop* (0.51 ms here) and 43 ms for 704x64 (1.52 ms here), against a
+device that runs Python-heavy loops 20-60x slower again. And it does not
+merely get slow — the Python path has to build the whole raw image as
+one bytearray before deflating, which for a 2556x284 sheet is 2.9 MB and
+raises MemoryError on a laptop, let alone a panel.
+
+An A8 image encodes as white with that alpha, since an A8 image is a
+mask whose colour lives in the node's `tint`.
+
 `img.blit(src, x, y, rot=0)` also takes quarter-turn rotations, so
 rotated props (a fallen tree is a standing one at rot 90) bake into the
 world at load time and the frame path stays untransformed.

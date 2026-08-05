@@ -32,6 +32,8 @@ extern size_t      mock_sync_bytes;
 extern int         mock_sync_calls;
 
 void mock_push_touch(surf_touch t);
+void mock_advance_us(uint64_t us);   /* drive m_now_us */
+extern uint64_t mock_now_us_val;
 void fresh(int16_t w, int16_t h, int max_nodes);  /* re-init, drain, clear ops */
 bool rect_eq(surf_rect a, surf_rect b);
 

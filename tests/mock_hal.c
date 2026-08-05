@@ -37,7 +37,12 @@ static void m_present(const surf_rect *dirty, int n)
     ops[nops++] = (mock_op){.op = 'P', .nrects = n};
 }
 static void m_wait_idle(void) {}
-static uint64_t m_now_us(void) { return 0; }
+/* A clock the tests can DRIVE. It was frozen at 0, which is fine for
+ * everything that only reads it -- and useless for anything that waits
+ * on it, like a filmstrip playing at a given fps. */
+uint64_t mock_now_us_val = 0;
+static uint64_t m_now_us(void) { return mock_now_us_val; }
+void mock_advance_us(uint64_t us) { mock_now_us_val += us; }
 static bool m_poll_touch(surf_touch *out)
 {
     if (tq_r == tq_w)

@@ -18,6 +18,97 @@
 #include "stb/stb_image.h"
 #pragma GCC diagnostic pop
 
+/* ...and the other direction. An image can be DRAWN INTO — by the shape
+ * API, by a caller writing its own pixels through the buffer protocol —
+ * and until now there was no way to get one back out as a file, so
+ * anything that made a picture could show it and never save it.
+ *
+ * IT HAS TO BE C, and that was measured rather than assumed. The same
+ * encoder in MicroPython costs 8 ms for a 320x48 strip on a DESKTOP and
+ * 43 ms for 704x64, against a board that runs Python-heavy loops 20-60x
+ * slower — and it does not merely get slow, it hits a wall: the pure
+ * Python path has to build the whole raw image as one bytearray before
+ * deflating, which for a 2556x284 sprite sheet is 2.9 MB and died with
+ * MemoryError on the laptop, let alone the panel.
+ *
+ * STBI_WRITE_NO_STDIO, so no fopen is linked on a device that has no
+ * filesystem in C: the only entry point compiled is the to-memory one,
+ * which is the one a binding wants anyway. */
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include "stb/stb_image_write.h"
+#pragma GCC diagnostic pop
+
+/* Every format this library holds, widened to the RGBA8 stb wants.
+ * A8 becomes white-with-that-alpha rather than black: an A8 image is a
+ * MASK whose colour lives in the node's tint, and baking the tint in
+ * would save a picture nobody drew. */
+static unsigned char *to_rgba8(const surf_image *img)
+{
+    size_t n = (size_t)img->w * img->h;
+    unsigned char *out = (unsigned char *)malloc(n * 4);
+    if (!out)
+        return NULL;
+    for (int y = 0; y < img->h; y++) {
+        const uint8_t *row = (const uint8_t *)img->pixels + (size_t)y * img->stride;
+        unsigned char *d = out + (size_t)y * img->w * 4;
+        for (int x = 0; x < img->w; x++, d += 4) {
+            if (img->format == SURF_FMT_ARGB8888) {
+                uint32_t p = ((const uint32_t *)row)[x];
+                d[0] = (unsigned char)((p >> 16) & 0xff);
+                d[1] = (unsigned char)((p >> 8) & 0xff);
+                d[2] = (unsigned char)(p & 0xff);
+                d[3] = (unsigned char)((p >> 24) & 0xff);
+            } else if (img->format == SURF_FMT_A8) {
+                d[0] = d[1] = d[2] = 0xff;
+                d[3] = row[x];
+            } else {
+                uint16_t c = ((const uint16_t *)row)[x];
+                /* 565 -> 888 with the top bits replicated into the low
+                 * ones, so full-scale stays full-scale: 0x1f must come
+                 * back as 255 and not 248. */
+                unsigned char r = (unsigned char)((c >> 11) & 0x1f);
+                unsigned char g = (unsigned char)((c >> 5) & 0x3f);
+                unsigned char b = (unsigned char)(c & 0x1f);
+                d[0] = (unsigned char)((r << 3) | (r >> 2));
+                d[1] = (unsigned char)((g << 2) | (g >> 4));
+                d[2] = (unsigned char)((b << 3) | (b >> 2));
+                d[3] = 0xff;
+            }
+        }
+    }
+    return out;
+}
+
+void *surf_image_to_png(const surf_image *img, size_t *len)
+{
+    if (len)
+        *len = 0;
+    if (!img || !img->pixels || img->w <= 0 || img->h <= 0)
+        return NULL;
+    unsigned char *rgba = to_rgba8(img);
+    if (!rgba)
+        return NULL;
+    int n = 0;
+    unsigned char *png = stbi_write_png_to_mem(rgba, img->w * 4, img->w,
+                                               img->h, 4, &n);
+    free(rgba);
+    if (!png || n <= 0) {
+        free(png);
+        return NULL;
+    }
+    if (len)
+        *len = (size_t)n;
+    return png;
+}
+
+void surf_image_png_free(void *png)
+{
+    free(png);
+}
+
 surf_image *surf_image_from_png(const void *data, size_t len)
 {
     if (!surf_g.hal)

@@ -54,6 +54,11 @@ static void node_free(surf_node *n)
     }
     if (n->type == SURF_NODE_SCROLLVIEW)
         surf_scroll_forget(n);
+    /* A PLAYING strip that is destroyed must give its count back, or the
+     * scan in surf_filmstrip_tick keeps running for an animation nobody
+     * owns — and after enough app quits it never stops running. */
+    if (n->type == SURF_NODE_FILMSTRIP && n->u.strip.fps_q16)
+        surf_g.playing--;
     n->type = SURF_NODE_FREE;
     n->next = surf_g.free_list;
     surf_g.free_list = n;
@@ -114,6 +119,7 @@ void surf_tick(void)
     while (surf_g.hal->poll_touch(&t))
         surf_input_dispatch(&t);
     surf_scroll_tick();  /* momentum + spring-back (DESIGN.md §2.3 step 1) */
+    surf_filmstrip_tick();  /* playing animations advance themselves */
     surf_compose();
     if (surf_g.frame_div > 0 && surf_g.hal->wait_frame)
         surf_g.hal->wait_frame(surf_g.frame_div);
@@ -772,6 +778,67 @@ void surf_filmstrip_set_frame(surf_node *n, int16_t frame)
         return;
     n->u.strip.frame = frame;
     surf_damage_subtree(n);  /* bounds unchanged: one rect covers old + new */
+}
+
+/* PLAY IT, or don't. fps 0 hands the frame back to the caller, which is
+ * what a cel editor wants and what a game driving a walk cycle off its
+ * own physics wants; anything else advances from surf_tick and wraps.
+ *
+ * A COUNT of animating strips, so the scan below costs nothing at all in
+ * the overwhelmingly common case of none. Without it every tick would
+ * walk the whole 4096-node pool to discover that nothing is playing. */
+void surf_filmstrip_set_fps(surf_node *n, int32_t fps_q16)
+{
+    if (!n || n->type != SURF_NODE_FILMSTRIP)
+        return;
+    if (fps_q16 < 0)
+        fps_q16 = 0;
+    if ((n->u.strip.fps_q16 != 0) != (fps_q16 != 0))
+        surf_g.playing += fps_q16 ? 1 : -1;
+    n->u.strip.fps_q16 = fps_q16;
+    n->u.strip.due_us = 0;       /* re-anchor: start the clock from now */
+}
+
+int32_t surf_filmstrip_fps(const surf_node *n)
+{
+    return (n && n->type == SURF_NODE_FILMSTRIP) ? n->u.strip.fps_q16 : 0;
+}
+
+void surf_filmstrip_tick(void)
+{
+    if (surf_g.playing <= 0 || !surf_g.hal || !surf_g.hal->now_us)
+        return;
+    uint64_t now = surf_g.hal->now_us();
+    for (int i = 0; i < surf_g.pool_cap; i++) {
+        surf_node *n = &surf_g.pool[i];
+        if (n->type != SURF_NODE_FILMSTRIP || !n->u.strip.fps_q16)
+            continue;
+        if (n->u.strip.nframes < 2)
+            continue;
+        uint64_t period = (uint64_t)((int64_t)1000000 * SURF_ONE
+                                     / n->u.strip.fps_q16);
+        if (!period)
+            period = 1;
+        if (!n->u.strip.due_us) {
+            n->u.strip.due_us = now + period;
+            continue;
+        }
+        if (now < n->u.strip.due_us)
+            continue;
+        /* Late frames are DROPPED, not replayed. A tab that was hidden
+         * for a minute would otherwise flip through thousands of cels to
+         * catch up on a cycle nobody watched. */
+        int32_t steps = (int32_t)((now - n->u.strip.due_us) / period) + 1;
+        if (steps > n->u.strip.nframes)
+            steps = steps % n->u.strip.nframes;
+        n->u.strip.due_us = now + period;
+        int16_t f = (int16_t)((n->u.strip.frame + steps)
+                              % n->u.strip.nframes);
+        if (f != n->u.strip.frame) {
+            n->u.strip.frame = f;
+            surf_damage_subtree(n);
+        }
+    }
 }
 
 int16_t surf_filmstrip_frame(const surf_node *n)

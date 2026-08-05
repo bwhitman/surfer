@@ -935,6 +935,31 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
         }
         return;
     }
+    /* filmstrip: .frame picks a cel, .fps plays it (0 = the caller
+     * drives it, which is what an editor wants). Both guard on the node
+     * type in C, so they are harmless no-ops on anything else. */
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_frame) {
+        dest[0] = MP_OBJ_NEW_SMALL_INT(surf_filmstrip_frame(o->node));
+        return;
+    }
+    if (dest[0] != MP_OBJ_NULL && attr == MP_QSTR_frame) {
+        surf_filmstrip_set_frame(o->node, (int16_t)mp_obj_get_int(dest[1]));
+        dest[0] = MP_OBJ_NULL;
+        return;
+    }
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_fps) {
+        dest[0] = mp_obj_new_float((mp_float_t)surf_filmstrip_fps(o->node) /
+                                   (mp_float_t)SURF_ONE);
+        return;
+    }
+    if (dest[0] != MP_OBJ_NULL && attr == MP_QSTR_fps) {
+        mp_float_t f = mp_obj_get_float(dest[1]);
+        if (f < 0)
+            f = 0;
+        surf_filmstrip_set_fps(o->node, (int32_t)(f * (mp_float_t)SURF_ONE));
+        dest[0] = MP_OBJ_NULL;
+        return;
+    }
     /* sprite transform: scale (float, 1.0 = 1:1), rot (degrees CCW,
      * quarter turns only — the P4 PPA's limit), mirror_x / mirror_y
      * (bools; source flip before rotation) */
@@ -2111,6 +2136,64 @@ static mp_obj_t mod_sprite(mp_obj_t img_in, mp_obj_t x_in, mp_obj_t y_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(mod_sprite_obj, mod_sprite);
 
+/* surfer.filmstrip(image, frame_w, frame_h, x, y) -> Node
+ *
+ * The node type has been in the core since M1 — it is how checkbox,
+ * knob, led and selector are drawn — and was never bound, so from
+ * Python a strip of frames was a sprite you had to set_src by hand
+ * every time. An ANIMATION is exactly this node: one image, uniform
+ * frames left to right, `.frame` picking one.
+ *
+ * `.fps` is the binding's own and advances `.frame` from tick, wrapping
+ * — a caller that wants to drive it by hand leaves fps at 0, which is
+ * what a frame PICKER (an editor) wants and what a game that steps the
+ * walk cycle off its own physics wants too. */
+static mp_obj_t mod_filmstrip(size_t n_args, const mp_obj_t *args)
+{
+    (void)n_args;
+    if (!mp_obj_is_type(args[0], &surfer_image_type))
+        mp_raise_TypeError(MP_ERROR_TEXT("expected surfer Image"));
+    surfer_image_obj_t *io = MP_OBJ_TO_PTR(args[0]);
+    if (!io->img)
+        mp_raise_ValueError(MP_ERROR_TEXT("image destroyed"));
+    int16_t fw = (int16_t)mp_obj_get_int(args[1]);
+    int16_t fh = (int16_t)mp_obj_get_int(args[2]);
+    if (fw <= 0 || fh <= 0)
+        mp_raise_ValueError(MP_ERROR_TEXT("frame size must be positive"));
+    surf_node *n = surf_filmstrip_new(io->img, fw, fh,
+                                      (int16_t)mp_obj_get_int(args[3]),
+                                      (int16_t)mp_obj_get_int(args[4]));
+    if (!n)
+        mp_raise_ValueError(MP_ERROR_TEXT("filmstrip create failed"));
+    surfer_node_obj_t *o = new_node_obj(n);
+    o->img_ref = args[0];
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_filmstrip_obj, 5, 5,
+                                           mod_filmstrip);
+
+/* surfer.write_png(image) -> bytes
+ *
+ * The other half of surfer.image(). An image can be drawn into and, until
+ * this, never saved — see surf_image_to_png for why it is C and not a
+ * few lines of Python. */
+static mp_obj_t mod_write_png(mp_obj_t img_in)
+{
+    if (!mp_obj_is_type(img_in, &surfer_image_type))
+        mp_raise_TypeError(MP_ERROR_TEXT("expected surfer Image"));
+    surfer_image_obj_t *io = MP_OBJ_TO_PTR(img_in);
+    if (!io->img)
+        mp_raise_ValueError(MP_ERROR_TEXT("image destroyed"));
+    size_t len = 0;
+    void *png = surf_image_to_png(io->img, &len);
+    if (!png)
+        mp_raise_ValueError(MP_ERROR_TEXT("png encode failed"));
+    mp_obj_t out = mp_obj_new_bytes((const byte *)png, len);
+    surf_image_png_free(png);
+    return out;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mod_write_png_obj, mod_write_png);
+
 static mp_obj_t mod_rect(size_t n_args, const mp_obj_t *args)
 {
     surf_color c = n_args > 4 ? (surf_color)mp_obj_get_int(args[4])
@@ -2750,6 +2833,8 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_has_touch), MP_ROM_PTR(&mod_has_touch_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch_info), MP_ROM_PTR(&mod_touch_info_obj)},
     {MP_ROM_QSTR(MP_QSTR_sprite), MP_ROM_PTR(&mod_sprite_obj)},
+    {MP_ROM_QSTR(MP_QSTR_filmstrip), MP_ROM_PTR(&mod_filmstrip_obj)},
+    {MP_ROM_QSTR(MP_QSTR_write_png), MP_ROM_PTR(&mod_write_png_obj)},
     {MP_ROM_QSTR(MP_QSTR_label), MP_ROM_PTR(&mod_label_obj)},
     {MP_ROM_QSTR(MP_QSTR_textinput), MP_ROM_PTR(&mod_textinput_obj)},
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
