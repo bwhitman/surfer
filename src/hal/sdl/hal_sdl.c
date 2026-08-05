@@ -576,17 +576,29 @@ static const surf_hal hal_sdl = {
  * SURF_SCALE is what keeps a click landing on what it looks like it hit
  * after a resize, or under SURF_NATIVE where the window is SMALLER than
  * the framebuffer. */
+/* Window points -> framebuffer pixels. Its own function because the
+ * WHEEL needs it too and did not have it: that path took the pointer
+ * straight from SDL_GetMouseState and hit-tested with it, so on any
+ * display where the drawable is not the window 1:1 — every retina Mac —
+ * it scrolled whatever was at roughly double the position of the thing
+ * under the pointer. Invisible until something reported those
+ * coordinates onward, which surf_input_wheel's queue now does. */
+static void map_pt(int16_t *x, int16_t *y)
+{
+    if (S.win_w <= 0 || S.win_h <= 0 || S.view.w <= 0 || S.view.h <= 0)
+        return;
+    int px = (int)*x * S.out_w / S.win_w - S.view.x;
+    int py = (int)*y * S.out_h / S.win_h - S.view.y;
+    *x = (int16_t)(px * S.w / S.view.w);
+    *y = (int16_t)(py * S.h / S.view.h);
+}
+
 static void push_touch(int16_t x, int16_t y, uint8_t phase, uint8_t id)
 {
     int next = (S.ring_w + 1) % TOUCH_RING;
     if (next == S.ring_r)
         return;  /* full: drop; UP events still arrive next pump */
-    if (S.win_w > 0 && S.win_h > 0 && S.view.w > 0 && S.view.h > 0) {
-        int px = (int)x * S.out_w / S.win_w - S.view.x;
-        int py = (int)y * S.out_h / S.win_h - S.view.y;
-        x = (int16_t)(px * S.w / S.view.w);
-        y = (int16_t)(py * S.h / S.view.h);
-    }
+    map_pt(&x, &y);
     S.ring[S.ring_w] = (surf_touch){x, y, phase, id};  /* a mouse is contact 0 */
     S.ring_w = next;
 }
@@ -1009,7 +1021,9 @@ bool surf_hal_sdl_pump(void)
              * what every list on this machine does under a drag. */
             int mx = 0, my = 0;
             SDL_GetMouseState(&mx, &my);
-            surf_input_wheel((int16_t)mx, (int16_t)my, (int16_t)(-e.wheel.x * WHEEL_PX),
+            int16_t wx = (int16_t)mx, wy = (int16_t)my;
+            map_pt(&wx, &wy);   /* the same mapping every click gets */
+            surf_input_wheel(wx, wy, (int16_t)(-e.wheel.x * WHEEL_PX),
                              (int16_t)(-e.wheel.y * WHEEL_PX));
             break;
         }
