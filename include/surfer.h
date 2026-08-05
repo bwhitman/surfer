@@ -93,6 +93,18 @@ surf_image *surf_image_new(int16_t w, int16_t h, surf_format format);
  * fit; you get an ordinary image and the old speed, never a failure. */
 surf_image *surf_image_new_fast(int16_t w, int16_t h, surf_format format);
 
+/* Scale the whole of `src` into the whole of `dst`, bilinear.
+ *
+ * Uses the backend's 2D engine when it has one (the P4's PPA) and a CPU
+ * loop otherwise, so it always works and is sometimes free. Returns true
+ * if the hardware did it, which is worth knowing when you are deciding
+ * how much of it to do per frame.
+ *
+ * DOWN THEN UP IS A BLUR, and a wide one for the price of two scaled
+ * blits rather than a kernel per pixel -- the cheapest blur available on
+ * hardware like this by a long way. Formats must match. */
+bool surf_image_scale(surf_image *dst, const surf_image *src);
+
 /* Publish CPU writes to img->pixels so the drawing path can read them.
  *
  * Call it after writing an image's pixels YOURSELF — through the `pixels`
@@ -192,6 +204,16 @@ typedef struct {
      * all. free_image takes either. */
     void *(*alloc_image_fast)(size_t bytes);
     void (*free_image)(void *p);
+    /* Optional (may be NULL): scale one whole image into another, on
+     * hardware. Returns true if it did; false means "not for these two"
+     * and the caller falls back to the CPU.
+     *
+     * This is the one image-to-image operation worth a hal hook, because
+     * on a backend with a 2D engine it is FREE and on the CPU it is not:
+     * a downscale followed by an upscale IS a blur (it is what dual-
+     * Kawase bloom is built from), so a blur, a bloom and a
+     * depth-of-field all come from the same op. */
+    bool (*scale_image)(surf_image *dst, const surf_image *src);
     /* Optional (may be NULL): make CPU writes to an image's pixels visible
      * to whatever reads them for drawing — a cache writeback on a backend
      * whose blitter is a DMA engine, nothing at all where the compositor

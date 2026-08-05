@@ -1006,6 +1006,75 @@ static void *h_alloc_image_fast(size_t bytes)
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
 }
 
+/* hal->scale_image: one whole image into another, on the PPA.
+ *
+ * The op the SRM block was built for, pointed at two images instead of
+ * at the framebuffer -- so a downscale-then-upscale (i.e. a wide blur)
+ * costs two DMA passes and no CPU at all.
+ *
+ * THE CACHE IS THE WHOLE DIFFICULTY, and it goes both ways. The PPA
+ * reads and writes PHYSICAL memory while the CPU works through a cache,
+ * so src has to be written BACK before the engine reads it and dst has
+ * to be INVALIDATED after, or the CPU reads a stale copy of pixels the
+ * PPA has already replaced. Getting either wrong looks like a shader bug
+ * -- a frame late, or torn -- and only on the device.
+ *
+ * Returns false rather than guessing for formats the block does not do,
+ * or a scale factor outside what it accepts; the caller has a CPU path. */
+static bool h_scale_image(surf_image *dst, const surf_image *src)
+{
+    if (dst->format != src->format)
+        return false;
+    if (src->format != SURF_FMT_RGB565 && src->format != SURF_FMT_ARGB8888)
+        return false;
+
+    int bpp = src->format == SURF_FMT_ARGB8888 ? 4 : 2;
+    float sx = (float)dst->w / (float)src->w;
+    float sy = (float)dst->h / (float)src->h;
+    /* the SRM block's own limits; outside them it would silently do
+     * something else, so hand it back to the CPU instead */
+    if (sx < 0.0625f || sx > 16.0f || sy < 0.0625f || sy > 16.0f)
+        return false;
+
+    surf_hal_p4_sync(src->pixels, (size_t)src->stride * src->h);
+
+    ppa_srm_oper_config_t op = {
+        .in = {
+            .buffer = src->pixels,
+            .pic_w = (uint32_t)(src->stride / bpp),
+            .pic_h = (uint32_t)src->h,
+            .block_w = (uint32_t)src->w,
+            .block_h = (uint32_t)src->h,
+            .block_offset_x = 0,
+            .block_offset_y = 0,
+            .srm_cm = srm_cm(src),
+        },
+        .out = {
+            .buffer = dst->pixels,
+            .buffer_size = (uint32_t)((size_t)dst->stride * dst->h),
+            .pic_w = (uint32_t)(dst->stride / bpp),
+            .pic_h = (uint32_t)dst->h,
+            .block_offset_x = 0,
+            .block_offset_y = 0,
+            .srm_cm = srm_cm(src),
+        },
+        .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
+        .scale_x = sx,
+        .scale_y = sy,
+        .mirror_x = false,
+        .mirror_y = false,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
+    };
+    ppa_srm_sync(&op);
+
+    /* the engine wrote it; drop whatever the CPU still thinks is there */
+    esp_cache_msync(dst->pixels,
+                    ((size_t)dst->stride * dst->h + P4_ALIGN - 1) &
+                        ~(size_t)(P4_ALIGN - 1),
+                    ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    return true;
+}
+
 static void h_free_image(void *p)
 {
     heap_caps_free(p);
@@ -1080,6 +1149,7 @@ static surf_hal hal_p4 = {
     .touch_points = h_touch_points,
     .alloc_image = h_alloc_image,
     .alloc_image_fast = h_alloc_image_fast,
+    .scale_image = h_scale_image,
     .free_image = h_free_image,
     .sync_image = h_sync_image,
     .fb_ptr = h_fb_ptr,

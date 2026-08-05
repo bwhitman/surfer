@@ -287,6 +287,65 @@ surf_image *surf_image_new_fast(int16_t w, int16_t h, surf_format format)
     return image_new(w, h, format, true);
 }
 
+/* Scale src into dst -- the hal's 2D engine if it has one, a bilinear
+ * loop if not. See surfer.h for why this is the image-to-image op worth
+ * a hook: down-then-up is a blur, and on hardware it is free.
+ *
+ * The CPU path is bilinear rather than nearest DELIBERATELY, because it
+ * has to match what the hardware does: a nearest downscale-then-upscale
+ * gives blocks, not blur, so the same code would produce two different
+ * effects depending on the backend. */
+bool surf_image_scale(surf_image *dst, const surf_image *src)
+{
+    if (!dst || !src || dst->format != src->format ||
+        dst->w <= 0 || dst->h <= 0 || src->w <= 0 || src->h <= 0)
+        return false;
+
+    if (surf_g.hal && surf_g.hal->scale_image &&
+        surf_g.hal->scale_image(dst, src))
+        return true;
+
+    if (src->format != SURF_FMT_RGB565)
+        return false;                 /* CPU path is 565 only, for now */
+
+    const float sx = (float)src->w / (float)dst->w;
+    const float sy = (float)src->h / (float)dst->h;
+    for (int y = 0; y < dst->h; y++) {
+        float fy = ((float)y + 0.5f) * sy - 0.5f;
+        int y0 = (int)(fy < 0 ? 0 : fy);
+        int y1 = y0 + 1 < src->h ? y0 + 1 : src->h - 1;
+        int wy = (int)((fy - (float)y0) * 256.0f);
+        if (wy < 0) wy = 0;
+        if (wy > 256) wy = 256;
+        uint16_t *o = (uint16_t *)((uint8_t *)dst->pixels + (size_t)y * dst->stride);
+        const uint16_t *r0 = (const uint16_t *)((const uint8_t *)src->pixels +
+                                                (size_t)y0 * src->stride);
+        const uint16_t *r1 = (const uint16_t *)((const uint8_t *)src->pixels +
+                                                (size_t)y1 * src->stride);
+        for (int x = 0; x < dst->w; x++) {
+            float fx = ((float)x + 0.5f) * sx - 0.5f;
+            int x0 = (int)(fx < 0 ? 0 : fx);
+            int x1 = x0 + 1 < src->w ? x0 + 1 : src->w - 1;
+            int wx = (int)((fx - (float)x0) * 256.0f);
+            if (wx < 0) wx = 0;
+            if (wx > 256) wx = 256;
+            uint16_t a = r0[x0], b = r0[x1], c = r1[x0], d = r1[x1];
+            int ar = (a >> 11) & 31, ag = (a >> 5) & 63, ab = a & 31;
+            int br = (b >> 11) & 31, bg = (b >> 5) & 63, bb = b & 31;
+            int cr = (c >> 11) & 31, cg = (c >> 5) & 63, cb = c & 31;
+            int dr = (d >> 11) & 31, dg = (d >> 5) & 63, db = d & 31;
+            int tr = ((ar * (256 - wx) + br * wx) * (256 - wy) +
+                      (cr * (256 - wx) + dr * wx) * wy) >> 16;
+            int tg = ((ag * (256 - wx) + bg * wx) * (256 - wy) +
+                      (cg * (256 - wx) + dg * wx) * wy) >> 16;
+            int tb = ((ab * (256 - wx) + bb * wx) * (256 - wy) +
+                      (cb * (256 - wx) + db * wx) * wy) >> 16;
+            o[x] = (uint16_t)((tr << 11) | (tg << 5) | tb);
+        }
+    }
+    return false;                     /* it worked, but not in hardware */
+}
+
 /* Publish CPU writes to an image's pixels. See the note in surfer.h: this is
  * the one call standing between "renders into an image every frame" and the
  * P4's PPA reading a line the CPU only ever left in cache. Backends whose

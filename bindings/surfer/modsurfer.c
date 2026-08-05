@@ -2104,6 +2104,24 @@ static mp_obj_t mod_image_new(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_new_obj, 2, 4, mod_image_new);
 
+/* surfer.image_scale(dst, src) -> True if the HARDWARE did it
+ *
+ * Scales the whole of src into the whole of dst. Down then up is a blur,
+ * which on a backend with a 2D engine costs no CPU at all -- see
+ * surf_image_scale in surfer.h. The return value is not success (it
+ * always works, falling back to a CPU bilinear); it says whether it was
+ * free. */
+static mp_obj_t mod_image_scale(mp_obj_t dst_in, mp_obj_t src_in)
+{
+    surfer_image_obj_t *d = MP_OBJ_TO_PTR(dst_in);
+    surfer_image_obj_t *s = MP_OBJ_TO_PTR(src_in);
+    if (!mp_obj_is_type(dst_in, &surfer_image_type) ||
+        !mp_obj_is_type(src_in, &surfer_image_type))
+        mp_raise_TypeError(MP_ERROR_TEXT("image_scale wants two Images"));
+    return mp_obj_new_bool(surf_image_scale(d->img, s->img));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(mod_image_scale_obj, mod_image_scale);
+
 /* surfer.layer(image, x, y, view_w) -> wrap-scrolling strip Node;
  * n.set_offset(px), n.fast_scroll(True) for the streaming band path */
 static mp_obj_t mod_layer(size_t n_args, const mp_obj_t *args)
@@ -2828,6 +2846,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_rect), MP_ROM_PTR(&mod_rect_obj)},
     {MP_ROM_QSTR(MP_QSTR_image), MP_ROM_PTR(&mod_image_obj)},
     {MP_ROM_QSTR(MP_QSTR_image_new), MP_ROM_PTR(&mod_image_new_obj)},
+    {MP_ROM_QSTR(MP_QSTR_image_scale), MP_ROM_PTR(&mod_image_scale_obj)},
     {MP_ROM_QSTR(MP_QSTR_layer), MP_ROM_PTR(&mod_layer_obj)},
     {MP_ROM_QSTR(MP_QSTR_fb_read), MP_ROM_PTR(&mod_fb_read_obj)},
     {MP_ROM_QSTR(MP_QSTR_has_touch), MP_ROM_PTR(&mod_has_touch_obj)},
