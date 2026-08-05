@@ -68,23 +68,27 @@ build/tools/emojibake: tools/emojibake.c tools/stb/stb_image.h
 	@mkdir -p build/tools
 	$(CC) -O2 -Itools -Iinclude -o $@ tools/emojibake.c -lm
 
-# THREE SIZES, and the number is a cost decision rather than a design
-# limit. An emoji is ARGB — 4 bytes a pixel, against A8's 1 and A1's 1/8
-# — so the set costs 258 KB at 12px, 440 at 16 and 948 at 24, against
-# 1.25 MiB for all 45 text faces put together. That is the price of
-# pictures instead of shapes and there is no packing trick for it: the
-# A1 saving fontbake gets is measured on a mask and cannot apply here.
+# TWO SIZES, and the number is a FLASH decision rather than a design
+# one. An emoji is ARGB — 4 bytes a pixel, against A8's 1 and A1's 1/8 —
+# so the set costs 284 KB at 12px, 474 at 16 and 998 at 24, against
+# 1.25 MiB for all 45 text faces put together. There is no packing trick:
+# the A1 saving fontbake gets is measured on a mask and cannot apply to
+# a picture.
 #
-# Three is what it takes to actually FIT: the registry gives each face
-# the largest set that does not overflow its line box, and the faces
-# here run from a 12px line to a 65px one. With only 12 and 16, every
-# face above ui16 wore a 16px emoji beside 28px text — legible, but
-# visibly a stand-in. 24 covers the 17 faces with a line box that big.
+# There WAS a 24, and it is the right size for the display ramp — the
+# registry gives each face the largest set that fits its line box, so
+# ui23 and up wore a 24 and looked right. It came out because tulip5's
+# P4X app partition is 7 MiB and the image reached 99% of it: 77 KB
+# spare is one font away from a build that does not link, and the 16 MiB
+# flash is fully allocated, so growing the partition reformats the
+# board. Dropping it bought 998 KB back.
 #
-# Both levers are one edit. Dropping emoji24 saves 948 KB and costs the
-# display ramp its size; trimming assets/emoji/set.txt scales all three
-# together, and the top 100 emoji are ~82% of all use.
-EMOJI_NAMES := emoji12 emoji16 emoji24
+# What that costs is visible rather than subtle: every face above ui16
+# now wears a 16px emoji, which beside 28px text reads as a slightly
+# small picture. apps/emoji.py's specimen shows exactly this and says
+# so. The other lever is assets/emoji/set.txt, which scales both sizes
+# together — the top 100 emoji are ~82% of all use.
+EMOJI_NAMES := emoji12 emoji16
 EMOJI_GEN := $(addprefix $(GEN_DIR)/font_,$(addsuffix .h,$(EMOJI_NAMES)))
 EMOJI_SRC := assets/emoji/set.txt
 
@@ -309,7 +313,16 @@ FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 # below it $(FONTLAB_GEN) was empty and the registry never rebuilt when
 # the font list changed — adding a name to TTF_NAMES baked the new atlas
 # and then silently kept the old registry.
-$(GEN_DIR)/font_registry.c: tools/gen_font_registry.py $(FONTLAB_GEN)
+#
+# ...and the MAKEFILE itself is a prerequisite, which is the other half
+# of the same bug. Depending on the baked headers catches a name being
+# ADDED, because that bakes a new file; it cannot catch one being
+# REMOVED, since nothing the registry depends on is touched. Taking
+# emoji24 out of EMOJI_NAMES left a registry still including and
+# registering a header the build no longer makes — which fails at the
+# NEXT clean build rather than this one, i.e. on somebody else's
+# machine.
+$(GEN_DIR)/font_registry.c: tools/gen_font_registry.py Makefile $(FONTLAB_GEN)
 	@mkdir -p $(GEN_DIR)
 	python3 tools/gen_font_registry.py $(FONT_NAMES) > $@
 

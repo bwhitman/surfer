@@ -26,7 +26,7 @@ endforeach()
 # list in step with EMOJI_NAMES in the desktop Makefile: the registry
 # wires each text face to the emoji set nearest its size, so a device
 # build missing one silently draws '?' where the desktop drew a picture.
-set(EMOJI_SIZES 12 16 24)
+set(EMOJI_SIZES 12 16)
 set(EMOJI_NAMES "")
 foreach(sz ${EMOJI_SIZES})
     list(APPEND EMOJI_NAMES emoji${sz})

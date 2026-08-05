@@ -1056,12 +1056,20 @@ the question, and both paint paths ask it.
 
 That costs 4 bytes a pixel against A8's 1 and A1's 1/8. The A1 saving
 does not apply and cannot: it is measured on a mask. Hence a CURATED set
-(`assets/emoji/set.txt`, 385 entries, which says why) at **three sizes —
-12, 16, 24 — for 258 + 440 + 948 KB**, against 1.25 MiB for all 45 text
-faces put together. Three is what it takes to actually fit: the registry
-gives each face the largest set that does not overflow its line box, and
-the faces here run from a 12px line to a 65px one. Both levers are one
-edit — a size out of `EMOJI_NAMES`, or lines out of set.txt.
+(`assets/emoji/set.txt`, 403 entries, which says why) at **two sizes —
+12 and 16, for 284 + 474 KB**, against 1.25 MiB for all 45 text faces
+put together. The registry gives each face the largest set that does not
+overflow its line box.
+
+**There was a 24 and it is the right size for the display ramp**, since
+the faces here run from a 12px line to a 65px one. It came out on flash
+pressure, not on taste: tulip5's P4X app partition is 7 MiB and the
+image reached 99% of it — 77 KB spare is one font away from a build that
+does not link, and that board's 16 MiB is fully allocated, so growing
+the partition reformats it. Dropping the 24 bought 998 KB back and every
+face above ui16 now wears a 16px emoji, which beside 28px text reads as
+a slightly small picture rather than as a bug. Both levers are one edit
+— a size in `EMOJI_NAMES`, or lines out of set.txt.
 
 **AN EMOJI OWNS TWO CELLS IN A TEXTGRID**, and that is arithmetic rather
 than convention: an emoji is square, a mono cell is not, so "as tall as
