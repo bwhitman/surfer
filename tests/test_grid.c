@@ -279,6 +279,31 @@ static void test_grid_wide_emoji_partial_damage(void)
     surf_node_destroy(g);
 }
 
+/* set_row advances TWO cells past a wide glyph, so the character after
+ * an emoji is not written into a cell the emoji covers. The failure is
+ * silent and reads as a missing character rather than a layout bug. */
+static void test_grid_wide_row_advance(void)
+{
+    fresh(400, 200, 32);
+    surf_node *g = surf_textgrid_new(&tfont, 8, 2, 0xffff, 0x1234);
+    surf_node_add(surf_screen(), g);
+
+    /* "A" + the emoji + "B": A at 0, the emoji owning 1 and 2, B at 3 */
+    surf_textgrid_set_row(g, 0, "A\xf0\x9f\x94\xa5" "B");
+    OK(grid_cp(g, 0, 0) == 'A');
+    OK(grid_cp(g, 1, 0) == EMO_CP);
+    OK(grid_cp(g, 2, 0) == ' ');   /* the covered cell */
+    OK(grid_cp(g, 3, 0) == 'B');
+
+    /* a row of plain text is unchanged: one cell per character */
+    surf_textgrid_set_row(g, 1, "ABC");
+    OK(grid_cp(g, 0, 1) == 'A');
+    OK(grid_cp(g, 1, 1) == 'B');
+    OK(grid_cp(g, 2, 1) == 'C');
+
+    surf_node_destroy(g);
+}
+
 void run_grid_tests(void)
 {
     test_grid_model();
@@ -288,4 +313,5 @@ void run_grid_tests(void)
     test_grid_scrollback();
     test_grid_wide_emoji();
     test_grid_wide_emoji_partial_damage();
+    test_grid_wide_row_advance();
 }

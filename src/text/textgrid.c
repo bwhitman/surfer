@@ -187,6 +187,30 @@ void surf_textgrid_set_row(surf_node *n, int16_t row, const char *utf8)
             hi = col;
         }
         col++;
+        /* A WIDE GLYPH TAKES THE NEXT CELL TOO, so the rest of the
+         * string starts one further along. Without this the character
+         * after an emoji lands in a cell the emoji is drawn over, and
+         * the line reads as though that character had been eaten —
+         * "fire" then a space then "cpu" comes out "firecpu". The cell
+         * is blanked rather than left alone because it is what the row
+         * would show if the emoji were later replaced by something
+         * narrow.
+         *
+         * This is set_row's business and not set_cells'. Here the caller
+         * hands over a whole line and tracks no columns; a caller using
+         * set_cells is doing its own column arithmetic (tulip5's console
+         * and its vt shadow both do) and a hidden extra advance would
+         * desync it. */
+        if (col < n->u.grid.cols && cell_is_wide(n, (int16_t)(col - 1), row)) {
+            surf_textcell *nx = cell(n, col, row);
+            if (nx->cp != ' ' || nx->fg != n->u.grid.fg ||
+                nx->bg != n->u.grid.bg) {
+                *nx = (surf_textcell){' ', n->u.grid.fg, n->u.grid.bg};
+                if (lo < 0) lo = col;
+                hi = col;
+            }
+            col++;
+        }
     }
     for (; col < n->u.grid.cols; col++) {
         surf_textcell *c = cell(n, col, row);
