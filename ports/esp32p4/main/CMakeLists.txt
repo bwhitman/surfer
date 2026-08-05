@@ -22,7 +22,16 @@ foreach(fam helvR helvB ncenR)
         list(APPEND ADOBE_NAMES ${fam}${sz})
     endforeach()
 endforeach()
-set(FONT_NAMES ${TTF_NAMES} ${ADOBE_NAMES})
+# Emoji sets — a colour picture atlas, baked by its own tool. Keep this
+# list in step with EMOJI_NAMES in the desktop Makefile: the registry
+# wires each text face to the emoji set nearest its size, so a device
+# build missing one silently draws '?' where the desktop drew a picture.
+set(EMOJI_SIZES 12 16 24)
+set(EMOJI_NAMES "")
+foreach(sz ${EMOJI_SIZES})
+    list(APPEND EMOJI_NAMES emoji${sz})
+endforeach()
+set(FONT_NAMES ${TTF_NAMES} ${ADOBE_NAMES} ${EMOJI_NAMES})
 idf_component_register(
     SRCS
         app_main.c
@@ -173,6 +182,49 @@ endforeach()
 
 # One TU owns every atlas (surf_font_builtin); including a font header
 # anywhere else would duplicate its pixels into that object file.
+# emojibake is the second host tool. stb_image only — no FreeType, since
+# the source art is PNG (see the header of tools/emojibake.c).
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen/emojibake
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND cc -O2 -I${SURFER_ROOT}/tools -I${SURFER_ROOT}/include
+            -o ${CMAKE_CURRENT_BINARY_DIR}/gen/emojibake
+            ${SURFER_ROOT}/tools/emojibake.c -lm
+    DEPENDS ${SURFER_ROOT}/tools/emojibake.c
+    VERBATIM
+)
+set(EMOJI_SET ${SURFER_ROOT}/assets/emoji/set.txt)
+set(EMOJI_PNG ${SURFER_ROOT}/assets/emoji/png)
+
+# The 16px bake also emits the NAME table (the names belong to the SET,
+# not to a size), so it has two outputs and the others have one.
+foreach(sz ${EMOJI_SIZES})
+    if(sz EQUAL 16)
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen/font_emoji16.h
+                   ${CMAKE_CURRENT_BINARY_DIR}/gen/emoji_names.h
+            COMMAND ${CMAKE_CURRENT_BINARY_DIR}/gen/emojibake emoji16 16
+                    ${EMOJI_SET} ${EMOJI_PNG}
+                    ${CMAKE_CURRENT_BINARY_DIR}/gen/font_emoji16.h
+                    ${CMAKE_CURRENT_BINARY_DIR}/gen/emoji_names.h
+            DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/emojibake ${EMOJI_SET}
+            VERBATIM
+        )
+    else()
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen/font_emoji${sz}.h
+            COMMAND ${CMAKE_CURRENT_BINARY_DIR}/gen/emojibake emoji${sz} ${sz}
+                    ${EMOJI_SET} ${EMOJI_PNG}
+                    ${CMAKE_CURRENT_BINARY_DIR}/gen/font_emoji${sz}.h
+            DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/emojibake ${EMOJI_SET}
+            VERBATIM
+        )
+    endif()
+    list(APPEND SURFER_FONT_HEADERS
+         ${CMAKE_CURRENT_BINARY_DIR}/gen/font_emoji${sz}.h)
+endforeach()
+list(APPEND SURFER_FONT_HEADERS ${CMAKE_CURRENT_BINARY_DIR}/gen/emoji_names.h)
+
 add_custom_command(
     OUTPUT ${GENDIR}/font_registry.c
     COMMAND python3 ${SURFER_ROOT}/tools/gen_font_registry.py ${FONT_NAMES}

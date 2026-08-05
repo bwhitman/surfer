@@ -198,7 +198,7 @@ static void test_compose(void)
     surf_tick();
     OK(nops == 3);
     OK(ops[0].op == 'F' && ops[0].c == 7 && rect_eq(ops[0].r, (surf_rect){5, 5, 10, 10}));
-    OK(ops[1].op == 'A' && ops[1].img == &alpha_img);
+    OK(ops[1].op == 'A' && ops[1].imgv.pixels == alpha_img.pixels);
     OK(ops[1].dst.x == 5 && ops[1].dst.y == 5);
 
     /* opaque sprite fully covering the dirty rect stops the walk below it */
@@ -207,7 +207,7 @@ static void test_compose(void)
     nops = 0;
     surf_tick();
     OK(nops == 2);
-    OK(ops[0].op == 'B' && ops[0].img == &opaque_img);
+    OK(ops[0].op == 'B' && ops[0].imgv.pixels == opaque_img.pixels);
 
     /* partial overlap: sprite clipped to the dirty rect, src offset shifts */
     surf_node_set_pos(op_sp, 95, 45);  /* damages old {5,5,10,10} + new {95,45,5,5} */

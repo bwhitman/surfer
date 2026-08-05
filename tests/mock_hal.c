@@ -18,17 +18,17 @@ static void m_fill(surf_rect dst, surf_color c)
 }
 static void m_blit(const surf_image *src, surf_rect sr, surf_point dst)
 {
-    ops[nops++] = (mock_op){.op = 'B', .img = src, .src = sr, .dst = dst};
+    ops[nops++] = (mock_op){.op = 'B', .img = src, .imgv = *src, .src = sr, .dst = dst};
 }
 static void m_blend(const surf_image *src, surf_rect sr, surf_point dst, uint8_t opa)
 {
     (void)opa;
-    ops[nops++] = (mock_op){.op = 'A', .img = src, .src = sr, .dst = dst};
+    ops[nops++] = (mock_op){.op = 'A', .img = src, .imgv = *src, .src = sr, .dst = dst};
 }
 static void m_xform_blend(const surf_image *s, surf_rect sr, surf_rect dst_r,
                           surf_rect vis, uint8_t rot, uint8_t mirror)
 {
-    ops[nops++] = (mock_op){.op = 'X', .img = s, .src = sr, .r = dst_r,
+    ops[nops++] = (mock_op){.op = 'X', .img = s, .imgv = *s, .src = sr, .r = dst_r,
                             .vis = vis, .rot = rot, .mirror = mirror};
 }
 static void m_present(const surf_rect *dirty, int n)

@@ -112,9 +112,32 @@ surf_point surf_textgrid_cell_size(const surf_node *n)
     return (surf_point){n->u.grid.cell_w, n->u.grid.cell_h};
 }
 
+/* True if this cell's glyph is wider than one cell — see cell_glyph()
+ * below, which is the same question asked at paint time. Declared here
+ * because DAMAGE has to ask it too: a wide glyph is painted by its left
+ * cell across two, so damaging only that cell leaves the right half
+ * un-repainted. Setting one cell to an emoji then drew half of it, and
+ * the other half appeared later when something unrelated damaged the
+ * neighbour — which is the worst shape of bug, since it looks like a
+ * rendering glitch rather than a damage one. */
+static bool cell_is_wide(surf_node *n, int16_t col, int16_t row);
+
 static void damage_cells(surf_node *n, int16_t col, int16_t row,
                          int16_t ncols, int16_t nrows)
 {
+    /* Extend one cell right if the last column damaged holds a wide
+     * glyph. The LEFT side needs no equivalent here — the paint loop
+     * starts a cell early for its own reasons and finds it. */
+    for (int16_t r = row; r < row + nrows; r++) {
+        if (col + ncols <= n->u.grid.cols &&
+            cell_is_wide(n, (int16_t)(col + ncols - 1), r)) {
+            ncols++;
+            break;
+        }
+    }
+    if (col + ncols > n->u.grid.cols)
+        ncols = (int16_t)(n->u.grid.cols - col);
+
     /* fold the cell rect into node w/h temporarily via a child-less
      * damage: compute the sub-rect in node space and push it through the
      * same ancestor translation surf_damage_subtree uses */
@@ -367,39 +390,126 @@ static inline uint16_t mix565(surf_color fgc, surf_color bgc, uint32_t a)
     return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-/* one cell into the framebuffer, clipped to vis (screen coords) */
+/* A cell's glyph, and which face it came from.
+ *
+ * `wide` is the one bit of policy here: a glyph whose advance does not
+ * fit a cell owns the NEXT cell too. That is the East-Asian-Wide rule
+ * every terminal follows, and for a grid it is not a convention but an
+ * arithmetic necessity — an emoji is square and a mono cell is not, so
+ * "as tall as the line" and "one cell wide" cannot both hold. mono16 is
+ * 10x19 and two of its cells are 20x19, which is as square as a cell
+ * grid gets. */
+typedef struct {
+    const surf_glyph *g;
+    const surf_font  *f;
+    bool              wide;
+} cellglyph;
+
+static bool cell_is_wide(surf_node *n, int16_t col, int16_t row)
+{
+    if (col < 0 || col >= n->u.grid.cols || row < 0 || row >= n->u.grid.rows)
+        return false;
+    const surf_textcell *c = cell(n, col, row);
+    if (c->cp == ' ')
+        return false;
+    const surf_font *src;
+    const surf_glyph *g = surf_font_glyph_in(n->u.grid.font, c->cp, &src);
+    return g && g->adv > n->u.grid.cell_w;
+}
+
+static cellglyph cell_glyph(const surf_node *n, const surf_textcell *c)
+{
+    cellglyph r = {NULL, n->u.grid.font, false};
+    if (c->cp == ' ')
+        return r;
+    r.g = surf_font_glyph_in(n->u.grid.font, c->cp, &r.f);
+    if (r.g && r.g->adv > n->u.grid.cell_w)
+        r.wide = true;
+    return r;
+}
+
+/* one cell into the framebuffer, clipped to vis (screen coords).
+ * box_w is the cell's own width, or two cells' for a wide glyph. */
 static void cell_to_fb(const surf_node *n, const surf_textcell *c,
-                       int16_t cx, int16_t cy, surf_rect vis,
-                       uint8_t *fb, int32_t stride)
+                       cellglyph cg, int16_t cx, int16_t cy, int16_t box_w,
+                       surf_rect vis, uint8_t *fb, int32_t stride)
 {
     const surf_font *f = n->u.grid.font;
-    surf_rect box = {cx, cy, n->u.grid.cell_w, n->u.grid.cell_h};
+    surf_rect box = {cx, cy, box_w, n->u.grid.cell_h};
     surf_rect v = surf_rect_intersect(box, vis);
     if (surf_rect_empty(v))
         return;
 
-    const surf_glyph *g = (c->cp == ' ') ? NULL : surf_font_glyph(f, c->cp);
+    const surf_font *gf = cg.f;
+    const surf_glyph *g = cg.g;
     int16_t gx = 0, gy = 0, gx1 = 0, gy1 = 0;
     const uint8_t *atlas = NULL;
     int32_t astride = 0;
+    bool color = false;
     if (g && g->w > 0) {
-        gx = (int16_t)(cx + g->xoff);
-        gy = (int16_t)(cy + f->ascent + g->yoff);
+        /* Centre the glyph's own advance box in whatever box it owns. For
+         * the grid's own face those are equal (a mono cell IS the advance)
+         * and this is the old `cx + xoff`; it only does anything for a
+         * fallback glyph in a two-cell box. */
+        int16_t pen = (int16_t)(cx + (box_w - g->adv) / 2);
+        gx = (int16_t)(pen + g->xoff);
+        if (gf != f) {
+            /* A FALLBACK glyph does not share this face's baseline — it
+             * was baked against its own — so in a grid it is centred in
+             * the cell box instead. A cell is a box and an emoji is a
+             * picture that belongs in it; borrowing a baseline from a
+             * face it has never met puts a 16px picture 1px above a 19px
+             * cell and clips its top row. (A LABEL is the other case and
+             * does align to the baseline — there the emoji sits in
+             * flowing text, not in a box.) Emoji are square, so the
+             * advance is also the box height. */
+            gy = (int16_t)(cy + (n->u.grid.cell_h - g->adv) / 2
+                              + g->adv + g->yoff);
+        } else {
+            gy = (int16_t)(cy + f->ascent + g->yoff);
+        }
         gx1 = (int16_t)(gx + g->w);
         gy1 = (int16_t)(gy + g->h);
-        atlas = (const uint8_t *)f->atlas.pixels;
-        astride = f->atlas.stride;
+        atlas = (const uint8_t *)gf->atlas.pixels;
+        astride = gf->atlas.stride;
+        color = gf->atlas.format == SURF_FMT_ARGB8888;
     }
 
     for (int16_t y = v.y; y < v.y + v.h; y++) {
         uint16_t *row = (uint16_t *)(fb + (int32_t)y * stride) + v.x;
         if (atlas && y >= gy && y < gy1) {
-            const uint8_t *arow = atlas + (int32_t)(g->y + (y - gy)) * astride + g->x;
-            for (int16_t x = v.x; x < v.x + v.w; x++, row++) {
-                if (x >= gx && x < gx1)
-                    *row = mix565(c->fg, c->bg, arow[x - gx]);
-                else
-                    *row = c->bg;
+            if (color) {
+                /* An emoji carries its own colours, so the cell's fg means
+                 * nothing to it — only the bg, which it is composited over.
+                 * Straight (un-premultiplied) ARGB, matching what the hal's
+                 * blend and surf_image_blit read. */
+                const uint32_t *arow =
+                    (const uint32_t *)(atlas +
+                        (int32_t)(g->y + (y - gy)) * astride) + g->x;
+                for (int16_t x = v.x; x < v.x + v.w; x++, row++) {
+                    if (x < gx || x >= gx1) {
+                        *row = c->bg;
+                        continue;
+                    }
+                    uint32_t p = arow[x - gx];
+                    uint32_t a = p >> 24;
+                    if (a == 0) {
+                        *row = c->bg;
+                    } else {
+                        uint16_t fg = SURF_RGB((p >> 16) & 0xff,
+                                               (p >> 8) & 0xff, p & 0xff);
+                        *row = a >= 255 ? fg : mix565(fg, c->bg, a);
+                    }
+                }
+            } else {
+                const uint8_t *arow =
+                    atlas + (int32_t)(g->y + (y - gy)) * astride + g->x;
+                for (int16_t x = v.x; x < v.x + v.w; x++, row++) {
+                    if (x >= gx && x < gx1)
+                        *row = mix565(c->fg, c->bg, arow[x - gx]);
+                    else
+                        *row = c->bg;
+                }
             }
         } else {
             for (int16_t x = 0; x < v.w; x++)
@@ -423,26 +533,49 @@ void surf_textgrid_paint(const surf_paint_ent *e)
     int32_t stride = 0;
     uint8_t *fb = surf_g.hal->fb_ptr ? surf_g.hal->fb_ptr(&stride) : NULL;
 
+    /* START ONE CELL EARLY. A wide glyph is painted by its LEFT cell, so
+     * a damage rect that begins on its right half would otherwise find a
+     * cell owned by somebody off-screen and paint nothing there — the
+     * right half of every emoji on a partial repaint. Its own damage
+     * intersect makes the extra cell nearly free. */
+    int16_t cstart = c0 > 0 ? (int16_t)(c0 - 1) : c0;
+
     for (int16_t r = r0; r <= r1; r++) {
-        for (int16_t c = c0; c <= c1; c++) {
+        bool owned = false;     /* this cell belongs to the wide one left of it */
+        for (int16_t c = cstart; c <= c1; c++) {
             const surf_textcell *tc = cell(n, c, r);
+            if (owned) {
+                owned = false;
+                continue;
+            }
+            cellglyph cg = cell_glyph(n, tc);
+            int16_t span = (cg.wide && c + 1 < n->u.grid.cols) ? 2 : 1;
+            owned = span > 1;
+            if (c < c0 && span == 1)
+                continue;       /* only walked to find a wide left neighbour */
             int16_t cx = (int16_t)(e->ax + c * cw), cy = (int16_t)(e->ay + r * ch);
             if (fb) {
-                cell_to_fb(n, tc, cx, cy, e->vis, fb, stride);
+                cell_to_fb(n, tc, cg, cx, cy, (int16_t)(span * cw),
+                           e->vis, fb, stride);
                 continue;
             }
             /* fallback for hals without fb_ptr: fill + glyph blend */
-            surf_rect box = surf_rect_intersect((surf_rect){cx, cy, cw, ch}, e->vis);
+            surf_rect box = surf_rect_intersect(
+                (surf_rect){cx, cy, (int16_t)(span * cw), ch}, e->vis);
             if (surf_rect_empty(box))
                 continue;
             surf_g.hal->fill(box, tc->bg);
-            const surf_glyph *g = tc->cp == ' ' ? NULL
-                                                : surf_font_glyph(n->u.grid.font, tc->cp);
-            if (g && g->w > 0) {
-                surf_image img = n->u.grid.font->atlas;
-                img.tint = tc->fg;
-                surf_glyph_blit(&img, g, (int16_t)(cx + g->xoff),
-                                (int16_t)(cy + n->u.grid.font->ascent + g->yoff),
+            if (cg.g && cg.g->w > 0) {
+                /* whichever face answered — its own atlas, tinted only if
+                 * it is a mask (an emoji brings its own colours) */
+                surf_image img = cg.f->atlas;
+                if (img.format == SURF_FMT_A8)
+                    img.tint = tc->fg;
+                int16_t pen = (int16_t)(cx + (span * cw - cg.g->adv) / 2);
+                int16_t gy = cg.f != n->u.grid.font
+                    ? (int16_t)(cy + (ch - cg.g->adv) / 2 + cg.g->adv + cg.g->yoff)
+                    : (int16_t)(cy + n->u.grid.font->ascent + cg.g->yoff);
+                surf_glyph_blit(&img, cg.g, (int16_t)(pen + cg.g->xoff), gy,
                                 e->vis);
             }
         }

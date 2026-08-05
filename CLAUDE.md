@@ -1023,6 +1023,108 @@ sizes its cell from 'M', so a proportional face is refused.
 same source (`demos/fonts_scene.c`); tap/click cycles pages. `SURF_TAP=x,y`
 injects a synthetic tap so the page flip is testable headlessly.
 
+## Emoji are a FALLBACK FACE, not a second way to draw
+
+`surfer.emoji("fire")` is the name lookup; `"\U0001F525"` is the same
+glyph and always works. Both end up in the same place: a codepoint the
+text face has not got, found in an emoji set instead of becoming `'?'`.
+
+**The whole feature is one pointer.** `surf_font.fallback` is tried
+between "this face has it" and "draw a question mark", and
+`surf_font_glyph_in()` reports WHICH face answered — without that a
+caller cannot know which atlas to read, and an emoji's rect blitted out
+of the text atlas draws a convincing piece of a letter. That is the only
+new concept; everything else is arithmetic.
+
+- **One level, never a chain.** A chain is a lookup whose cost depends
+  on how many faces are loaded, and a set pointing at a set is how a
+  lookup stops terminating. The registry wires it and nothing else may.
+- **The face wins over the set.** They overlap — ✔ U+2714 and ★ U+2B50
+  are in territory some faces draw as line art — and a font that
+  genuinely carries a codepoint must never be overridden.
+- **`'?'` is still last**, so a miss in BOTH is visible rather than
+  nothing.
+
+**The atlas is ARGB8888, and that is the one thing that is different.**
+Every other face here is A8 — one coverage byte, tinted to whatever
+colour the caller asked for — because a letter is a SHAPE and its colour
+belongs to the caller. An emoji is a PICTURE: the red of the heart and
+the green of the check mark are the content, and at the sizes this
+matters they are what make it legible after the shape has stopped being.
+So the caller's colour is ignored for these, `surf_font_is_color()` is
+the question, and both paint paths ask it.
+
+That costs 4 bytes a pixel against A8's 1 and A1's 1/8. The A1 saving
+does not apply and cannot: it is measured on a mask. Hence a CURATED set
+(`assets/emoji/set.txt`, 385 entries, which says why) at **three sizes —
+12, 16, 24 — for 258 + 440 + 948 KB**, against 1.25 MiB for all 45 text
+faces put together. Three is what it takes to actually fit: the registry
+gives each face the largest set that does not overflow its line box, and
+the faces here run from a 12px line to a 65px one. Both levers are one
+edit — a size out of `EMOJI_NAMES`, or lines out of set.txt.
+
+**AN EMOJI OWNS TWO CELLS IN A TEXTGRID**, and that is arithmetic rather
+than convention: an emoji is square, a mono cell is not, so "as tall as
+the line" and "one cell wide" cannot both hold. mono16 is 10x19 and two
+of its cells are 20x19, which is as square as a cell grid gets — which
+is also why every terminal settled on East-Asian-Wide. Three things fall
+out, and each fails silently on its own:
+
+- **Damage has to extend one cell RIGHT.** A wide glyph is painted by
+  its left cell across two, so damaging only that cell draws half an
+  emoji and leaves the other half for whenever something unrelated
+  damages the neighbour. `cell_is_wide()` is asked at damage time for
+  exactly this. Found by the test, not by looking.
+- **Paint has to start one cell EARLY**, for the mirror reason: a damage
+  rect beginning on the right half would find a cell owned by somebody
+  off-screen and paint nothing there.
+- **A fallback glyph is CENTRED in the cell box, not baselined.** It was
+  baked against its own baseline, and borrowing this face's puts a 16px
+  picture 1px above a 19px cell and clips its top row. A LABEL is the
+  other case and does baseline it — there the emoji sits in flowing
+  text rather than in a box.
+
+**Baked by its own tool.** `tools/emojibake.c` shares none of fontbake's
+rasterizers, hinting, kerning or A1 packing; what it shares is the
+emitted shape, so an emoji set IS an ordinary `surf_font` and the text
+path needed no idea it was special. Sources are Twemoji's shipped 72x72
+PNGs through the already-vendored stb_image — no colour-font rasteriser,
+because every colour emoji font ships one bitmap strike and hands back a
+downscale of it, which is what this does minus a 10 MB dependency.
+
+**The downscale is box-filtered in PREMULTIPLIED alpha.** Averaging
+straight RGBA weights the colour of fully transparent pixels — black, in
+these PNGs — into every edge, and the set comes out with a dark fringe
+that reads as dirty at small sizes.
+
+Two measured facts behind the shape, both of which inverted an
+assumption:
+
+- **Colour beats monochrome at small sizes.** The obvious cheap answer
+  is a 1-bit emoji face, which needs no new format at all. But
+  monochrome emoji use hatching to stand in for colour, and at 8-12px
+  that hatching is noise — the mono set read WORSE than a downscaled
+  colour one. Below about 12px colour is the only thing still carrying
+  meaning, because the shape has stopped.
+- **One master downscales to every size.** Going direct from the 72px
+  source and going via a 32px intermediate are indistinguishable at 8,
+  10, 12, 16 and 22 — so the per-size bakes cost build time and nothing
+  in quality, and a size nobody baked could be derived at load if that
+  ever became worth it.
+
+**Twemoji is CC-BY 4.0** (`assets/emoji/LICENSE.txt`) and needs a visible
+attribution — the second share-alike-ish asset here after VileR's
+oldschool pack. GNU Unifont was the alternative and is genuinely better
+at exactly 16px, its designed size, where the strokes are on the pixel
+grid; it lost because it only works at 16 (a 2:1 downscale shreds 1px
+outlines) and because a hatched circle cannot say "orange".
+
+`build/surfer_emoji` is the specimen — labels at three sizes and a
+textgrid, so both paint paths are on one screen. `make test` covers the
+lookup order, that a label blits the emoji out of the SET's atlas
+untinted, that a wide glyph reaches pixels in the second cell, and that
+it survives a partial repaint of only that second cell.
+
 ## A root pointer dies with the VM. A C static does not.
 
 `MP_REGISTER_ROOT_POINTER` fields live in `mp_state_ctx`, and **`mp_init()`

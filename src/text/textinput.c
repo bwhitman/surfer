@@ -297,7 +297,9 @@ void surf_textinput_paint(const surf_paint_ent *e)
         while (surf_tlayout_next(&it, &tg)) {
             if (tg.g->w <= 0)
                 continue;
-            surf_glyph_blit(&n->u.input.img, tg.g,
+            surf_image im =
+                surf_glyph_image(&n->u.input.img, f, tg.font);
+            surf_glyph_blit(&im, tg.g,
                             (int16_t)(e->ax + tg.x - sx),
                             (int16_t)(e->ay + tg.y), e->vis);
         }

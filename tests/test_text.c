@@ -21,6 +21,33 @@ surf_font tfont;  /* shared with test_scroll.c's dropdown tests */
 
 static uint8_t tatlas[256 * 16];  /* real backing so the grid can read it */
 
+/* A stand-in EMOJI SET: one ARGB glyph at a codepoint tfont has not got,
+ * 12 wide against tfont's 10 so it is also the "wider than a cell" case.
+ * Solid magenta with a transparent left column, so a test can tell the
+ * picture's own colours from the cell's fg and prove the alpha ran. */
+#define EMO_CP   0x1F525u
+#define EMO_PX   0xffff00ffu     /* opaque magenta */
+static uint32_t eatlas[16 * 16];
+static surf_glyph eglyphs[] = {
+    /* cp, x, y, w, h, xoff, yoff, adv — the box is 12x12 sitting on the
+     * baseline, trimmed by one column on the left */
+    {EMO_CP, 0, 0, 11, 12, 1, -12, 12},
+};
+surf_font efont;   /* shared with test_grid.c's wide-cell test */
+
+static void mkemoji(void)
+{
+    for (int i = 0; i < 16 * 16; i++)
+        eatlas[i] = EMO_PX;
+    efont = (surf_font){
+        .atlas = {.pixels = eatlas, .w = 16, .h = 16, .stride = 16 * 4,
+                  .format = SURF_FMT_ARGB8888},
+        .ascent = 12, .descent = 0, .line_gap = 0,
+        .glyphs = eglyphs, .nglyphs = 1,
+        .kerns = tkerns, .nkerns = 0,
+    };
+}
+
 static void mkfont(void)
 {
     tg_all[0] = tglyphs[0];
@@ -38,6 +65,8 @@ static void mkfont(void)
         .glyphs = tg_all, .nglyphs = 30,
         .kerns = tkerns, .nkerns = 1,
     };
+    mkemoji();
+    tfont.fallback = &efont;
 }
 
 static void test_utf8(void)
@@ -96,7 +125,7 @@ static void test_label(void)
     surf_tick();
     /* bg fill + 2 glyph blends + present */
     OK(count_op('A') == 2);
-    OK(ops[1].op == 'A' && ops[1].img == &t->u.text.img);
+    OK(ops[1].op == 'A' && ops[1].imgv.pixels == t->u.text.img.pixels);
     OK(ops[1].dst.x == 1 && ops[1].dst.y == 2);   /* xoff 1, 12 − 10 */
     OK(ops[1].src.x == 0 && ops[1].src.w == 8);   /* 'A' cell */
     OK(ops[2].dst.x == 11 && ops[2].src.x == 8);  /* 'B' cell */
@@ -205,6 +234,54 @@ static void test_textinput(void)
     surf_node_destroy(n);
 }
 
+/* The fallback face: a codepoint the font has not got must come back
+ * from the emoji set, with the SET named as its source — a lookup that
+ * returned the glyph but not the face would blit an emoji's rect out of
+ * the text atlas, which draws a plausible piece of a letter. */
+static void test_fallback_lookup(void)
+{
+    const surf_font *src = NULL;
+
+    /* a codepoint the face HAS is never overridden by the fallback */
+    OK(surf_font_glyph_in(&tfont, 'A', &src) == &tg_all[3] && src == &tfont);
+
+    /* one it has not got comes from the set, and says so */
+    const surf_glyph *g = surf_font_glyph_in(&tfont, EMO_CP, &src);
+    OK(g == &eglyphs[0] && src == &efont);
+
+    /* one NEITHER has is still the '?' of the text face, not nothing */
+    g = surf_font_glyph_in(&tfont, 0x1F600u, &src);
+    OK(g && g->cp == '?' && src == &tfont);
+
+    /* with no fallback wired, the same lookup falls straight to '?' */
+    surf_font bare = tfont;
+    bare.fallback = NULL;
+    g = surf_font_glyph_in(&bare, EMO_CP, &src);
+    OK(g && g->cp == '?' && src == &bare);
+
+    OK(surf_font_is_color(&efont) && !surf_font_is_color(&tfont));
+}
+
+/* ...and the label paint path blits it out of the SET's atlas, untinted.
+ * Both halves matter: the wrong atlas draws garbage, and tinting a
+ * picture would flatten it to one colour. */
+static void test_fallback_label(void)
+{
+    fresh(200, 100, 32);
+    /* "A" then the emoji: one glyph from each face, so the ops are a pair */
+    surf_node *t = surf_text_new(&tfont, "A\xf0\x9f\x94\xa5", 0, 0,
+                                 SURF_RGB(255, 0, 0));
+    surf_node_add(surf_screen(), t);
+    surf_tick();
+    OK(count_op('A') == 2);
+    OK(ops[1].imgv.pixels == tatlas);            /* the letter: text atlas */
+    OK(ops[2].imgv.pixels == eatlas);            /* the emoji: emoji atlas */
+    OK(ops[2].imgv.format == SURF_FMT_ARGB8888); /* ...as a picture */
+    /* the pen advanced by the EMOJI's advance (12), not the letter's */
+    OK(ops[2].dst.x == 10 + 1);
+    surf_node_destroy(t);
+}
+
 void run_text_tests(void)
 {
     mkfont();
@@ -212,4 +289,6 @@ void run_text_tests(void)
     test_measure();
     test_label();
     test_textinput();
+    test_fallback_lookup();
+    test_fallback_label();
 }

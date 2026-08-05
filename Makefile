@@ -23,7 +23,7 @@ GEN_DIR := build/gen
 .PHONY: sdl test test-sdl clean
 
 sdl: build/surfer_demo build/surfer_settings build/surfer_type build/surfer_editor \
-	build/surfer_bounce build/surfer_fonts
+	build/surfer_bounce build/surfer_fonts build/surfer_emoji
 
 test: build/surfer_test
 	./build/surfer_test
@@ -60,6 +60,44 @@ ifeq ($(FT_LIBS),)
 	@echo "NOTE: no freetype2 via pkg-config — baking unhinted. Small text"
 	@echo "      will be fuzzy; 'brew install freetype' and rebuild to fix."
 endif
+
+# Emoji are baked by their own tool: a colour picture set shares none of
+# fontbake's rasterizers, hinting, kerning or A1 packing (see the header
+# of tools/emojibake.c). stb_image is already vendored for build tools.
+build/tools/emojibake: tools/emojibake.c tools/stb/stb_image.h
+	@mkdir -p build/tools
+	$(CC) -O2 -Itools -Iinclude -o $@ tools/emojibake.c -lm
+
+# THREE SIZES, and the number is a cost decision rather than a design
+# limit. An emoji is ARGB — 4 bytes a pixel, against A8's 1 and A1's 1/8
+# — so the set costs 258 KB at 12px, 440 at 16 and 948 at 24, against
+# 1.25 MiB for all 45 text faces put together. That is the price of
+# pictures instead of shapes and there is no packing trick for it: the
+# A1 saving fontbake gets is measured on a mask and cannot apply here.
+#
+# Three is what it takes to actually FIT: the registry gives each face
+# the largest set that does not overflow its line box, and the faces
+# here run from a 12px line to a 65px one. With only 12 and 16, every
+# face above ui16 wore a 16px emoji beside 28px text — legible, but
+# visibly a stand-in. 24 covers the 17 faces with a line box that big.
+#
+# Both levers are one edit. Dropping emoji24 saves 948 KB and costs the
+# display ramp its size; trimming assets/emoji/set.txt scales all three
+# together, and the top 100 emoji are ~82% of all use.
+EMOJI_NAMES := emoji12 emoji16 emoji24
+EMOJI_GEN := $(addprefix $(GEN_DIR)/font_,$(addsuffix .h,$(EMOJI_NAMES)))
+EMOJI_SRC := assets/emoji/set.txt
+
+# emoji16 is the one that also emits the NAME table, because the names
+# belong to the SET and not to any one size — see emojibake.c.
+$(GEN_DIR)/font_emoji16.h $(GEN_DIR)/emoji_names.h: build/tools/emojibake $(EMOJI_SRC)
+	@mkdir -p $(GEN_DIR)
+	build/tools/emojibake emoji16 16 $(EMOJI_SRC) assets/emoji/png \
+		$(GEN_DIR)/font_emoji16.h $(GEN_DIR)/emoji_names.h
+
+$(GEN_DIR)/font_emoji%.h: build/tools/emojibake $(EMOJI_SRC)
+	@mkdir -p $(GEN_DIR)
+	build/tools/emojibake emoji$* $* $(EMOJI_SRC) assets/emoji/png $@
 
 # ---- the UI ramp. fontbake's SIZE is ppem, so these names finally mean
 # what they say; ui16 is ~10pt at the desktop window's 110-140dpi (which
@@ -249,7 +287,7 @@ TTF_NAMES := ui12 ui16 ui16b ui23 ui28 ui36 ui48 \
 	kpixel16 kpixel32 kpixel48 kpixel64 kmini16 kmini32 khigh32 kblocks16 \
 	mono16 bigblue12 \
 	portfolio6x8 apricot8x10 phoenix8x8 xga7x15 robotron8x16 fmtowns8x16 toshiba9x16 dosv12x24 cordata16x26 wyse16x32
-FONT_NAMES := $(TTF_NAMES) $(ADOBE_NAMES)
+FONT_NAMES := $(TTF_NAMES) $(ADOBE_NAMES) $(EMOJI_NAMES)
 
 FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 	$(GEN_DIR)/font_ui16b.h $(GEN_DIR)/font_ui23.h $(GEN_DIR)/font_ui28.h \
@@ -264,7 +302,7 @@ FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 	$(GEN_DIR)/font_kpixel48.h $(GEN_DIR)/font_kpixel64.h \
 	$(GEN_DIR)/font_kmini16.h $(GEN_DIR)/font_kmini32.h \
 	$(GEN_DIR)/font_khigh32.h $(GEN_DIR)/font_kblocks16.h \
-	$(ADOBE_GEN)
+	$(ADOBE_GEN) $(EMOJI_GEN) $(GEN_DIR)/emoji_names.h
 
 # NOTE this rule must come AFTER FONTLAB_GEN is defined: make expands a
 # rule's prerequisites when it parses the rule, so with the definition
@@ -274,6 +312,13 @@ FONTLAB_GEN := $(GEN_DIR)/font_ui12.h $(GEN_DIR)/font_ui16.h \
 $(GEN_DIR)/font_registry.c: tools/gen_font_registry.py $(FONTLAB_GEN)
 	@mkdir -p $(GEN_DIR)
 	python3 tools/gen_font_registry.py $(FONT_NAMES) > $@
+
+build/surfer_emoji: $(CORE_SRCS) $(SDL_SRCS) demos/emoji.c \
+		$(GEN_DIR)/font_registry.c $(FONTLAB_GEN) $(HDRS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Isrc/core -Isrc/hal/sdl -I$(GEN_DIR) \
+		-o $@ $(CORE_SRCS) $(SDL_SRCS) demos/emoji.c \
+		$(GEN_DIR)/font_registry.c $(SDL_LIBS) -lm
 
 # the scene lives in demos/fonts_scene.c — the P4 firmware builds the very
 # same page from the same source (ports/esp32p4/main/app_main.c)

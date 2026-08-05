@@ -1,0 +1,21 @@
+Emoji art in this directory (png/) is Twemoji.
+
+    https://github.com/jdecked/twemoji
+
+Copyright 2019 Twitter, Inc and other contributors
+Copyright 2022-present Jason Sofonia & Justine De Caires
+
+Graphics licensed under CC-BY 4.0:
+    https://creativecommons.org/licenses/by/4.0/
+
+CC-BY REQUIRES ATTRIBUTION, and that obligation travels into anything
+built from these files — including surfer's baked emoji atlas
+(build/gen/font_emoji*.h) and any firmware or page containing it. A
+mention in a README or an "about" screen satisfies it; the project
+explicitly accepts that form. This is the second non-permissive asset
+in surfer, after VileR's oldschool font pack (CC BY-SA 4.0, see
+assets/fonts/LICENSE.txt).
+
+Only the files listed in set.txt are vendored — 385 of Twemoji's ~4,000
+— and only the 72x72 PNG rasters, not the SVG sources. The bake is
+tools/emojibake.c.

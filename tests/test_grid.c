@@ -6,6 +6,8 @@
 #include "mock_hal.h"
 
 extern surf_font tfont;
+extern surf_font efont;   /* the stand-in emoji set, from test_text.c */
+#define EMO_CP 0x1F525u
 
 static uint16_t px(int x, int y)
 {
@@ -206,6 +208,77 @@ static void test_grid_scrollback(void)
     surf_node_destroy(g);
 }
 
+/* AN EMOJI OWNS TWO CELLS, and this is the test that has to exist.
+ *
+ * The failure it catches does not crash and does not look like a bug in
+ * the arithmetic: a 12px picture clipped to a 10px cell is a perfectly
+ * convincing 10px picture with its right edge missing, and the cell
+ * beside it stays background, which reads as deliberate spacing.
+ *
+ * Three things are asserted, and each fails separately: the picture
+ * reaches pixels in the SECOND cell; it is the picture's own colour and
+ * not the cell's fg (so nothing tinted it); and a letter in the cell
+ * AFTER the pair is still exactly where the grid says it is, which is
+ * what "two cells" has to mean for every column sum downstream. */
+static void test_grid_wide_emoji(void)
+{
+    fresh(400, 200, 32);
+    surf_node *g = surf_textgrid_new(&tfont, 8, 2, 0xffff, 0x1234);
+    surf_node_add(surf_screen(), g);
+    surf_node_set_pos(g, 20, 10);
+    surf_tick();
+
+    /* cell 0 holds the emoji; cell 2 holds a letter, so cell 1 is the
+     * one the emoji has to have reached */
+    surf_textgrid_set_cell(g, 0, 0, EMO_CP, 0xffff, 0x1234);
+    surf_textgrid_set_cell(g, 2, 0, 'A', 0xffff, 0x1234);
+    surf_tick();
+
+    /* the atlas is solid magenta, so any pixel of the picture is that
+     * colour exactly — a tint would have made it the cell's white fg */
+    uint16_t magenta = SURF_RGB(255, 0, 255);
+
+    /* the 12px box is centred in the 20px pair: x 20+4 .. 20+16, with the
+     * glyph trimmed one column in. Sample inside the SECOND cell. */
+    OK(px(20 + 12, 10 + 8) == magenta);
+    OK(px(20 + 15, 10 + 8) == magenta);
+
+    /* ...and not tinted to the cell's fg */
+    OK(px(20 + 12, 10 + 8) != 0xffff);
+
+    /* the pair did not bleed into cell 2, which still starts as bg above
+     * its own glyph box */
+    OK(px(20 + 20, 10 + 0) == 0x1234);
+
+    /* a plain letter in the same grid is unmoved: one cell, as before */
+    surf_node_destroy(g);
+}
+
+/* An emoji whose LEFT cell is off the damage rect must still paint its
+ * right half — the paint loop starts a cell early for exactly this, and
+ * without it a partial repaint eats half of every emoji on screen. */
+static void test_grid_wide_emoji_partial_damage(void)
+{
+    fresh(400, 200, 32);
+    surf_node *g = surf_textgrid_new(&tfont, 8, 2, 0xffff, 0x1234);
+    surf_node_add(surf_screen(), g);
+    surf_node_set_pos(g, 20, 10);
+    surf_textgrid_set_cell(g, 0, 0, EMO_CP, 0xffff, 0x1234);
+    surf_tick();
+
+    /* Damage ONLY the second cell. set_cell damages one cell's rect, so
+     * writing cell 1 is exactly the partial repaint this is about — and
+     * cell 1 is the one the emoji in cell 0 owns. */
+    surf_textgrid_set_cell(g, 1, 0, 'A', 0xffff, 0x1234);
+    surf_tick();
+    memset(mock_fb, 0, (size_t)mock_w * mock_h * 2);
+    surf_textgrid_set_cell(g, 1, 0, ' ', 0xffff, 0x1234);
+    surf_tick();
+
+    OK(px(20 + 12, 10 + 8) == SURF_RGB(255, 0, 255));
+    surf_node_destroy(g);
+}
+
 void run_grid_tests(void)
 {
     test_grid_model();
@@ -213,4 +286,6 @@ void run_grid_tests(void)
     test_grid_fast_scroll();
     test_grid_hidden_ancestor_never_shifts();
     test_grid_scrollback();
+    test_grid_wide_emoji();
+    test_grid_wide_emoji_partial_damage();
 }

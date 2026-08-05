@@ -99,6 +99,33 @@ void surf_text_set_ellipsis(surf_node *n, bool on)
     surf_damage_subtree(n);
 }
 
+/* Which image a laid-out glyph's pixels are actually in.
+ *
+ * Normally the node's own copy of its face's atlas header, which is what
+ * carries the caller's colour as a tint. A glyph that came from the
+ * FALLBACK face lives in a different atlas, and whether the colour still
+ * applies depends on what kind of face that is: a mask (A8) is tinted
+ * like anything else, a picture (an emoji, ARGB) already has its own
+ * colours and the caller's would mean nothing. Copying the header is
+ * free — it is six fields, and the pixels are shared.
+ *
+ * RETURNED BY VALUE, so callers blit from a stack temporary. That is
+ * safe because a hal reads the descriptor during the blend call and
+ * retains only the PIXELS (hal_p4 copies every field it needs into a
+ * PPA config; hal_sdl reads them inline) — but it is the kind of thing
+ * a future hal could quietly break, so: nothing may hold this pointer
+ * past the call. */
+surf_image surf_glyph_image(const surf_image *base, const surf_font *base_font,
+                            const surf_font *from)
+{
+    if (!from || from == base_font)
+        return *base;
+    surf_image im = from->atlas;
+    if (im.format == SURF_FMT_A8)
+        im.tint = base->tint;
+    return im;
+}
+
 /* shared by label and textinput paint: one glyph, clipped to vis */
 void surf_glyph_blit(const surf_image *img, const surf_glyph *g,
                      int16_t dx, int16_t dy, surf_rect vis)
@@ -125,7 +152,8 @@ void surf_text_paint(const surf_paint_ent *e)
     while (surf_tlayout_next(&it, &tg)) {
         if (tg.g->w <= 0)
             continue;  /* spaces advance the pen, nothing to blit */
-        surf_glyph_blit(&n->u.text.img, tg.g,
+        surf_image im = surf_glyph_image(&n->u.text.img, n->u.text.font, tg.font);
+        surf_glyph_blit(&im, tg.g,
                         (int16_t)(e->ax + tg.x), (int16_t)(e->ay + tg.y), e->vis);
     }
 }

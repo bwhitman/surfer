@@ -49,7 +49,9 @@ int32_t surf_utf8_prev(const char *s, int32_t i)
     return i;
 }
 
-const surf_glyph *surf_font_glyph(const surf_font *f, uint32_t cp)
+/* Exact hit only: no '?', no fallback. The two callers below add those,
+ * in the one order that is correct. */
+static const surf_glyph *find(const surf_font *f, uint32_t cp)
 {
     int32_t lo = 0, hi = f->nglyphs - 1;
     while (lo <= hi) {
@@ -61,9 +63,44 @@ const surf_glyph *surf_font_glyph(const surf_font *f, uint32_t cp)
         else
             hi = mid - 1;
     }
-    if (cp != '?')
-        return surf_font_glyph(f, '?');
     return NULL;
+}
+
+/* The lookup every paint path uses, reporting WHICH face answered —
+ * without that a caller cannot know which atlas to read, and an emoji
+ * would be blitted out of the text font's pixels.
+ *
+ * The order is load-bearing. The face itself wins over the fallback, so
+ * a font that genuinely carries a codepoint is never overridden by the
+ * emoji set (they overlap: ✔ U+2714 and ★ U+2B50 are in CP437-ish
+ * territory and some faces have them as line art). '?' is last, so a
+ * miss in BOTH is still a visible question mark rather than nothing.
+ * `src` always comes back non-NULL when the return is non-NULL. */
+const surf_glyph *surf_font_glyph_in(const surf_font *f, uint32_t cp,
+                                     const surf_font **src)
+{
+    const surf_glyph *g = find(f, cp);
+    if (g) {
+        *src = f;
+        return g;
+    }
+    if (f->fallback && (g = find(f->fallback, cp)) != NULL) {
+        *src = f->fallback;
+        return g;
+    }
+    *src = f;
+    return cp == '?' ? NULL : find(f, '?');
+}
+
+const surf_glyph *surf_font_glyph(const surf_font *f, uint32_t cp)
+{
+    const surf_font *src;
+    return surf_font_glyph_in(f, cp, &src);
+}
+
+bool surf_font_is_color(const surf_font *f)
+{
+    return f && f->atlas.format == SURF_FMT_ARGB8888;
 }
 
 bool surf_font_is_mono(const surf_font *f)
@@ -218,10 +255,13 @@ bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out)
     for (;;) {
         if (it->i >= it->line_end) {
             if (it->ell == 1) {
-                const surf_glyph *e = surf_font_glyph(it->f, ELLIPSIS_CP);
+                const surf_font *esrc;
+                const surf_glyph *e =
+                    surf_font_glyph_in(it->f, ELLIPSIS_CP, &esrc);
                 it->ell = 2;
                 if (e) {
                     out->g = e;
+                    out->font = esrc;
                     out->x = (int16_t)(it->pen_x + e->xoff);
                     out->y = (int16_t)(it->base_y + e->yoff);
                     out->byte_idx = it->line_end;
@@ -237,11 +277,13 @@ bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out)
         }
         int32_t idx = it->i;
         uint32_t cp = surf_utf8_next(it->s, &it->i);
-        const surf_glyph *g = surf_font_glyph(it->f, cp);
+        const surf_font *gsrc;
+        const surf_glyph *g = surf_font_glyph_in(it->f, cp, &gsrc);
         if (!g)
             continue;
         it->pen_x = (int16_t)(it->pen_x + surf_font_kern(it->f, it->prev_cp, cp));
         out->g = g;
+        out->font = gsrc;
         out->x = (int16_t)(it->pen_x + g->xoff);
         out->y = (int16_t)(it->base_y + g->yoff);
         out->byte_idx = idx;

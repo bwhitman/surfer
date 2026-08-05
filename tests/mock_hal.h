@@ -11,7 +11,14 @@ typedef struct {
                        'S' band_shift (dst = sx,sy), 'P' present */
     surf_rect  r;   /* fill rect; xform: the dst footprint */
     surf_color c;
-    const surf_image *img;
+    /* BY VALUE, not by pointer. A hal reads the descriptor during the
+     * call and retains nothing but the pixels, so a caller is entitled to
+     * pass a stack temporary — which surf_text_paint does, since a glyph
+     * from the fallback face needs a header pointing at a different
+     * atlas. A mock that kept the pointer would be recording an address
+     * that is dead before the assertion reads it. */
+    surf_image        imgv;
+    const surf_image *img;   /* the address passed; compare pixels, not this */
     surf_rect  src;
     surf_point dst;
     surf_rect  vis;    /* xform only */

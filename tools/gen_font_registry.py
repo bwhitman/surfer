@@ -3,6 +3,12 @@
 
     gen_font_registry.py ui16 helvR12 ... > font_registry.c
 
+A name beginning `emoji` is an EMOJI SET rather than a text face (see
+tools/emojibake.c): a colour atlas that no caller asks for by name and
+that never appears in surfer.fonts(). Instead every text face is wired
+to point at the one nearest its own size, so a codepoint the face has
+not got is looked for there before it becomes a question mark.
+
 Every baked font header declares its atlas as `static const`, so whichever
 translation unit includes it gets its own copy of the pixels. Funnelling
 them all through this one generated TU is what keeps 1.25 MiB of atlas
@@ -31,9 +37,50 @@ for n in names:
     w('    {"%s", &surf_font_%s},\n' % (n, n))
 w("};\n\n#define NBUILTIN ((int)(sizeof builtins / sizeof builtins[0]))\n\n")
 
+emoji = [n for n in names if n.startswith("emoji")]
+if emoji:
+    w('#include "emoji_names.h"\n\n')
+w("static const int emoji_idx[] = {%s-1};\n"
+  % "".join("%d," % names.index(n) for n in emoji))
+w("#define NEMOJI %d\n\n" % len(emoji))
+
 w("""/* mutable copies: prepare() may swap each atlas for a DMA-able one */
 static surf_font fonts[NBUILTIN];
 static bool loaded;
+
+/* Give every text face the emoji set nearest its own size.
+ *
+ * NEAREST, and never one that cannot fit: an emoji owns two cells in a
+ * grid and one line box in a label, so the test is against 2*cell_w and
+ * against the line height, and the largest set satisfying both wins.
+ * A face with nothing small enough still gets the smallest set — an
+ * emoji smaller than the text beside it reads perfectly well, whereas
+ * one that overflows is clipped by the cell and looks broken.
+ *
+ * An emoji set never gets a fallback of its own: one level only, and a
+ * set pointing at another set is how a lookup stops terminating. */
+static void wire_emoji(void)
+{
+    if (NEMOJI == 0)
+        return;
+    for (int i = 0; i < NBUILTIN; i++) {
+        bool is_emoji = false;
+        for (int e = 0; e < NEMOJI; e++)
+            if (emoji_idx[e] == i)
+                is_emoji = true;
+        if (is_emoji)
+            continue;
+        int line_h = surf_font_line_h(&fonts[i]);
+        int best = -1, best_sz = -1, smallest = -1, smallest_sz = 1 << 30;
+        for (int e = 0; e < NEMOJI; e++) {
+            const surf_font *ef = &fonts[emoji_idx[e]];
+            int sz = ef->ascent;              /* an emoji box is square */
+            if (sz < smallest_sz) { smallest_sz = sz; smallest = emoji_idx[e]; }
+            if (sz <= line_h && sz > best_sz) { best_sz = sz; best = emoji_idx[e]; }
+        }
+        fonts[i].fallback = &fonts[best >= 0 ? best : smallest];
+    }
+}
 
 static void load_once(void)
 {
@@ -51,6 +98,7 @@ static void load_once(void)
          * memcpy already existed. */
         surf_image_expand_a1(&fonts[i].atlas);
     }
+    wire_emoji();
     loaded = true;
 }
 
@@ -81,6 +129,63 @@ const surf_font *surf_font_builtin(const char *name)
         if (strcmp(builtins[i].name, name) == 0)
             return &fonts[i];
     return NULL;
+}
+
+/* ---- emoji by name ----
+ * The table is sorted by name, so this bisects like every other lookup
+ * here. It is generated beside the atlas from the same set.txt, which is
+ * what stops a name and a picture drifting apart. */
+uint32_t surf_emoji_cp(const char *name)
+{
+#if NEMOJI
+    if (!name)
+        return 0;
+    int lo = 0, hi = SURF_EMOJI_NAMES - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        int c = strcmp(surf_emoji_names[mid].name, name);
+        if (c == 0)
+            return surf_emoji_names[mid].cp;
+        if (c < 0)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+#else
+    (void)name;
+#endif
+    return 0;
+}
+
+int surf_emoji_count(void)
+{
+#if NEMOJI
+    return SURF_EMOJI_NAMES;
+#else
+    return 0;
+#endif
+}
+
+const char *surf_emoji_name_at(int idx)
+{
+#if NEMOJI
+    if (idx >= 0 && idx < SURF_EMOJI_NAMES)
+        return surf_emoji_names[idx].name;
+#else
+    (void)idx;
+#endif
+    return NULL;
+}
+
+uint32_t surf_emoji_cp_at(int idx)
+{
+#if NEMOJI
+    if (idx >= 0 && idx < SURF_EMOJI_NAMES)
+        return surf_emoji_names[idx].cp;
+#else
+    (void)idx;
+#endif
+    return 0;
 }
 
 void surf_font_builtin_prepare(surf_font_prepare_fn fn)

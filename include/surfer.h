@@ -491,13 +491,25 @@ typedef struct {
 
 typedef struct { uint32_t a, b; int16_t adv; } surf_kern;
 
-typedef struct {
-    surf_image        atlas;   /* SURF_FMT_A8 */
+typedef struct surf_font {
+    surf_image        atlas;   /* SURF_FMT_A8, or ARGB8888 for an emoji set */
     int16_t           ascent, descent, line_gap;  /* px; descent ≤ 0 */
     const surf_glyph *glyphs;  /* sorted by codepoint */
     int32_t           nglyphs;
     const surf_kern  *kerns;   /* sorted by (a, b); only non-zero pairs */
     int32_t           nkerns;
+    /* Tried for a codepoint this face has not got, BEFORE giving up and
+     * drawing '?'. It is how emoji work: every text face points at the
+     * emoji set nearest its own size, so a label or a cell holding
+     * U+1F525 draws fire instead of a question mark, and nothing above
+     * the font layer had to learn a second way to draw a picture.
+     *
+     * One level, and deliberately: a chain is a lookup whose cost
+     * depends on how many faces are loaded, and the answer to "what if
+     * the fallback also misses" is that it draws '?' like anything else.
+     * The registry wires this at load; nothing else may, since a font
+     * pointing at itself would not return. */
+    const struct surf_font *fallback;
 } surf_font;
 
 #define surf_font_line_h(f) ((int16_t)((f)->ascent - (f)->descent + (f)->line_gap))
@@ -510,8 +522,25 @@ surf_font *surf_font_from_blob(const void *data, size_t len);
 void       surf_font_free(surf_font *f);
 
 /* True if every glyph has the same advance — the textgrid needs that,
- * since its cell is sized from 'M' and wider glyphs would be clipped. */
+ * since its cell is sized from 'M' and wider glyphs would be clipped.
+ * An emoji face is mono by construction (every picture is one box wide)
+ * and is skipped here anyway: it is a FALLBACK, never a grid's own face. */
 bool surf_font_is_mono(const surf_font *f);
+
+/* True if this face draws pictures rather than shapes — an ARGB atlas,
+ * so the caller's colour does not apply to it. The textgrid asks,
+ * because its cell composer has a separate loop for each. */
+bool surf_font_is_color(const surf_font *f);
+
+/* ---- emoji ----
+ * The set baked from assets/emoji/set.txt, reachable by name so a caller
+ * does not have to write `"\U0001F525"` and hope. Returns 0 for a name
+ * that is not in the set — never a placeholder codepoint, since a
+ * silently wrong picture is worse than a visible nothing. */
+uint32_t    surf_emoji_cp(const char *name);
+int         surf_emoji_count(void);
+const char *surf_emoji_name_at(int idx);   /* NULL past the end */
+uint32_t    surf_emoji_cp_at(int idx);
 
 /* ---- built-in fonts ----
  * Every font baked into this build, addressable by name ("ui16",

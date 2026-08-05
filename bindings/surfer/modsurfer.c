@@ -2367,7 +2367,13 @@ static mp_obj_t mod_fonts(size_t n_args, const mp_obj_t *args)
     bool mono_only = n_args > 0 && mp_obj_is_true(args[0]);
     mp_obj_t list = mp_obj_new_list(0, NULL);
     for (int i = 0; i < surf_font_builtin_count(); i++) {
-        if (mono_only && !surf_font_is_mono(surf_font_builtin_at(i)))
+        const surf_font *f = surf_font_builtin_at(i);
+        /* An emoji set is not a face anybody picks — it is the fallback
+         * every face already points at, and it would pass the mono test
+         * (one box per picture) and then be offered as a console font. */
+        if (surf_font_is_color(f))
+            continue;
+        if (mono_only && !surf_font_is_mono(f))
             continue;
         mp_obj_list_append(list, mp_obj_new_str(surf_font_builtin_name(i),
                                                 strlen(surf_font_builtin_name(i))));
@@ -2375,6 +2381,53 @@ static mp_obj_t mod_fonts(size_t n_args, const mp_obj_t *args)
     return list;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_fonts_obj, 0, 1, mod_fonts);
+
+/* surfer.emoji(name) -> the CHARACTER, or None if the set has not got it.
+ * surfer.emoji()     -> every name in the set.
+ *
+ * A character rather than a codepoint, because what a caller wants is to
+ * put it in a string: `surfer.label("build " + surfer.emoji("check"), ...)`.
+ * `"\U0001F525"` is the same glyph and always works — MicroPython has real
+ * unicode strings on every target here — so this is for readability, not
+ * because the escape is unavailable.
+ *
+ * None rather than a placeholder for a name that is not in the set: a
+ * wrong picture is worse than a visible gap, and it is what makes the
+ * miss show up where the typo is. */
+static mp_obj_t mod_emoji(size_t n_args, const mp_obj_t *args)
+{
+    if (!n_args) {
+        mp_obj_t list = mp_obj_new_list(0, NULL);
+        for (int i = 0; i < surf_emoji_count(); i++) {
+            const char *n = surf_emoji_name_at(i);
+            mp_obj_list_append(list, mp_obj_new_str(n, strlen(n)));
+        }
+        return list;
+    }
+    uint32_t cp = surf_emoji_cp(mp_obj_str_get_str(args[0]));
+    if (!cp)
+        return mp_const_none;
+    /* encode the one codepoint as UTF-8; mp_obj_new_str wants bytes */
+    char b[5];
+    int i = 0;
+    if (cp < 0x80) {
+        b[i++] = (char)cp;
+    } else if (cp < 0x800) {
+        b[i++] = (char)(0xc0 | (cp >> 6));
+        b[i++] = (char)(0x80 | (cp & 0x3f));
+    } else if (cp < 0x10000) {
+        b[i++] = (char)(0xe0 | (cp >> 12));
+        b[i++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        b[i++] = (char)(0x80 | (cp & 0x3f));
+    } else {
+        b[i++] = (char)(0xf0 | (cp >> 18));
+        b[i++] = (char)(0x80 | ((cp >> 12) & 0x3f));
+        b[i++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        b[i++] = (char)(0x80 | (cp & 0x3f));
+    }
+    return mp_obj_new_str(b, (size_t)i);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_emoji_obj, 0, 1, mod_emoji);
 
 static mp_obj_t mod_textgrid(size_t n_args, const mp_obj_t *args)
 {
@@ -2387,6 +2440,8 @@ static mp_obj_t mod_textgrid(size_t n_args, const mp_obj_t *args)
                                     : surf_font_builtin("mono16");
     /* the grid sizes its cell from 'M'; a proportional face would have
      * every wider glyph clipped, so refuse it outright */
+    if (surf_font_is_color(f))
+        mp_raise_ValueError(MP_ERROR_TEXT("that is an emoji set, not a font"));
     if (!surf_font_is_mono(f))
         mp_raise_ValueError(MP_ERROR_TEXT("textgrid needs a monospace font"));
     surfer_node_obj_t *o = new_node_obj(surf_textgrid_new(
@@ -2859,6 +2914,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_fonts), MP_ROM_PTR(&mod_fonts_obj)},
+    {MP_ROM_QSTR(MP_QSTR_emoji), MP_ROM_PTR(&mod_emoji_obj)},
     {MP_ROM_QSTR(MP_QSTR_widget_font), MP_ROM_PTR(&mod_widget_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollview), MP_ROM_PTR(&mod_scrollview_obj)},
     {MP_ROM_QSTR(MP_QSTR_scrollbar), MP_ROM_PTR(&mod_scrollbar_obj)},

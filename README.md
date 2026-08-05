@@ -200,8 +200,9 @@ idf.py -p <port> flash monitor
 surfer itself is MIT — see [LICENSE](LICENSE).
 
 Bundled fonts and art keep their own licenses. Full terms in
-[assets/fonts/LICENSE.txt](assets/fonts/LICENSE.txt) and
-[assets/kenney/LICENSE.txt](assets/kenney/LICENSE.txt):
+[assets/fonts/LICENSE.txt](assets/fonts/LICENSE.txt),
+[assets/kenney/LICENSE.txt](assets/kenney/LICENSE.txt) and
+[assets/emoji/LICENSE.txt](assets/emoji/LICENSE.txt):
 
 | asset | license |
 |---|---|
@@ -210,6 +211,14 @@ Bundled fonts and art keep their own licenses. Full terms in
 | BigBlue Terminal | **CC BY-SA 4.0 — attribution required** |
 | Kenney pixel fonts + sprite library | CC0 |
 | Adobe X11 bitmap fonts (helv/ncen/cour) | Adobe/DEC permissive |
+| Twemoji (the emoji set) | **CC-BY 4.0 — attribution required** |
+
+**Emoji graphics are [Twemoji](https://github.com/jdecked/twemoji)**,
+copyright 2019 Twitter, Inc and other contributors, copyright
+2022-present Jason Sofonia & Justine De Caires, licensed
+[CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). Anything
+built from surfer's emoji atlas carries that attribution requirement
+too — a line in a README or an "about" screen is enough.
 
 **BigBlue Terminal** is by **VileR**, released under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/):

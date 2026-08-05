@@ -232,6 +232,10 @@ typedef struct {
 
 typedef struct {
     const surf_glyph *g;
+    /* WHICH face `g` came from — the walker's own font, or its fallback
+     * (the emoji set). Paint has to read the right atlas, and a glyph
+     * carries no way back to the table it lives in. */
+    const surf_font  *font;
     int16_t x, y;       /* glyph blit position (top-left), node-relative */
     int32_t byte_idx;   /* index of this codepoint in the string */
 } surf_tglyph;
@@ -239,12 +243,17 @@ typedef struct {
 uint32_t surf_utf8_next(const char *s, int32_t *i);   /* 0 at NUL */
 int32_t  surf_utf8_prev(const char *s, int32_t i);
 const surf_glyph *surf_font_glyph(const surf_font *f, uint32_t cp);
+/* ...and the form that says which face answered, for the paint paths */
+const surf_glyph *surf_font_glyph_in(const surf_font *f, uint32_t cp,
+                                     const surf_font **src);
 int16_t  surf_font_kern(const surf_font *f, uint32_t a, uint32_t b);
 
 void surf_tlayout_begin(surf_tlayout *it, const surf_font *f, const char *s,
                         int16_t wrap_w, uint8_t align, uint8_t tflags);
 bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out);
 
+surf_image surf_glyph_image(const surf_image *base, const surf_font *base_font,
+                            const surf_font *from);
 void surf_glyph_blit(const surf_image *img, const surf_glyph *g,
                      int16_t dx, int16_t dy, surf_rect vis);
 void surf_text_paint(const surf_paint_ent *e);       /* label */
