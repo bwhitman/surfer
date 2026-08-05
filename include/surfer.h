@@ -63,6 +63,25 @@ void        surf_image_destroy(surf_image *img);
  * src over dst (565/ARGB/A8 sources). */
 surf_image *surf_image_new(int16_t w, int16_t h, surf_format format);
 
+/* ...and the same thing for an image something DRAWS INTO EVERY FRAME.
+ *
+ * surf_image_new hands out whatever memory a backend has most of, which
+ * is the right default: images are usually baked once and then only
+ * read, and there are a lot of them. An emulator's screen, a video
+ * decoder's surface or a software renderer's target is the other case --
+ * written pixel by pixel, sixty times a second -- and there the distance
+ * to the memory is the cost.
+ *
+ * Measured on the P4X, one 256x224 RGB565 frame of a NES emulator: the
+ * palette blit filling it cost 2.44 ms into PSRAM and 1.45 ms into
+ * internal SRAM. The other 0.5 ms is not the blit at all -- pushing
+ * 114 KB through the cache each frame evicts the emulator's own working
+ * set, so the 6502 slowed down too.
+ *
+ * FALLS BACK SILENTLY. Fast memory is scarce and a big image will not
+ * fit; you get an ordinary image and the old speed, never a failure. */
+surf_image *surf_image_new_fast(int16_t w, int16_t h, surf_format format);
+
 /* Publish CPU writes to img->pixels so the drawing path can read them.
  *
  * Call it after writing an image's pixels YOURSELF — through the `pixels`
@@ -150,6 +169,17 @@ typedef struct {
      * Returns the number of contacts written (<= max). */
     int (*touch_points)(surf_touch_pt *out, int max);
     void *(*alloc_image)(size_t bytes);  /* 64-byte aligned */
+    /* Optional (may be NULL): image memory the CPU writes FAST, for the
+     * rare image that is rendered into per frame rather than baked once.
+     * On a backend with a memory hierarchy that means the near side of
+     * it -- internal SRAM on the P4, where alloc_image hands out PSRAM.
+     *
+     * It is a hint and it may fail: this memory is scarce, so returning
+     * NULL is normal and the caller falls back to alloc_image. Whatever
+     * comes back must still be drawable BY THE BLITTER, which on a DMA
+     * backend is the constraint that decides whether this can exist at
+     * all. free_image takes either. */
+    void *(*alloc_image_fast)(size_t bytes);
     void (*free_image)(void *p);
     /* Optional (may be NULL): make CPU writes to an image's pixels visible
      * to whatever reads them for drawing — a cache writeback on a backend

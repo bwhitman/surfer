@@ -1295,6 +1295,16 @@ static void image_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
             dest[0] = MP_OBJ_NEW_SMALL_INT(o->img->format);
             return;
         }
+        /* WHERE the pixels are, as an integer. Not for arithmetic — the
+         * buffer protocol is how you reach them — but for answering "did
+         * this land in fast memory", which on a machine with a memory
+         * hierarchy is the difference between 0.5 ms and 2.5 ms a frame
+         * and is otherwise invisible from up here. On the P4, internal
+         * SRAM reads 0x4ff..... and PSRAM does not. */
+        if (attr == MP_QSTR_addr) {
+            dest[0] = mp_obj_new_int_from_uint((uintptr_t)o->img->pixels);
+            return;
+        }
     }
     /* store: img.tint = rgb565 (A8 masks: the color the alpha draws in;
      * retint + sprite.damage() per frame = hardware color cycling) */
@@ -2000,20 +2010,28 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_obj, 1, 2, mod_image);
 
 /* surfer.image_new(w, h, alpha=False) -> blank Image for load-time
  * composition (bake tile maps / parallax strips into one image) */
+/* surfer.image_new(w, h, fmt=0, fast=False)
+ *
+ * `fast` asks for memory the CPU writes quickly, for an image something
+ * renders into EVERY FRAME rather than bakes once -- an emulator's
+ * screen, a decoder's surface. It is a hint: where there is no such
+ * memory, or none left, you get an ordinary image and no error. */
 static mp_obj_t mod_image_new(size_t n_args, const mp_obj_t *args)
 {
     /* 0/False = opaque 565, 1/True = ARGB, surfer.A8 = tintable mask */
     mp_int_t fmt = n_args > 2 ? mp_obj_get_int(args[2]) : 0;
-    surf_image *img = surf_image_new((int16_t)mp_obj_get_int(args[0]),
-                                     (int16_t)mp_obj_get_int(args[1]),
-                                     (surf_format)fmt);
+    bool fast = n_args > 3 && mp_obj_is_true(args[3]);
+    int16_t w = (int16_t)mp_obj_get_int(args[0]);
+    int16_t h = (int16_t)mp_obj_get_int(args[1]);
+    surf_image *img = fast ? surf_image_new_fast(w, h, (surf_format)fmt)
+                           : surf_image_new(w, h, (surf_format)fmt);
     if (!img)
         mp_raise_ValueError(MP_ERROR_TEXT("image_new failed"));
     surfer_image_obj_t *o = mp_obj_malloc(surfer_image_obj_t, &surfer_image_type);
     o->img = img;
     return MP_OBJ_FROM_PTR(o);
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_new_obj, 2, 3, mod_image_new);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_new_obj, 2, 4, mod_image_new);
 
 /* surfer.layer(image, x, y, view_w) -> wrap-scrolling strip Node;
  * n.set_offset(px), n.fast_scroll(True) for the streaming band path */

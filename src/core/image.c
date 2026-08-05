@@ -155,13 +155,21 @@ bool surf_image_expand_a1(surf_image *img)
 
 /* ---- load-time composition (never per frame) ---- */
 
-surf_image *surf_image_new(int16_t w, int16_t h, surf_format format)
+/* Both constructors, because they differ in one allocator call. `fast`
+ * asks the hal for memory near the CPU and takes the ordinary kind when
+ * there is none or it is full -- see surf_image_new_fast in surfer.h. */
+static surf_image *image_new(int16_t w, int16_t h, surf_format format,
+                             bool fast)
 {
     if (!surf_g.hal || w <= 0 || h <= 0 || format > SURF_FMT_A8)
         return NULL;
     int bpp = format == SURF_FMT_ARGB8888 ? 4 : format == SURF_FMT_A8 ? 1 : 2;
     int32_t stride = ((int32_t)w * bpp + 63) & ~63;
-    uint8_t *px = surf_g.hal->alloc_image((size_t)stride * h);
+    uint8_t *px = NULL;
+    if (fast && surf_g.hal->alloc_image_fast)
+        px = surf_g.hal->alloc_image_fast((size_t)stride * h);
+    if (!px)
+        px = surf_g.hal->alloc_image((size_t)stride * h);
     surf_image *img = malloc(sizeof *img);
     if (!px || !img) {
         if (px) surf_g.hal->free_image(px);
@@ -176,6 +184,16 @@ surf_image *surf_image_new(int16_t w, int16_t h, surf_format format)
         .tint = 0xffff,   /* A8 masks start white */
     };
     return img;
+}
+
+surf_image *surf_image_new(int16_t w, int16_t h, surf_format format)
+{
+    return image_new(w, h, format, false);
+}
+
+surf_image *surf_image_new_fast(int16_t w, int16_t h, surf_format format)
+{
+    return image_new(w, h, format, true);
 }
 
 /* Publish CPU writes to an image's pixels. See the note in surfer.h: this is

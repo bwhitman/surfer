@@ -973,6 +973,39 @@ static void *h_alloc_image(size_t bytes)
                                    MALLOC_CAP_SPIRAM);
 }
 
+/* Image memory the CPU writes fast: INTERNAL SRAM rather than the PSRAM
+ * h_alloc_image hands out. For the one image an emulator or a decoder
+ * renders into every frame -- see surf_image_new_fast.
+ *
+ * MALLOC_CAP_DMA as well as INTERNAL, and that is the load-bearing bit:
+ * the PPA reads an image by DMA, so memory the CPU can reach but the
+ * blitter cannot would draw nothing at all. Asking for both means the
+ * allocator answers NULL rather than handing back something unusable,
+ * and NULL is a documented, harmless outcome -- image_new falls back.
+ *
+ * Internal SRAM is ~768 KB with a whole machine already living in it, so
+ * this WILL fail for anything large and is expected to. */
+static void *h_alloc_image_fast(size_t bytes)
+{
+    /* DMA-CAPABLE internal, and nothing looser: the PPA reads an image by
+     * DMA, so memory the CPU can reach and the blitter cannot would draw
+     * nothing. NULL is the right answer when there is none.
+     *
+     * MEASURED ON THE P4X, and the numbers say what this can and cannot
+     * do: with the machine up there is ~49 KB of DMA-capable internal
+     * free. The largest internal block is 139 KB but it is IRAM -- IDF
+     * reports it as executable, it is not byte-addressable, and an image
+     * indexed per byte cannot live there. So anything screen-sized falls
+     * back today and a NES frame (114 KB) certainly does; a scope trace
+     * or a small render target fits. Do not "fix" this by dropping the
+     * DMA cap -- that was tried, and it still fails for the same 8-bit
+     * reason, having first risked handing out memory the PPA cannot
+     * read. */
+    return heap_caps_aligned_alloc(P4_ALIGN,
+                                   (bytes + P4_ALIGN - 1) & ~(size_t)(P4_ALIGN - 1),
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+}
+
 static void h_free_image(void *p)
 {
     heap_caps_free(p);
@@ -1046,6 +1079,7 @@ static surf_hal hal_p4 = {
     .poll_touch = h_poll_touch,
     .touch_points = h_touch_points,
     .alloc_image = h_alloc_image,
+    .alloc_image_fast = h_alloc_image_fast,
     .free_image = h_free_image,
     .sync_image = h_sync_image,
     .fb_ptr = h_fb_ptr,
