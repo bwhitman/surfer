@@ -28,6 +28,22 @@ typedef struct {
     surf_color fg, bg;
 } surf_textcell;
 
+/* The transform a SPRITE and a FILMSTRIP both carry.
+ *
+ * ONE STRUCT SO THE TWO CANNOT DRIFT. A filmstrip is a sprite that
+ * picks its source rect from a frame index, and past that point the two
+ * are the same picture-on-a-node — so the scale/rot/mirror triple, the
+ * clamp, the footprint arithmetic and the compose path are shared
+ * rather than written twice. It was in `sprite` alone, and the cost of
+ * that was silent: surf_sprite_set_xform simply RETURNED for anything
+ * that was not a SPRITE, so `.scale` on an animation did nothing at all
+ * and read back as 1.0. */
+typedef struct {
+    int32_t scale_q16;   /* SURF_ONE = 1:1 */
+    uint8_t rot;         /* quarter turns CCW, 0..3 */
+    uint8_t mirror;      /* bit0 = x flip, bit1 = y flip */
+} surf_xform;
+
 enum {
     SURF_NF_HIDDEN = 1u << 0,
     SURF_NF_CLIP   = 1u << 1,
@@ -54,9 +70,7 @@ struct surf_node {
         struct {
             const surf_image *img;
             surf_rect src;
-            int32_t scale_q16;   /* SURF_ONE = 1:1 */
-            uint8_t rot;         /* quarter turns CCW, 0..3 */
-            uint8_t mirror;      /* bit0 = x flip, bit1 = y flip */
+            surf_xform xf;
             bool fast_pan;       /* set_src rides band_shift (cameras) */
             bool pan_shifted;    /* a shift ran on the last src change */
         } sprite;
@@ -68,7 +82,9 @@ struct surf_node {
         } layer;
         struct {
             const surf_image *img;
-            int16_t fw, fh;      /* frame size; node w/h mirror these */
+            surf_xform xf;
+            int16_t fw, fh;      /* frame size; node w/h mirror these,
+                                    TRANSFORMED — see surf_sprite_set_xform */
             int16_t frame, nframes, per_row;
             /* PLAYBACK, and it is optional: fps 0 means the caller owns
              * the frame — which is what an editor picking a cel wants,
@@ -136,6 +152,10 @@ struct surf_node {
  * dragged its pixels along (see node.c). gx/gy expand each node's box so
  * the ghost it left behind is repainted too. */
 void surf_damage_above(const surf_node *n, surf_rect area, int16_t gx, int16_t gy);
+
+/* The scale/rot/mirror a node carries, or NULL for one that carries
+ * none. A SPRITE and a FILMSTRIP both do — see surf_xform. */
+surf_xform *surf_node_xform(surf_node *n);
 
 /* rect ops */
 static inline bool surf_rect_empty(surf_rect r) { return r.w <= 0 || r.h <= 0; }

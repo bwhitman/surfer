@@ -248,22 +248,53 @@ surf_node *surf_sprite_new(const surf_image *img, int16_t x, int16_t y)
         n->x = x; n->y = y; n->w = img->w; n->h = img->h;
         n->u.sprite.img = img;
         n->u.sprite.src = (surf_rect){0, 0, img->w, img->h};
-        n->u.sprite.scale_q16 = SURF_ONE;
-        n->u.sprite.rot = 0;
-        n->u.sprite.mirror = 0;
+        n->u.sprite.xf.scale_q16 = SURF_ONE;
+        n->u.sprite.xf.rot = 0;
+        n->u.sprite.xf.mirror = 0;
     }
     return n;
 }
 
-/* node w/h = the on-screen footprint: src scaled, sides swapped for
+/* The transform of a node that HAS one, or NULL. A sprite and a
+ * filmstrip both do; nothing else does. */
+surf_xform *surf_node_xform(surf_node *n)
+{
+    if (!n)
+        return NULL;
+    if (n->type == SURF_NODE_SPRITE)
+        return &n->u.sprite.xf;
+    if (n->type == SURF_NODE_FILMSTRIP)
+        return &n->u.strip.xf;
+    return NULL;
+}
+
+/* What the transform is applied TO: a sprite's source rect, or one
+ * FRAME of a strip. The only line where the two differ. */
+static void xform_source(const surf_node *n, int32_t *w, int32_t *h)
+{
+    if (n->type == SURF_NODE_FILMSTRIP) {
+        *w = n->u.strip.fw;
+        *h = n->u.strip.fh;
+    } else {
+        *w = n->u.sprite.src.w;
+        *h = n->u.sprite.src.h;
+    }
+}
+
+/* node w/h = the on-screen footprint: source scaled, sides swapped for
  * quarter-turn rotations */
 static void sprite_update_size(surf_node *n)
 {
-    int32_t w = (int32_t)(((int64_t)n->u.sprite.src.w * n->u.sprite.scale_q16) >> 16);
-    int32_t h = (int32_t)(((int64_t)n->u.sprite.src.h * n->u.sprite.scale_q16) >> 16);
+    const surf_xform *xf = surf_node_xform(n);
+    int32_t sw, sh;
+    if (!xf)
+        return;
+    xform_source(n, &sw, &sh);
+    int32_t w = (int32_t)(((int64_t)sw * xf->scale_q16) >> 16);
+    int32_t h = (int32_t)(((int64_t)sh * xf->scale_q16) >> 16);
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    if (n->u.sprite.rot & 1) {
+    if (xf->rot & 1) {
         int32_t t = w; w = h; h = t;
     }
     n->w = (int16_t)w;
@@ -283,6 +314,13 @@ surf_node *surf_filmstrip_new(const surf_image *img, int16_t frame_w, int16_t fr
         n->u.strip.fh = frame_h;
         n->u.strip.per_row = (int16_t)(img->w / frame_w);
         n->u.strip.nframes = (int16_t)(n->u.strip.per_row * (img->h / frame_h));
+        /* 1:1 EXPLICITLY. node_alloc zeroes the union and a scale of 0
+         * is not "unscaled", it is a footprint of nothing — the same
+         * reason surf_sprite_new sets it rather than leaning on the
+         * zeroing. */
+        n->u.strip.xf.scale_q16 = SURF_ONE;
+        n->u.strip.xf.rot = 0;
+        n->u.strip.xf.mirror = 0;
     }
     return n;
 }
@@ -533,8 +571,8 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
     int16_t ax, ay;
     bool can_fast = pan_only && n->u.sprite.fast_pan && surf_g.hal->band_shift &&
                     n->u.sprite.img->opaque &&
-                    n->u.sprite.scale_q16 == SURF_ONE && n->u.sprite.rot == 0 &&
-                    n->u.sprite.mirror == 0 && surf_node_attached(n) &&
+                    n->u.sprite.xf.scale_q16 == SURF_ONE && n->u.sprite.xf.rot == 0 &&
+                    n->u.sprite.xf.mirror == 0 && surf_node_attached(n) &&
                     !surf_node_effectively_hidden(n) &&
                     dx > -src.w && dx < src.w && dy > -src.h && dy < src.h;
     if (can_fast) {
@@ -579,40 +617,50 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
     surf_damage_subtree(n);
 }
 
+/* SPRITES AND FILMSTRIPS BOTH, and that is the whole of this change.
+ * It used to return for anything that was not a SPRITE — so scaling an
+ * animation did nothing at all, silently, and read back as 1.0 — which
+ * is the worst failure a setter has, because the code looks right and
+ * the picture never moves. A filmstrip is a sprite that picks its
+ * source from a frame index; there was never a reason it could not be
+ * scaled, only a type test that said so. */
 void surf_sprite_set_xform(surf_node *n, int32_t scale_q16, uint8_t rot,
                            uint8_t mirror)
 {
-    if (!n || n->type != SURF_NODE_SPRITE || scale_q16 <= 0)
+    surf_xform *xf = surf_node_xform(n);
+    if (!xf || scale_q16 <= 0)
         return;
     /* the PPA SRM range; keep every backend honest about it */
     if (scale_q16 < SURF_ONE / 16) scale_q16 = SURF_ONE / 16;
     if (scale_q16 > SURF_ONE * 16) scale_q16 = SURF_ONE * 16;
     rot &= 3;
     mirror &= 3;
-    if (scale_q16 == n->u.sprite.scale_q16 && rot == n->u.sprite.rot &&
-        mirror == n->u.sprite.mirror)
+    if (scale_q16 == xf->scale_q16 && rot == xf->rot && mirror == xf->mirror)
         return;
     surf_damage_subtree(n);
-    n->u.sprite.scale_q16 = scale_q16;
-    n->u.sprite.rot = rot;
-    n->u.sprite.mirror = mirror;
+    xf->scale_q16 = scale_q16;
+    xf->rot = rot;
+    xf->mirror = mirror;
     sprite_update_size(n);
     surf_damage_subtree(n);
 }
 
 int32_t surf_sprite_scale(const surf_node *n)
 {
-    return (n && n->type == SURF_NODE_SPRITE) ? n->u.sprite.scale_q16 : SURF_ONE;
+    const surf_xform *xf = surf_node_xform((surf_node *)n);
+    return xf ? xf->scale_q16 : SURF_ONE;
 }
 
 uint8_t surf_sprite_rot(const surf_node *n)
 {
-    return (n && n->type == SURF_NODE_SPRITE) ? n->u.sprite.rot : 0;
+    const surf_xform *xf = surf_node_xform((surf_node *)n);
+    return xf ? xf->rot : 0;
 }
 
 uint8_t surf_sprite_mirror(const surf_node *n)
 {
-    return (n && n->type == SURF_NODE_SPRITE) ? n->u.sprite.mirror : 0;
+    const surf_xform *xf = surf_node_xform((surf_node *)n);
+    return xf ? xf->mirror : 0;
 }
 
 surf_node *surf_layer_new(const surf_image *strip, int16_t x, int16_t y,

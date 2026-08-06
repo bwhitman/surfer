@@ -122,15 +122,15 @@ static void paint(const surf_paint_ent *e)
         surf_g.hal->fill(e->vis, n->u.rect.color);
         return;
     case SURF_NODE_SPRITE:
-        if (n->u.sprite.scale_q16 != SURF_ONE || n->u.sprite.rot != 0 ||
-            n->u.sprite.mirror != 0) {
+        if (n->u.sprite.xf.scale_q16 != SURF_ONE || n->u.sprite.xf.rot != 0 ||
+            n->u.sprite.xf.mirror != 0) {
             /* transformed: the hal draws from the full source into the
              * full footprint, clipped to vis (partial-src arithmetic
              * doesn't survive scaling, rotation or mirroring) */
             surf_g.hal->xform_blend(n->u.sprite.img, n->u.sprite.src,
                                     (surf_rect){e->ax, e->ay, n->w, n->h},
-                                    e->vis, n->u.sprite.rot,
-                                    n->u.sprite.mirror);
+                                    e->vis, n->u.sprite.xf.rot,
+                                    n->u.sprite.xf.mirror);
             return;
         }
         image_op(n->u.sprite.img, (surf_rect){
@@ -163,6 +163,23 @@ static void paint(const surf_paint_ent *e)
     case SURF_NODE_FILMSTRIP: {
         int fx = (n->u.strip.frame % n->u.strip.per_row) * n->u.strip.fw;
         int fy = (n->u.strip.frame / n->u.strip.per_row) * n->u.strip.fh;
+        if (n->u.strip.xf.scale_q16 != SURF_ONE || n->u.strip.xf.rot != 0 ||
+            n->u.strip.xf.mirror != 0) {
+            /* transformed: the SOURCE is this frame's cell and nothing
+             * else. A strip is many pictures in one image, so handing
+             * the hal the whole image the way the sprite path hands it
+             * `src` would scale the entire filmstrip into one frame's
+             * footprint — every cel at once, squeezed. Same reason the
+             * untransformed path below offsets into the cell rather
+             * than starting at 0,0. */
+            surf_g.hal->xform_blend(n->u.strip.img,
+                                    (surf_rect){(int16_t)fx, (int16_t)fy,
+                                                n->u.strip.fw, n->u.strip.fh},
+                                    (surf_rect){e->ax, e->ay, n->w, n->h},
+                                    e->vis, n->u.strip.xf.rot,
+                                    n->u.strip.xf.mirror);
+            return;
+        }
         image_op(n->u.strip.img, (surf_rect){
                      (int16_t)(fx + (e->vis.x - e->ax)),
                      (int16_t)(fy + (e->vis.y - e->ay)),

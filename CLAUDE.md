@@ -343,6 +343,46 @@ support a host wants was already sitting here.
   it. `mock_advance_us()` drives it now; `test_filmstrip_play` is the
   regression.
 
+### ...and it scales, which it silently did not
+
+`surf_sprite_set_xform` opened with `if (n->type != SURF_NODE_SPRITE)
+return;`, so `.scale` on a filmstrip **did nothing at all and read back
+as 1.0**. That is the worst shape a setter can have: no error, no
+exception, code that looks right, and a picture that never changes.
+Reported from a Tulip as three turns spent asking an assistant to scale
+an explosion — the assistant wrote the correct line every time.
+
+The fix is a **shared `surf_xform`** (scale/rot/mirror) held by BOTH the
+sprite and the strip variants, rather than a second copy of the triple.
+A filmstrip is a sprite that picks its source rect from a frame index,
+and past that point the two are the same picture-on-a-node — so the
+clamp, the footprint arithmetic and the compose branch are one
+implementation and cannot drift. `surf_node_xform()` is the accessor;
+`NULL` for a node type that carries no transform, which is what makes
+the setter and the three getters type-agnostic in one line each.
+
+Two things it had to get right:
+
+- **THE SOURCE IS THE CELL, NOT THE SHEET.** The sprite path hands the
+  hal `n->u.sprite.src`; the obvious copy of it for a strip hands over
+  the whole image, which scales every cel at once into one frame's
+  footprint. It passes `{fx, fy, fw, fh}` — the same cell arithmetic the
+  untransformed path already does, which is why that path offsets into
+  the frame instead of starting at 0,0.
+- **The footprint is one FRAME scaled**, not the image, so
+  `sprite_update_size` asks `xform_source()` which of the two it is
+  looking at. That is the only line where the variants differ.
+
+`surf_filmstrip_new` sets `scale_q16 = SURF_ONE` explicitly for
+`surf_sprite_new`'s reason: `node_alloc` zeroes the union, and a scale
+of 0 is a footprint of nothing rather than "unscaled".
+
+`test_filmstrip_xform` covers the footprint at scale and at a quarter
+turn, that a transformed strip composes through `xform_blend` **with
+the frame's own cell**, and that going back to 1:1 returns to the plain
+blit — a fast path lost to a node that merely COULD be transformed is a
+cost nobody would notice until the panel.
+
 ## An image can be saved now
 
 `surf_image_to_png` / `surfer.write_png(img)` — the other half of

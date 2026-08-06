@@ -218,9 +218,85 @@ static void test_png_round_trip(void)
     surf_image_destroy(img);
 }
 
+/* A FILMSTRIP SCALES, and until now it silently did not.
+ *
+ * surf_sprite_set_xform opened with `n->type != SURF_NODE_SPRITE` and
+ * RETURNED, so setting a scale on an animation did nothing at all and
+ * read back as 1.0 — the worst shape a setter has, because the code
+ * looks right and the picture never changes. Reported from a Tulip as
+ * three turns spent asking an assistant to scale an explosion that was
+ * never going to scale.
+ *
+ * The other half is what the transformed path is handed: a strip is
+ * MANY pictures in one image, so passing the whole image the way the
+ * sprite path passes `src` would squeeze every cel into one frame's
+ * footprint. The source must be this frame's cell. */
+static void test_filmstrip_xform(void)
+{
+    fresh(200, 200, 64);
+    static uint32_t px[8 * 4 * 8];
+    surf_image strip = {.pixels = px, .w = 8 * 4, .h = 8, .stride = 8 * 4 * 4,
+                        .format = SURF_FMT_ARGB8888, .opaque = true};
+    surf_node *n = surf_filmstrip_new(&strip, 8, 8, 10, 10);
+    surf_node_add(surf_screen(), n);
+
+    /* it starts 1:1 -- node_alloc zeroes the union, and a scale of 0 is
+     * a footprint of nothing rather than "unscaled" */
+    OK(surf_sprite_scale(n) == SURF_ONE);
+    OK(surf_node_size(n).x == 8 && surf_node_size(n).y == 8);
+
+    surf_sprite_set_xform(n, SURF_ONE * 3, 0, 0);
+    OK(surf_sprite_scale(n) == SURF_ONE * 3);
+    /* the FOOTPRINT follows, and it is one frame scaled -- not the sheet */
+    OK(surf_node_size(n).x == 24 && surf_node_size(n).y == 24);
+
+    /* a quarter turn swaps the sides, exactly as it does for a sprite */
+    surf_sprite_set_xform(n, SURF_ONE * 2, 1, 0);
+    OK(surf_sprite_rot(n) == 1);
+    OK(surf_node_size(n).x == 16 && surf_node_size(n).y == 16);
+    OK(surf_sprite_mirror(n) == 0);
+    surf_sprite_set_xform(n, SURF_ONE * 2, 1, 3);
+    OK(surf_sprite_mirror(n) == 3);
+
+    /* and it COMPOSES through the transform path, from this frame's
+     * cell. Frame 2 of an 8px strip starts at x=16; a hal handed 0
+     * would be drawing the whole animation at once. */
+    surf_sprite_set_xform(n, SURF_ONE * 2, 0, 0);
+    surf_filmstrip_set_frame(n, 2);
+    surf_tick();
+    nops = 0;
+    surf_node_set_pos(n, 12, 10);
+    surf_tick();
+    bool sawX = false;
+    for (int i = 0; i < nops; i++)
+        if (ops[i].op == 'X') {
+            sawX = true;
+            /* THE CELL, not the sheet: frame 2 of an 8px strip starts
+             * at x=16 and is 8 wide. A hal handed {0,0,32,8} would be
+             * drawing every cel at once, squeezed into one footprint. */
+            OK(rect_eq(ops[i].src, (surf_rect){16, 0, 8, 8}));
+            OK(rect_eq(ops[i].r, (surf_rect){12, 10, 16, 16}));
+        }
+    OK(sawX);
+
+    /* back to 1:1 and it is the plain blit again -- the fast path must
+     * not be lost to a node that merely COULD be transformed */
+    surf_sprite_set_xform(n, SURF_ONE, 0, 0);
+    surf_tick();
+    nops = 0;
+    surf_node_set_pos(n, 14, 10);
+    surf_tick();
+    sawX = false;
+    for (int i = 0; i < nops; i++)
+        if (ops[i].op == 'X') sawX = true;
+    OK(!sawX);
+    OK(surf_node_size(n).x == 8 && surf_node_size(n).y == 8);
+}
+
 void run_sprite_tests(void)
 {
     test_filmstrip_play();
+    test_filmstrip_xform();
     test_png_round_trip();
     test_image_flush();
     test_sprite_pan_damages_other_branches();
