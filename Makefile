@@ -85,7 +85,7 @@ build/tools/emojibake: tools/emojibake.c tools/stb/stb_image.h
 #
 # What that costs is visible rather than subtle: every face above ui16
 # now wears a 16px emoji, which beside 28px text reads as a slightly
-# small picture. apps/emoji.py's specimen shows exactly this and says
+# small picture. fontshow's emoji tab shows exactly this and says
 # so. The other lever is assets/emoji/set.txt, which scales both sizes
 # together — the top 100 emoji are ~82% of all use.
 EMOJI_NAMES := emoji12 emoji16
