@@ -413,6 +413,61 @@ faithful to the pixels it is given — a colour that went in through
 call widens 5 bits to 8 by shifting, and the encoder does not invent the
 missing three bits back.
 
+## A key event carries CTRL, and the tuple is four long
+
+`surfer.keys()` is `(kind, text, shift, ctrl)`. It was three, and the
+fourth exists because **a modifier on a key with no control character of
+its own had nowhere to live.**
+
+ctrl+LETTER has always worked and still does not use the flag: a driver
+turns it into the character a terminal puts on the wire (^S is 0x13) and
+it arrives as `KEY_TEXT`. ctrl+Delete, ctrl+arrow, ctrl+Home/End and
+ctrl+PgUp/PgDn have no such character, so both drivers did the only thing
+they could and DROPPED the modifier — `chord = false; /* ctrl+arrow still
+arrows */` in the SDL hal, `break; /* ctrl+arrow etc: plain keys */` in
+tulip5's `usb_input.c`. Every one of those chords was therefore
+indistinguishable from the bare key, which is how a Tulip user found it:
+tulip-pye binds delete-word to ctrl+Del and delete-line to shift+Del, and
+they are the only two entries in its keymap with no ^-chord alternative,
+so they are the two that had no way to work at all.
+
+- **A flag, not a private code.** ^Tab's answer — invent a character
+  (0x1e) and send it as text — is right for ONE chord that means one
+  thing and wrong as a general rule: a ctrl+Left delivered as a private
+  character stops being a LEFT, so a widget switching on `kind` no
+  longer sees an arrow, and every consumer needs the table. A flag
+  leaves the key what it is.
+- **NOT a bitmask in the `shift` slot**, which was the tempting
+  non-breaking version — bit 0 is shift, so `if shift:` keeps working
+  and no unpack anywhere has to change. It is wrong: `if shift:` is
+  then also true with ctrl alone held, so `surf_textinput_move(n, -1,
+  shift)` extends a selection on ctrl+Left. A modifier nobody asked
+  about must read as false, so it is a real fourth element and every
+  `kind, text, shift = k` in both repos was widened.
+- **ctrl+LETTER does NOT set it**, and neither do ctrl+A/ctrl+E, which
+  are delivered AS Home/End for readline. The modifier is already spent
+  in what was delivered, and a consumer seeing both would apply it
+  twice — ctrl+A would jump to the top of the document instead of the
+  start of the line.
+- **ctrl+DIGIT and ctrl+PUNCTUATION set it on neither backend.** The SDL
+  hal has no scancode case for them and pushes nothing at all; the
+  device driver clears the flag on its `base_map` path to match. A
+  modifier one platform reports and the other cannot is how a host grows
+  a chord that works on a laptop and not on the panel.
+- **The held set reports it too**, for the reason it reports shift: it is
+  a snapshot of the keyboard, and one that answers "shift is down" while
+  staying silent about ctrl is lying by omission. The pad mapping
+  ignores both.
+
+`surfer._key(kind, text, shift, ctrl)` takes it, which is the only way a
+headless test can reach one of these — ctrl+letter is a control character
+a test can simply type, and ctrl+Delete exists ONLY as this flag.
+
+`Node.key(k)` reads ctrl off the tuple and ignores it: a textinput is one
+line with no word motion, so every chord means what the bare key means.
+It takes `len < 2` and looks no further, so a tuple of either length
+still works there.
+
 ## Textinput, from MicroPython
 
 `surfer.textinput(x, y, w, color, font)` is the editable-text node, and

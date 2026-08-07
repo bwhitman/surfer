@@ -150,7 +150,7 @@ void surf_hal_sdl_on_interrupt(void (*fn)(void))
     S.on_interrupt = fn;
 }
 
-static void push_key(uint8_t kind, bool shift, const char *utf8)
+static void push_key(uint8_t kind, bool shift, bool ctrl, const char *utf8)
 {
     int next = (S.key_w + 1) % TOUCH_RING;
     if (next == S.key_r)
@@ -158,6 +158,7 @@ static void push_key(uint8_t kind, bool shift, const char *utf8)
     surf_sdl_key *k = &S.keys[S.key_w];
     k->kind = kind;
     k->shift = shift;
+    k->ctrl = ctrl;
     k->utf8[0] = 0;
     if (utf8) {
         strncpy(k->utf8, utf8, sizeof k->utf8 - 1);
@@ -169,7 +170,13 @@ static void push_key(uint8_t kind, bool shift, const char *utf8)
 int surf_hal_sdl_keys_held(surf_sdl_key *out, int max)
 {
     const Uint8 *st = SDL_GetKeyboardState(NULL);
-    bool shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+    SDL_Keymod mod = SDL_GetModState();
+    bool shift = (mod & KMOD_SHIFT) != 0;
+    /* Reported here too, for the same reason shift is: the held set is a
+     * SNAPSHOT of the keyboard, and one that answered "shift is down"
+     * while staying silent about ctrl would be lying by omission. The
+     * pad mapping ignores both. */
+    bool ctrl = (mod & KMOD_CTRL) != 0;
     int n = 0;
     static const struct { int sc; uint8_t kind; } SPECIAL[] = {
         {SDL_SCANCODE_LEFT, SURF_KEY_LEFT},   {SDL_SCANCODE_RIGHT, SURF_KEY_RIGHT},
@@ -182,17 +189,17 @@ int surf_hal_sdl_keys_held(surf_sdl_key *out, int max)
     };
     for (size_t i = 0; i < sizeof SPECIAL / sizeof *SPECIAL && n < max; i++)
         if (st[SPECIAL[i].sc])
-            out[n++] = (surf_sdl_key){.kind = SPECIAL[i].kind, .shift = shift};
+            out[n++] = (surf_sdl_key){.kind = SPECIAL[i].kind, .shift = shift, .ctrl = ctrl};
     if (st[SDL_SCANCODE_SPACE] && n < max)
-        out[n++] = (surf_sdl_key){.kind = SURF_KEY_TEXT, .shift = shift,
+        out[n++] = (surf_sdl_key){.kind = SURF_KEY_TEXT, .shift = shift, .ctrl = ctrl,
                                   .utf8 = {' '}};
     for (int i = 0; i < 26 && n < max; i++)
         if (st[SDL_SCANCODE_A + i])
-            out[n++] = (surf_sdl_key){.kind = SURF_KEY_TEXT, .shift = shift,
+            out[n++] = (surf_sdl_key){.kind = SURF_KEY_TEXT, .shift = shift, .ctrl = ctrl,
                                       .utf8 = {(char)((shift ? 'A' : 'a') + i)}};
     for (int i = 0; i < 10 && n < max; i++)
         if (st[SDL_SCANCODE_1 + i])
-            out[n++] = (surf_sdl_key){.kind = SURF_KEY_TEXT, .shift = shift,
+            out[n++] = (surf_sdl_key){.kind = SURF_KEY_TEXT, .shift = shift, .ctrl = ctrl,
                                       .utf8 = {"1234567890"[i]}};
     return n;
 }
@@ -840,6 +847,10 @@ bool surf_hal_sdl_pump(void)
             break;
         case SDL_KEYDOWN: {
             bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
+            /* Carried on the named keys below, NOT on the ctrl+letter
+             * chords, which already say it in their control character.
+             * See surf_sdl_key in hal_sdl.h. */
+            bool ctrl = (e.key.keysym.mod & KMOD_CTRL) != 0;
             /* ctrl/alt+Tab is its own key, not a Tab. Tab is not a letter,
              * so it does not fall into the ctrl+letter rule below, and
              * without this it arrives as an ordinary 0x09 — a host that
@@ -854,7 +865,7 @@ bool surf_hal_sdl_pump(void)
              * one to document; alt+Tab is accepted where it survives. */
             if ((e.key.keysym.mod & (KMOD_CTRL | KMOD_ALT)) &&
                 e.key.keysym.sym == SDLK_TAB) {
-                push_key(SURF_KEY_TEXT, false, "\x1e");
+                push_key(SURF_KEY_TEXT, false, false, "\x1e");
                 break;
             }
             if (e.key.keysym.mod & KMOD_CTRL) {
@@ -874,8 +885,8 @@ bool surf_hal_sdl_pump(void)
                  * Home/End so nothing downstream needs chord handling:
                  * the REPL, textinput and any consumer already handle
                  * those. */
-                case SDLK_a: push_key(SURF_KEY_HOME, shift, NULL); break;
-                case SDLK_e: push_key(SURF_KEY_END, shift, NULL); break;
+                case SDLK_a: push_key(SURF_KEY_HOME, shift, false, NULL); break;
+                case SDLK_e: push_key(SURF_KEY_END, shift, false, NULL); break;
                 default:
                     /* Every other ctrl+letter becomes its control
                      * character, which is what a terminal puts on the
@@ -885,7 +896,7 @@ bool surf_hal_sdl_pump(void)
                      * were dropping these keystrokes entirely before. */
                     if (e.key.keysym.sym >= SDLK_a && e.key.keysym.sym <= SDLK_z) {
                         char ctl[2] = {(char)(e.key.keysym.sym - SDLK_a + 1), 0};
-                        push_key(SURF_KEY_TEXT, false, ctl);
+                        push_key(SURF_KEY_TEXT, false, false, ctl);
                     } else {
                         chord = false;   /* ctrl+arrow still arrows */
                     }
@@ -923,24 +934,24 @@ bool surf_hal_sdl_pump(void)
              * every running app and anything unsaved. Esc is a key; what
              * it MEANS is the host's business. The demos close on the
              * window button and on ctrl+C as they always could. */
-            case SDL_SCANCODE_ESCAPE:    push_key(SURF_KEY_ESC, shift, NULL); break;
-            case SDL_SCANCODE_LEFT:      push_key(SURF_KEY_LEFT, shift, NULL); break;
-            case SDL_SCANCODE_RIGHT:     push_key(SURF_KEY_RIGHT, shift, NULL); break;
-            case SDL_SCANCODE_UP:        push_key(SURF_KEY_UP, shift, NULL); break;
-            case SDL_SCANCODE_DOWN:      push_key(SURF_KEY_DOWN, shift, NULL); break;
-            case SDL_SCANCODE_PAGEUP:    push_key(SURF_KEY_PGUP, shift, NULL); break;
-            case SDL_SCANCODE_PAGEDOWN:  push_key(SURF_KEY_PGDN, shift, NULL); break;
-            case SDL_SCANCODE_HOME:      push_key(SURF_KEY_HOME, shift, NULL); break;
-            case SDL_SCANCODE_END:       push_key(SURF_KEY_END, shift, NULL); break;
-            case SDL_SCANCODE_BACKSPACE: push_key(SURF_KEY_BACKSPACE, shift, NULL); break;
-            case SDL_SCANCODE_DELETE:    push_key(SURF_KEY_DELETE, shift, NULL); break;
+            case SDL_SCANCODE_ESCAPE:    push_key(SURF_KEY_ESC, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_LEFT:      push_key(SURF_KEY_LEFT, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_RIGHT:     push_key(SURF_KEY_RIGHT, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_UP:        push_key(SURF_KEY_UP, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_DOWN:      push_key(SURF_KEY_DOWN, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_PAGEUP:    push_key(SURF_KEY_PGUP, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_PAGEDOWN:  push_key(SURF_KEY_PGDN, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_HOME:      push_key(SURF_KEY_HOME, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_END:       push_key(SURF_KEY_END, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_BACKSPACE: push_key(SURF_KEY_BACKSPACE, shift, ctrl, NULL); break;
+            case SDL_SCANCODE_DELETE:    push_key(SURF_KEY_DELETE, shift, ctrl, NULL); break;
             case SDL_SCANCODE_RETURN:
-            case SDL_SCANCODE_KP_ENTER:  push_key(SURF_KEY_ENTER, shift, NULL); break;
+            case SDL_SCANCODE_KP_ENTER:  push_key(SURF_KEY_ENTER, shift, ctrl, NULL); break;
             /* Tab as text, the way a terminal delivers it. SDL_TEXTINPUT
              * does emit 0x09 on some platforms and not others, and the
              * control-character filter drops it either way — so it has to
              * come from here to arrive at all. */
-            case SDL_SCANCODE_TAB: push_key(SURF_KEY_TEXT, shift, "\t"); break;
+            case SDL_SCANCODE_TAB: push_key(SURF_KEY_TEXT, shift, ctrl, "\t"); break;
             default: break;      /* -Wswitch: SDL_Scancode is an enum */
             }
             break;
@@ -951,7 +962,7 @@ bool surf_hal_sdl_pump(void)
              * edited line is a stray glyph nobody typed. UTF-8 lead
              * bytes are all >= 0xc2, so this only ever cuts ASCII. */
             if ((unsigned char)e.text.text[0] >= 0x20)
-                push_key(SURF_KEY_TEXT, false, e.text.text);
+                push_key(SURF_KEY_TEXT, false, false, e.text.text);
             break;
         /* A REAL TOUCHSCREEN, which on this backend means a phone or a
          * tablet browser: emscripten's SDL turns page touches into

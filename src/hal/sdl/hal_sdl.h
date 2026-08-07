@@ -36,6 +36,11 @@ typedef enum {
 typedef struct {
     uint8_t kind;   /* surf_sdl_key_kind */
     bool    shift;  /* extend selection */
+    bool    ctrl;   /* only on keys with no control character of their own
+                     * — see surfer_key in surfer.h. ctrl+LETTER arrives
+                     * as its control character with this FALSE, because
+                     * the modifier is already in the text and a consumer
+                     * that saw both would apply it twice. */
     char    utf8[8];
 } surf_sdl_key;
 

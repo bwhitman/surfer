@@ -739,10 +739,19 @@ static mp_obj_t node_index_from_x(mp_obj_t self_in, mp_obj_t x)
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_index_from_x_obj, node_index_from_x);
 
-/* key(k): apply ONE event from surfer.keys() — the (kind, text, shift)
- * tuple — and say whether it was consumed. Editing is a fixed mapping
- * from key to edit, so it lives here rather than being retyped as a
- * dispatch table in every app:
+/* key(k): apply ONE event from surfer.keys() — the (kind, text, shift,
+ * ctrl) tuple — and say whether it was consumed. Editing is a fixed
+ * mapping from key to edit, so it lives here rather than being retyped
+ * as a dispatch table in every app.
+ *
+ * ctrl is READ OFF THE TUPLE AND IGNORED, deliberately: a textinput is
+ * one line with no word motion and no delete-word, so every chord means
+ * what the bare key means. It is unpacked anyway so that a tuple of
+ * either length works — this takes `len < 2` and looks no further.
+ *
+ * A CONSUMER MUST NOT ASSUME THE LENGTH. It was 3 before ctrl existed
+ * and is 4 now, which is exactly the breakage a `kind, text, shift = k`
+ * takes; index, or unpack with the full width.
  *
  *     for k in surfer.keys():
  *         if not ti.key(k):
@@ -1964,12 +1973,21 @@ static mp_obj_t mod_keys(void)
     mp_obj_t list = mp_obj_new_list(0, NULL);
     surfer_key k;
     while (surf_key_poll(&k)) {
-        mp_obj_t t[3] = {
+        /* (kind, text, shift, ctrl). FOUR, and the fourth is why every
+         * `for kind, text, shift in surfer.keys()` in the tree had to be
+         * widened when ctrl arrived. The cheap alternative was to make
+         * the third element a modifier BITMASK — nothing would have had
+         * to change, since bit 0 is shift and `if shift:` stays true —
+         * and it is wrong: `if shift:` would then also be true with
+         * ctrl alone held, so ctrl+Left would extend a selection. A
+         * modifier nobody asked about must read as false. */
+        mp_obj_t t[4] = {
             MP_OBJ_NEW_SMALL_INT(k.kind),
             mp_obj_new_str(k.utf8, strlen(k.utf8)),
             mp_obj_new_bool(k.shift),
+            mp_obj_new_bool(k.ctrl),
         };
-        mp_obj_list_append(list, mp_obj_new_tuple(3, t));
+        mp_obj_list_append(list, mp_obj_new_tuple(4, t));
     }
     return list;
 }
@@ -2846,14 +2864,17 @@ static mp_obj_t mod_touch(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_touch_obj, 3, 4, mod_touch);
 
-/* surfer._key(kind, text="", shift=False): push one key into the same
- * queue a driver feeds, so surfer.keys() returns it. The counterpart of
- * _touch — it exists for headless tests, which otherwise cannot reach
- * anything that reads the keyboard. */
+/* surfer._key(kind, text="", shift=False, ctrl=False): push one key into
+ * the same queue a driver feeds, so surfer.keys() returns it. The
+ * counterpart of _touch — it exists for headless tests, which otherwise
+ * cannot reach anything that reads the keyboard. `ctrl` is what lets one
+ * test a chord: ctrl+LETTER is a control character a test can simply
+ * type, but ctrl+Delete and ctrl+arrow exist ONLY as this flag. */
 static mp_obj_t mod_key(size_t n_args, const mp_obj_t *args)
 {
     surfer_key k = {.kind = (uint8_t)mp_obj_get_int(args[0]),
-                    .shift = n_args > 2 && mp_obj_is_true(args[2])};
+                    .shift = n_args > 2 && mp_obj_is_true(args[2]),
+                    .ctrl = n_args > 3 && mp_obj_is_true(args[3])};
     if (n_args > 1) {
         const char *t = mp_obj_str_get_str(args[1]);
         size_t n = strlen(t);
@@ -2864,7 +2885,7 @@ static mp_obj_t mod_key(size_t n_args, const mp_obj_t *args)
     surf_key_event(&k);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_key_obj, 1, 3, mod_key);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_key_obj, 1, 4, mod_key);
 
 static mp_obj_t mod_screenshot(mp_obj_t path)
 {

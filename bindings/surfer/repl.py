@@ -216,7 +216,7 @@ def main():
         global app_frame
         if not surfer.tick():
             return False
-        for kind, text, shift in surfer.keys():
+        for kind, text, shift, _ctrl in surfer.keys():
             repl.key(kind, text, shift)
         if app_frame is not None and app_frame() is False:
             app_frame = None

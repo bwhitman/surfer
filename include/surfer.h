@@ -309,7 +309,24 @@ typedef enum {
      * itself now, and one that wants to CANCEL something can have it. */
     SURFER_KEY_ESC,
 } surfer_key_kind;
-typedef struct { uint8_t kind; bool shift; char utf8[8]; } surfer_key;
+/* MODIFIERS ARE FLAGS, NOT SPELLINGS, and ctrl is a flag because it
+ * could not be a spelling. ctrl+LETTER has a control character to become
+ * (^S is 0x13) and a driver hands that over as TEXT, which is what a
+ * terminal puts on the wire and what every consumer already understands.
+ * ctrl+DELETE, ctrl+arrow, ctrl+Home have no such character — so before
+ * this flag a driver had one option, drop the modifier, and both of
+ * surfer's drivers did exactly that ("ctrl+arrow still arrows"). Every
+ * chord on a non-letter was therefore indistinguishable from the bare
+ * key: an editor could not bind delete-word, a list could not bind
+ * jump-to-end, and nothing downstream could tell it was missing.
+ *
+ * The other way out was ^Tab's: invent a private code and send it as
+ * text. That is right for ONE chord that means one thing (0x1e = switch
+ * app) and wrong as a general answer — a ctrl+Left delivered as a
+ * private character stops being a LEFT, so a widget switching on `kind`
+ * no longer sees an arrow at all, and every consumer needs the table.
+ * A flag leaves the key what it is and lets whoever cares look. */
+typedef struct { uint8_t kind; bool shift; bool ctrl; char utf8[8]; } surfer_key;
 
 void surf_key_event(const surfer_key *k);   /* push a discrete key (typing/repeat) */
 void surf_key_set_held(const surfer_key *keys, int n);  /* replace the held set */

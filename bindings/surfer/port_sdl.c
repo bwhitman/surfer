@@ -84,7 +84,7 @@ bool surfer_port_pump(void)
     bool ok = surf_hal_sdl_pump();
     surf_sdl_key k;
     while (surf_hal_sdl_poll_key(&k)) {
-        surfer_key e = {.kind = k.kind, .shift = k.shift};
+        surfer_key e = {.kind = k.kind, .shift = k.shift, .ctrl = k.ctrl};
         memcpy(e.utf8, k.utf8, sizeof e.utf8);
         surf_key_event(&e);
     }
@@ -92,7 +92,8 @@ bool surfer_port_pump(void)
     int n = surf_hal_sdl_keys_held(h, 8);
     surfer_key held[8];
     for (int i = 0; i < n; i++) {
-        held[i] = (surfer_key){.kind = h[i].kind, .shift = h[i].shift};
+        held[i] = (surfer_key){.kind = h[i].kind, .shift = h[i].shift,
+                               .ctrl = h[i].ctrl};
         memcpy(held[i].utf8, h[i].utf8, sizeof held[i].utf8);
     }
     surf_key_set_held(held, n);

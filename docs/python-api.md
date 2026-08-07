@@ -22,7 +22,8 @@ import surfer
 surfer.init(w=1024, h=600)   # open the display; call once, first
 surfer.tick()                # pump input, run animations, compose, present
                              # → False when the window wants to close (Esc)
-surfer.keys()                # drain pending key events → [(kind, text, shift), ...]
+surfer.keys()                # drain pending key events
+                             # → [(kind, text, shift, ctrl), ...]
 surfer.keys_held()           # keys DOWN right now → ((kind, text), ...) — for games
 surfer.screen()              # the root Node
 surfer.rgb(r, g, b)          # 0-255 each → packed RGB565 color int
@@ -33,13 +34,14 @@ surfer.wheel()               # drain wheel/two-finger pushes NO scrollview took
                              # → [(x, y, dx, dy), ...]; dx/dy are pixels of
                              # content movement, x/y framebuffer pixels
 surfer._touch(x, y, phase)   # inject a synthetic touch (tests / on-screen keyboards)
+surfer._key(kind, text, shift, ctrl)   # ... and a synthetic key
 ```
 
 The app owns the loop:
 
 ```python
 while surfer.tick():
-    for kind, text, shift in surfer.keys():
+    for kind, text, shift, ctrl in surfer.keys():
         ...
 ```
 
@@ -422,8 +424,20 @@ time (the parallax flight model — velocity + drag from held arrows —
 is the reference). Use `keys()` for typing, `keys_held()` for driving;
 call `keys()` once per frame anyway to drain the event queue.
 
-Key events from `surfer.keys()` are `(kind, text, shift)`; `text` holds
-the typed characters when `kind == KEY_TEXT`, else `""`.
+Key events from `surfer.keys()` are `(kind, text, shift, ctrl)`; `text`
+holds the typed characters when `kind == KEY_TEXT`, else `""`.
+
+`shift` and `ctrl` are the modifiers that could not be spelled any other
+way. **ctrl+LETTER never sets `ctrl`** — it arrives as `KEY_TEXT` holding
+its control character (^S is `"\x13"`), which is what a terminal puts on
+the wire and what every consumer already reads; reporting the flag as
+well would let one apply the modifier twice. The flag is for the keys
+with no such character: ctrl+Delete, ctrl+arrow, ctrl+Home/End,
+ctrl+PgUp/PgDn. Without it those are indistinguishable from the bare key,
+which is what they were until this existed.
+
+The tuple **was three elements** before `ctrl`. Unpack the full width or
+index — `kind, text, shift = k` raises.
 
 ## The wheel
 
