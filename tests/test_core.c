@@ -15,6 +15,7 @@ void run_sprite_tests(void);  /* tests/test_sprite.c */
 void run_shape_tests(void);   /* tests/test_shape.c */
 void run_pad_tests(void);     /* tests/test_pad.c */
 void run_layer_tests(void);   /* tests/test_layer.c */
+void run_ink_tests(void);     /* tests/test_ink.c */
 
 /* ---- tests ---- */
 
@@ -282,6 +283,7 @@ int main(void)
     run_sprite_tests();
     run_layer_tests();
     run_shape_tests();
+    run_ink_tests();
     run_pad_tests();
     test_frame_lock();
     surf_deinit();

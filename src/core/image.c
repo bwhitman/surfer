@@ -192,10 +192,133 @@ surf_image *surf_image_from_png_a8(const void *data, size_t len)
     return img;
 }
 
+/* ---- collision ink -----------------------------------------------------
+ * A lazy 1-bit mask per image: bit set where alpha >= SURF_INK_ALPHA.
+ * surf_node_overlaps() reads it so a sprite's transparent corners do not
+ * collide. Built on the first overlap that needs it, dropped when the
+ * pixels change, rebuilt on the next ask.
+ *
+ * A SIDE TABLE rather than fields on surf_image, and that is not
+ * tidiness: images are legitimately `static const` — the unit tests
+ * build them that way and baked assets could — and on the device a
+ * const struct lives in flash, where a lazy cache writing into it is a
+ * store fault. The table is a handful of entries walked linearly; only
+ * images somebody collides with are ever in it.
+ *
+ * The one hole is a caller that writes pixels through the buffer
+ * protocol and never calls flush(): its mask goes stale. That caller
+ * already gets stale PIXELS on the P4 (the PPA reads memory the CPU
+ * left in cache), so this is the same contract, not a new one. */
+
+typedef struct {
+    const surf_image *img;
+    uint32_t *bits;    /* words_per_row * h, LSB-first; NULL for solid */
+    uint8_t   state;   /* 1 = mask in bits, 2 = solid (box is right) */
+} ink_ent;
+
+static struct { ink_ent *v; int n, cap; } ink_tab;
+
+static ink_ent *ink_find(const surf_image *img)
+{
+    for (int i = 0; i < ink_tab.n; i++)
+        if (ink_tab.v[i].img == img)
+            return &ink_tab.v[i];
+    return NULL;
+}
+
+static void ink_ent_free(ink_ent *e)
+{
+    free(e->bits);
+    *e = ink_tab.v[--ink_tab.n];       /* swap-remove */
+}
+
+void surf_ink_dirty(const surf_image *img)
+{
+    ink_ent *e = ink_find(img);
+    if (e)
+        ink_ent_free(e);
+}
+
+void surf_ink_drop(const surf_image *img)
+{
+    surf_ink_dirty(img);
+}
+
+void surf_ink_reset(void)
+{
+    for (int i = 0; i < ink_tab.n; i++)
+        free(ink_tab.v[i].bits);
+    free(ink_tab.v);
+    ink_tab.v = NULL;
+    ink_tab.n = ink_tab.cap = 0;
+}
+
+const uint32_t *surf_ink(const surf_image *img, int32_t *words_per_row)
+{
+    if (!img || !img->pixels || img->w <= 0 || img->h <= 0)
+        return NULL;
+    /* no transparency to speak of: the box is already the truth. A1 is
+     * storage-only and never a sprite source, but answer box, not crash. */
+    if (img->opaque || img->format == SURF_FMT_RGB565 ||
+        img->format == SURF_FMT_A1)
+        return NULL;
+
+    ink_ent *e = ink_find(img);
+    if (!e) {
+        if (ink_tab.n == ink_tab.cap) {
+            int cap = ink_tab.cap ? ink_tab.cap * 2 : 8;
+            ink_ent *v = realloc(ink_tab.v, (size_t)cap * sizeof *v);
+            if (!v)
+                return NULL;               /* OOM: fall back to the box */
+            ink_tab.v = v;
+            ink_tab.cap = cap;
+        }
+        e = &ink_tab.v[ink_tab.n++];
+        e->img = img;
+        e->state = 2;
+        int32_t wpr = ((int32_t)img->w + 31) >> 5;
+        uint32_t *bits = calloc((size_t)wpr * img->h, sizeof(uint32_t));
+        if (bits) {
+            const uint8_t *px = img->pixels;
+            bool any_clear = false;
+            for (int32_t y = 0; y < img->h; y++) {
+                uint32_t *row = bits + (size_t)y * wpr;
+                for (int32_t x = 0; x < img->w; x++) {
+                    uint8_t a;
+                    if (img->format == SURF_FMT_ARGB8888)
+                        a = (uint8_t)(((const uint32_t *)
+                                       (px + (size_t)y * img->stride))[x] >> 24);
+                    else                   /* A8 */
+                        a = px[(size_t)y * img->stride + x];
+                    if (a >= SURF_INK_ALPHA)
+                        row[x >> 5] |= 1u << (x & 31);
+                    else
+                        any_clear = true;
+                }
+            }
+            if (any_clear) {
+                e->bits = bits;
+                e->state = 1;
+            } else {
+                free(bits);                /* every pixel is ink: solid */
+                e->bits = NULL;
+            }
+        } else {
+            e->bits = NULL;                /* OOM: remember it as solid */
+        }
+    }
+    if (e->state != 1)
+        return NULL;
+    if (words_per_row)
+        *words_per_row = ((int32_t)img->w + 31) >> 5;
+    return e->bits;
+}
+
 void surf_image_destroy(surf_image *img)
 {
     if (!img)
         return;
+    surf_ink_drop(img);
     if (img->pixels && surf_g.hal)
         surf_g.hal->free_image(img->pixels);
     free(img);
@@ -300,6 +423,7 @@ bool surf_image_scale(surf_image *dst, const surf_image *src)
     if (!dst || !src || dst->format != src->format ||
         dst->w <= 0 || dst->h <= 0 || src->w <= 0 || src->h <= 0)
         return false;
+    surf_ink_dirty(dst);
 
     if (surf_g.hal && surf_g.hal->scale_image &&
         surf_g.hal->scale_image(dst, src))
@@ -354,6 +478,7 @@ void surf_image_flush(const surf_image *img)
 {
     if (!img || !img->pixels)
         return;
+    surf_ink_dirty(img);   /* buffer-protocol writers publish here */
     if (surf_g.hal && surf_g.hal->sync_image)
         surf_g.hal->sync_image(img->pixels, (size_t)img->stride * img->h);
 }
@@ -365,6 +490,7 @@ void surf_image_fill(surf_image *dst, surf_rect r, surf_color c)
     r = surf_rect_intersect(r, (surf_rect){0, 0, dst->w, dst->h});
     if (surf_rect_empty(r))
         return;
+    surf_ink_dirty(dst);
     if (dst->format == SURF_FMT_RGB565) {
         for (int y = 0; y < r.h; y++) {
             uint16_t *row = (uint16_t *)((uint8_t *)dst->pixels +
@@ -424,6 +550,7 @@ void surf_image_blit_rot(surf_image *dst, const surf_image *src,
     }
     if (!dst || !src || !dst->pixels || !src->pixels)
         return;
+    surf_ink_dirty(dst);
     sr = surf_rect_intersect(sr, (surf_rect){0, 0, src->w, src->h});
     int16_t ow = (rot & 1) ? sr.h : sr.w;   /* rotated footprint */
     int16_t oh = (rot & 1) ? sr.w : sr.h;
@@ -457,6 +584,7 @@ void surf_image_blit(surf_image *dst, const surf_image *src, surf_rect sr,
 {
     if (!dst || !src || !dst->pixels || !src->pixels)
         return;
+    surf_ink_dirty(dst);
     sr = surf_rect_intersect(sr, (surf_rect){0, 0, src->w, src->h});
     /* clip the destination, dragging the source window along */
     if (x < 0) { sr.x -= x; sr.w += x; x = 0; }

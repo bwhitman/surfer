@@ -385,6 +385,7 @@ void surf_image_poly(surf_image *dst, const int32_t *xy_q16, int n,
 {
     if (!dst || !xy_q16 || n < 3)
         return;
+    surf_ink_dirty(dst);
     sh_path p = {0};
     float *xy = malloc((size_t)n * 2 * sizeof *xy);
     if (xy) {
@@ -402,6 +403,7 @@ void surf_image_polyline(surf_image *dst, const int32_t *xy_q16, int n,
 {
     if (!dst || !xy_q16 || n < 1 || width_q16 <= 0)
         return;
+    surf_ink_dirty(dst);
     sh_path p = {0};
     float *xy = malloc((size_t)n * 2 * sizeof *xy);
     if (xy) {
@@ -420,6 +422,7 @@ void surf_image_ellipse(surf_image *dst, int32_t cx_q16, int32_t cy_q16,
 {
     if (!dst || rx_q16 <= 0 || ry_q16 <= 0)
         return;
+    surf_ink_dirty(dst);
     float cx = Q(cx_q16), cy = Q(cy_q16), rx = Q(rx_q16), ry = Q(ry_q16);
     float rmax = rx > ry ? rx : ry;
     int segs = (int)(rmax * 0.9f);
@@ -455,6 +458,7 @@ void surf_image_bezier(surf_image *dst, const int32_t xy_q16[8],
 {
     if (!dst || !xy_q16 || width_q16 <= 0)
         return;
+    surf_ink_dirty(dst);
     float x0 = Q(xy_q16[0]), y0 = Q(xy_q16[1]);
     float x1 = Q(xy_q16[2]), y1 = Q(xy_q16[3]);
     float x2 = Q(xy_q16[4]), y2 = Q(xy_q16[5]);

@@ -101,6 +101,10 @@ bool surf_init(const surf_hal *hal, int16_t w, int16_t h, const surf_config *cfg
 
 void surf_deinit(void)
 {
+    /* the ink table keys on image POINTERS, and a soft reset frees
+     * images whose addresses malloc will hand out again — a stale entry
+     * would then answer for a picture it has never seen */
+    surf_ink_reset();
     free(surf_g.pool);
     free(surf_g.plist);
     memset(&surf_g, 0, sizeof surf_g);
@@ -518,6 +522,83 @@ void surf_node_damage(surf_node *n)
         surf_damage_subtree(n);
 }
 
+/* ---- overlaps: boxes first, then INK ----------------------------------
+ * hits() used to be the two bounding boxes alone, and the bug report
+ * that ended that was exact: a ball "bouncing off a sword way before
+ * contact" — a longsword is a diagonal of ink inside a mostly
+ * transparent square, so the box collided at the empty corner. A sprite
+ * or filmstrip now answers from its image's alpha (surf_ink, image.c);
+ * everything else — rects, groups, labels — is still its box, and so is
+ * any image with nothing transparent in it.
+ *
+ * The per-pixel walk is legal by the colorpicker's rule: it runs on an
+ * EVENT (an app asking, from its own frame) and never in the compose
+ * path, it is bounded by the box INTERSECTION — which at the moment of
+ * contact is small — and the mask it reads is 1 bit per pixel, built
+ * once and cached until the image's pixels change. */
+
+typedef struct {
+    const uint32_t *bits;   /* whole-image mask, LSB-first words */
+    int32_t wpr;            /* words per row */
+    surf_rect src;          /* the cell this node draws (sprite src / strip frame) */
+    const surf_xform *xf;
+    int16_t iw, ih;         /* image bounds, for the clamp */
+} ink_view;
+
+static bool node_ink(const surf_node *n, ink_view *v)
+{
+    const surf_image *img;
+    if (n->type == SURF_NODE_SPRITE && n->u.sprite.img) {
+        img = n->u.sprite.img;
+        v->src = n->u.sprite.src;
+        v->xf = &n->u.sprite.xf;
+    } else if (n->type == SURF_NODE_FILMSTRIP && n->u.strip.img &&
+               n->u.strip.per_row > 0) {
+        img = n->u.strip.img;
+        v->src = (surf_rect){
+            (int16_t)((n->u.strip.frame % n->u.strip.per_row) * n->u.strip.fw),
+            (int16_t)((n->u.strip.frame / n->u.strip.per_row) * n->u.strip.fh),
+            n->u.strip.fw, n->u.strip.fh};
+        v->xf = &n->u.strip.xf;
+    } else {
+        return false;
+    }
+    v->bits = surf_ink(img, &v->wpr);
+    if (!v->bits)
+        return false;               /* opaque, 565, or OOM: the box is right */
+    v->iw = img->w;
+    v->ih = img->h;
+    return v->src.w > 0 && v->src.h > 0;
+}
+
+/* Is there ink at (dx, dy) of the node's on-screen footprint? The
+ * inverse map is the SDL hal's h_xform_blend arithmetic exactly — rot is
+ * quarter turns CCW, mirror flips the source before rotation — so what
+ * collides is what is drawn, not an approximation of it. */
+static bool ink_at(const ink_view *v, const surf_node *n, int32_t dx, int32_t dy)
+{
+    int32_t W0 = (v->xf->rot & 1) ? n->h : n->w;   /* pre-rotation footprint */
+    int32_t H0 = (v->xf->rot & 1) ? n->w : n->h;
+    if (W0 <= 0 || H0 <= 0)
+        return false;
+    int32_t ux, uy;
+    switch (v->xf->rot) {
+    default: ux = dx;              uy = dy;              break;
+    case 1:  ux = n->h - 1 - dy;   uy = dx;              break;
+    case 2:  ux = n->w - 1 - dx;   uy = n->h - 1 - dy;   break;
+    case 3:  ux = dy;              uy = n->w - 1 - dx;   break;
+    }
+    if (v->xf->mirror & 1)
+        ux = W0 - 1 - ux;
+    if (v->xf->mirror & 2)
+        uy = H0 - 1 - uy;
+    int32_t sx = v->src.x + (int32_t)((int64_t)ux * v->src.w / W0);
+    int32_t sy = v->src.y + (int32_t)((int64_t)uy * v->src.h / H0);
+    if (sx < 0 || sy < 0 || sx >= v->iw || sy >= v->ih)
+        return false;
+    return (v->bits[(size_t)sy * v->wpr + (sx >> 5)] >> (sx & 31)) & 1;
+}
+
 bool surf_node_overlaps(const surf_node *a, const surf_node *b)
 {
     if (!a || !b || (a->flags & SURF_NF_HIDDEN) || (b->flags & SURF_NF_HIDDEN) ||
@@ -526,8 +607,24 @@ bool surf_node_overlaps(const surf_node *a, const surf_node *b)
     int16_t ax, ay, bx, by;
     surf_node_abs_pos(a, &ax, &ay);
     surf_node_abs_pos(b, &bx, &by);
-    return surf_rect_overlaps((surf_rect){ax, ay, a->w, a->h},
-                              (surf_rect){bx, by, b->w, b->h});
+    surf_rect ra = {ax, ay, a->w, a->h};
+    surf_rect rb = {bx, by, b->w, b->h};
+    if (!surf_rect_overlaps(ra, rb))
+        return false;
+    ink_view va, vb;
+    bool ia = node_ink(a, &va);
+    bool ib = node_ink(b, &vb);
+    if (!ia && !ib)
+        return true;                /* two boxes: the old answer was right */
+    surf_rect ix = surf_rect_intersect(ra, rb);
+    for (int32_t y = 0; y < ix.h; y++)
+        for (int32_t x = 0; x < ix.w; x++) {
+            int32_t px = ix.x + x, py = ix.y + y;
+            if ((!ia || ink_at(&va, a, px - ax, py - ay)) &&
+                (!ib || ink_at(&vb, b, px - bx, py - by)))
+                return true;
+        }
+    return false;
 }
 
 void surf_sprite_set_fast_pan(surf_node *n, bool on)

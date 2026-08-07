@@ -431,11 +431,16 @@ void surf_set_node_freed_cb(surf_node_freed_fn cb);
 /* properties — every write damages the old and new screen rects */
 void surf_node_set_pos(surf_node *n, int16_t x, int16_t y);
 void surf_node_damage(surf_node *n);   /* force a repaint (e.g. after retint) */
-/* Do two nodes' on-screen footprints overlap? (AABB on absolute
+/* Do two nodes overlap ON THE INK? Boxes first (AABB on absolute
  * positions and w/h — transformed sprites use their transformed
- * footprint.) False if either is hidden or detached. The collision
- * primitive for games: cheap enough to test every bullet against
- * every enemy every frame. */
+ * footprint), and where the boxes touch, a sprite or filmstrip then
+ * answers from its image's alpha: pixels under SURF_INK_ALPHA (128) do
+ * not collide, so a sword's transparent corners no longer bounce a
+ * ball. Everything else — rects, groups, labels, and any image with no
+ * transparency — is still its whole box. False if either is hidden or
+ * detached. The collision primitive for games: the box reject keeps
+ * every-bullet-vs-every-enemy cheap, and the per-pixel walk only runs
+ * over the intersection of two boxes that already touch. */
 bool surf_node_overlaps(const surf_node *a, const surf_node *b);
 void surf_node_set_hidden(surf_node *n, bool hidden);
 void surf_rect_set_color(surf_node *n, surf_color c);

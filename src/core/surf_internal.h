@@ -230,6 +230,20 @@ void surf_scroll_forget(surf_node *sv);  /* node freed/detached */
 
 surf_node *surf_node_alloc(uint8_t type);  /* pool; NULL when exhausted */
 bool      surf_node_attached(const surf_node *n);
+
+/* Collision ink (image.c): a lazy 1-bit "is there ink here" mask per
+ * image, so surf_node_overlaps can answer per PIXEL instead of per box.
+ * surf_ink() returns the mask (words_per_row LSB-first rows over the
+ * whole image) or NULL when the box IS the answer — an opaque image, an
+ * RGB565 one, or a build that failed. The mask lives in a side table
+ * keyed by the image pointer, never in surf_image itself: images are
+ * legitimately `static const` (the tests do it, baked assets could) and
+ * on the device that is a struct in flash a lazy cache cannot write to. */
+#define SURF_INK_ALPHA 128   /* >= this collides; soft shadows do not */
+const uint32_t *surf_ink(const surf_image *img, int32_t *words_per_row);
+void surf_ink_dirty(const surf_image *img);  /* pixels changed: rebuild lazily */
+void surf_ink_drop(const surf_image *img);   /* image destroyed */
+void surf_ink_reset(void);                   /* surf_deinit: drop everything */
 /* own HIDDEN flag or any ancestor's — what a hal-shift gate must ask */
 bool      surf_node_effectively_hidden(const surf_node *n);
 surf_rect surf_node_subtree_bounds(const surf_node *n, int16_t px, int16_t py);

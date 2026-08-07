@@ -383,6 +383,45 @@ the frame's own cell**, and that going back to 1:1 returns to the plain
 blit — a fast path lost to a node that merely COULD be transformed is a
 cost nobody would notice until the panel.
 
+## hits() counts INK, not the box
+
+`surf_node_overlaps` (Python: `a.hits(b)`) reads the pixels now. Boxes
+first, exactly as before — AABB on absolute positions, transformed
+footprints, hidden/detached never hit — and where the boxes touch, a
+sprite or filmstrip answers from its image's ALPHA: pixels under
+`SURF_INK_ALPHA` (128) do not collide. The report that ended box-only
+was exact and worth keeping: a ball "bouncing off a sword way before
+contact" — a longsword is a diagonal of ink in a mostly transparent
+square, so the box collided at the empty corner.
+
+- **A lazy 1-bit mask per image** (`surf_ink`, image.c), built on the
+  first overlap that needs it, ~w*h/8 bytes. It lives in a SIDE TABLE
+  keyed by the image pointer, not in `surf_image`: images are
+  legitimately `static const` (the tests build them that way) and on
+  the device that is a struct in flash a cache cannot write into.
+- **Every pixel mutator drops the mask** — fill, blit, scale, the four
+  shape calls — and so does `surf_image_flush`, which is the publish
+  point a buffer-protocol writer already owes the PPA. A writer that
+  never flushes gets a stale mask AND stale pixels: same contract, not
+  a new one. `surf_deinit` clears the table, because a soft reset frees
+  images whose addresses malloc hands out again.
+- **The inverse map is `h_xform_blend`'s arithmetic exactly** (rot
+  CCW, mirror flips the source before rotation, the filmstrip's source
+  is its FRAME cell) — so what collides is what is drawn. If the hal's
+  sampling ever changes, `ink_at` in node.c changes with it.
+- **The box fallbacks are the design, not gaps**: rects, groups, labels,
+  RGB565, anything `opaque`, and an OOM during the build all stay boxes.
+  Two boxes still short-circuit before any pixel is read, so
+  every-bullet-vs-every-enemy costs what it always did; the per-pixel
+  walk runs only over the INTERSECTION of boxes that already touch,
+  which at the moment of contact is small. Legal by the colorpicker's
+  rule — it runs on an event (an app asking), never in the compose path.
+
+tests/test_ink.c holds all of it: the sword-and-ball case, solid-stays-
+box, scale, rot/mirror against the hal's mapping, invalidation after a
+fill, and a filmstrip colliding with the frame it shows rather than the
+sheet.
+
 ## An image can be saved now
 
 `surf_image_to_png` / `surfer.write_png(img)` — the other half of

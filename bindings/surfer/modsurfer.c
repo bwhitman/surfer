@@ -683,7 +683,9 @@ static mp_obj_t node_damage(mp_obj_t self_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(node_damage_obj, node_damage);
 
-/* a.hits(b) — do the two nodes' on-screen footprints overlap? */
+/* a.hits(b) — do the two nodes overlap ON THE INK? Boxes first, then a
+ * sprite/filmstrip answers from its image's alpha, so transparent
+ * corners do not collide. See surf_node_overlaps in surfer.h. */
 static mp_obj_t node_hits(mp_obj_t self_in, mp_obj_t other_in)
 {
     return mp_obj_new_bool(surf_node_overlaps(node_of(self_in), node_of(other_in)));
