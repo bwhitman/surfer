@@ -483,10 +483,11 @@ static void cell_to_fb(const surf_node *n, const surf_textcell *c,
              * the cell box instead. A cell is a box and an emoji is a
              * picture that belongs in it; borrowing a baseline from a
              * face it has never met puts a 16px picture 1px above a 19px
-             * cell and clips its top row. (A LABEL is the other case and
-             * does align to the baseline — there the emoji sits in
-             * flowing text, not in a box.) Emoji are square, so the
-             * advance is also the box height. */
+             * cell and clips its top row. (A LABEL centres in the LINE
+             * box for the same reason — glyph_top() in font.c; it used
+             * to baseline, which clipped every emoji's top by
+             * size − ascent.) Emoji are square, so the advance is also
+             * the box height. */
             gy = (int16_t)(cy + (n->u.grid.cell_h - g->adv) / 2
                               + g->adv + g->yoff);
         } else {

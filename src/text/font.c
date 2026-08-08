@@ -250,6 +250,27 @@ void surf_tlayout_begin(surf_tlayout *it, const surf_font *f, const char *s,
     enter_line(it, 0);
 }
 
+/* Where a glyph's top edge lands. The face's own glyphs sit on the
+ * baseline, which is what yoff was baked against. A FALLBACK glyph was
+ * baked against ITS OWN baseline — textgrid's lesson, repeated here
+ * because the label path shipped without it: an emoji box is as tall as
+ * the emoji's whole size, and every face's ascent is smaller than its
+ * line height, so the largest set wire_emoji() will attach (fits the
+ * LINE) baselined here pokes above the line top and is clipped — ui12
+ * is ascent 13 with emoji16, so the top 3px of every emoji in a label
+ * or a widget legend were simply gone. Centre its box in the line box
+ * instead, the same arithmetic textgrid uses with the cell box; the
+ * wire's fits-the-line test is then exactly the right guarantee. */
+static int16_t glyph_top(const surf_tlayout *it, const surf_font *src,
+                         const surf_glyph *g)
+{
+    if (src == it->f)
+        return (int16_t)(it->base_y + g->yoff);
+    int16_t line_top = (int16_t)(it->base_y - it->f->ascent);
+    return (int16_t)(line_top + (surf_font_line_h(it->f) - g->adv) / 2
+                     + g->adv + g->yoff);
+}
+
 bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out)
 {
     for (;;) {
@@ -263,7 +284,7 @@ bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out)
                     out->g = e;
                     out->font = esrc;
                     out->x = (int16_t)(it->pen_x + e->xoff);
-                    out->y = (int16_t)(it->base_y + e->yoff);
+                    out->y = glyph_top(it, esrc, e);
                     out->byte_idx = it->line_end;
                     it->pen_x = (int16_t)(it->pen_x + e->adv);
                     return true;
@@ -285,7 +306,7 @@ bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out)
         out->g = g;
         out->font = gsrc;
         out->x = (int16_t)(it->pen_x + g->xoff);
-        out->y = (int16_t)(it->base_y + g->yoff);
+        out->y = glyph_top(it, gsrc, g);
         out->byte_idx = idx;
         it->pen_x = (int16_t)(it->pen_x + g->adv);
         it->prev_cp = cp;

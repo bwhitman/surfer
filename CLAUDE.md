@@ -1222,9 +1222,15 @@ out, and each fails silently on its own:
   off-screen and paint nothing there.
 - **A fallback glyph is CENTRED in the cell box, not baselined.** It was
   baked against its own baseline, and borrowing this face's puts a 16px
-  picture 1px above a 19px cell and clips its top row. A LABEL is the
-  other case and does baseline it — there the emoji sits in flowing
-  text rather than in a box.
+  picture 1px above a 19px cell and clips its top row. A LABEL centres
+  in the LINE box for the same reason (`glyph_top()` in font.c). It
+  used to baseline there — "the emoji sits in flowing text" — and that
+  reasoning was wrong by arithmetic: the wire attaches the largest set
+  that fits the LINE, every ascent is smaller than its line height, so
+  a baselined emoji pokes `size − ascent` above the line top and is
+  clipped wherever the label is clipped at all. ui12 (ascent 13,
+  emoji16) lost the top 3px of every emoji in a widget legend, reported
+  as the world app's chat tab "cut off at the top".
 
 **Baked by its own tool.** `tools/emojibake.c` shares none of fontbake's
 rasterizers, hinting, kerning or A1 packing; what it shares is the
