@@ -158,6 +158,44 @@ void surf_text_paint(const surf_paint_ent *e)
     }
 }
 
+/* See surfer.h. The same layout walk as surf_text_paint, aimed at an
+ * image instead of the framebuffer: surf_image_blit already composites
+ * every atlas format this can meet (A8 with the tint carrying the
+ * colour, ARGB for an emoji that keeps its own), and a fresh ARGB image
+ * starts transparent, so blitting IS rendering. One-shot per call —
+ * per-pixel work is legal here for the same reason it is in the shape
+ * API: nothing on the frame path. */
+surf_image *surf_text_bake(const surf_font *f, const char *str,
+                           surf_color color, int16_t wrap_w)
+{
+    if (!f || !str)
+        return NULL;
+    surf_point sz = surf_text_measure(f, str, wrap_w);
+    if (sz.x < 1)
+        sz.x = 1;
+    if (sz.y < 1)
+        sz.y = 1;
+    surf_image *img = surf_image_new((int16_t)sz.x, (int16_t)sz.y,
+                                     SURF_FMT_ARGB8888);
+    if (!img)
+        return NULL;
+    surf_image base = f->atlas;   /* the label's own arrangement: the */
+    base.tint = color;            /* tint IS the colour on an A8 face */
+    surf_tlayout it;
+    surf_tglyph tg;
+    surf_tlayout_begin(&it, f, str, wrap_w, SURF_ALIGN_LEFT, 0);
+    while (surf_tlayout_next(&it, &tg)) {
+        if (tg.g->w <= 0)
+            continue;
+        surf_image im = surf_glyph_image(&base, f, tg.font);
+        surf_image_blit(img, &im,
+                        (surf_rect){tg.g->x, tg.g->y, tg.g->w, tg.g->h},
+                        (int16_t)tg.x, (int16_t)tg.y);
+    }
+    surf_image_flush(img);
+    return img;
+}
+
 void surf_text_free_storage(surf_node *n)
 {
     if (n->type == SURF_NODE_TEXT) {

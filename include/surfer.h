@@ -594,6 +594,17 @@ typedef enum {
 
 surf_point surf_text_measure(const surf_font *f, const char *str, int16_t wrap_w);
 
+/* A string rendered into a freshly allocated ARGB image — glyphs,
+ * colour, wrap and the fallback face exactly as a label draws them.
+ * For the one thing a label cannot do: SCALE. Text nodes have no
+ * transform (a per-glyph blit cannot ride the sprite path), so big
+ * chunky text is this image on a SPRITE with .scale — bake at the
+ * face's own size and let the compositor do the enlarging. One-shot,
+ * not frame path; the caller owns the image. NULL on no font, no
+ * string, or no memory. */
+surf_image *surf_text_bake(const surf_font *f, const char *str,
+                           surf_color color, int16_t wrap_w);
+
 /* label node: wrap at wrap_w (0 = single line), greedy break on space and
  * hyphen; ellipsize truncates a single line with U+2026 instead */
 surf_node *surf_text_new(const surf_font *f, const char *str,

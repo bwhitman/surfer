@@ -2258,6 +2258,33 @@ static mp_obj_t mod_label(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_label_obj, 3, 5, mod_label);
 
+/* surfer.text_image(str, color, font, wrap_w) -> Image (ARGB)
+ *
+ * A LABEL BAKED INTO PIXELS, for the one thing a label cannot do:
+ * scale. Show it with a sprite and set .scale — bake at the face's own
+ * size, let the compositor enlarge, which is the "bake at final size"
+ * rule pointed the other way. The Image is the caller's to destroy;
+ * unlike a label it holds no reference to a runtime Font, because the
+ * pixels are copied out at the call. */
+static mp_obj_t mod_text_image(size_t n_args, const mp_obj_t *args)
+{
+    surf_color c = n_args > 1 ? (surf_color)mp_obj_get_int(args[1])
+                              : SURF_RGB(240, 242, 248);
+    mp_obj_t fref = mp_const_none;
+    const surf_font *f = n_args > 2 ? font_arg(args[2], &fref)
+                                    : font_named(DEFAULT_FONT);
+    int16_t wrap = n_args > 3 ? (int16_t)mp_obj_get_int(args[3]) : 0;
+    surf_image *img = surf_text_bake(f, mp_obj_str_get_str(args[0]), c, wrap);
+    if (!img)
+        mp_raise_ValueError(MP_ERROR_TEXT("text_image failed"));
+    surfer_image_obj_t *o = mp_obj_malloc(surfer_image_obj_t,
+                                          &surfer_image_type);
+    o->img = img;
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_text_image_obj, 1, 4,
+                                           mod_text_image);
+
 /* surfer.textinput(x, y, w, color, font) -> Node
  *
  * One line of editable text with a caret and a selection. It draws the
@@ -2933,6 +2960,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_filmstrip), MP_ROM_PTR(&mod_filmstrip_obj)},
     {MP_ROM_QSTR(MP_QSTR_write_png), MP_ROM_PTR(&mod_write_png_obj)},
     {MP_ROM_QSTR(MP_QSTR_label), MP_ROM_PTR(&mod_label_obj)},
+    {MP_ROM_QSTR(MP_QSTR_text_image), MP_ROM_PTR(&mod_text_image_obj)},
     {MP_ROM_QSTR(MP_QSTR_textinput), MP_ROM_PTR(&mod_textinput_obj)},
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},

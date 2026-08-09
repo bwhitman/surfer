@@ -282,6 +282,36 @@ static void test_fallback_label(void)
     surf_node_destroy(t);
 }
 
+/* surf_text_bake: the label's layout aimed at an image. The synthetic
+ * atlas is solid 0x80 coverage, so a baked glyph pixel carries exactly
+ * that alpha with the caller's colour, the gaps stay transparent, and
+ * the ARGB fallback keeps its own colours — a tint would mean nothing
+ * on a picture. */
+static void test_bake(void)
+{
+    surf_image *img = surf_text_bake(&tfont, "AB", SURF_RGB(255, 0, 0), 0);
+    OK(img != NULL);
+    OK(img->w == 20 && img->h == 16);          /* the measure, exactly */
+    /* 'A' boxes x 1..8, y 2..11 (xoff 1, yoff -10 under ascent 12) */
+    uint32_t p = ((const uint32_t *)((const uint8_t *)img->pixels +
+                                     4 * img->stride))[4];
+    OK((p >> 24) == 0x80);                     /* the atlas's coverage */
+    OK(((p >> 16) & 0xff) == 0xf8);            /* the tint's red */
+    uint32_t q = ((const uint32_t *)img->pixels)[0];
+    OK((q >> 24) == 0);                        /* outside a glyph: clear */
+    surf_image_destroy(img);
+
+    surf_image *e = surf_text_bake(&tfont, "\xF0\x9F\x94\xA5",
+                                   SURF_RGB(0, 255, 0), 0);
+    OK(e != NULL);
+    uint32_t m = ((const uint32_t *)((const uint8_t *)e->pixels +
+                                     2 * e->stride))[2];
+    OK(m == 0xffff00ffu);                      /* its own magenta, no tint */
+    surf_image_destroy(e);
+
+    OK(surf_text_bake(NULL, "A", 0, 0) == NULL);
+}
+
 void run_text_tests(void)
 {
     mkfont();
@@ -291,4 +321,5 @@ void run_text_tests(void)
     test_textinput();
     test_fallback_lookup();
     test_fallback_label();
+    test_bake();
 }

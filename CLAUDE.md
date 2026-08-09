@@ -1157,6 +1157,29 @@ sizes its cell from 'M', so a proportional face is refused.
 same source (`demos/fonts_scene.c`); tap/click cycles pages. `SURF_TAP=x,y`
 injects a synthetic tap so the page flip is testable headlessly.
 
+## A label baked into pixels — text that scales
+
+`surfer.text_image(str, color, font, wrap_w)` (`surf_text_bake` in C)
+renders a string into a freshly allocated ARGB image: glyphs, colour,
+wrap and the fallback face exactly as a label draws them. It exists
+for the one thing a label cannot do — SCALE. Text nodes have no
+transform, deliberately: a per-glyph blit every frame cannot ride the
+sprite path, and big text drawn per frame would be the per-pixel
+frame-path loop the first rule forbids. So chunky text is a BAKE: the
+image on a sprite with `.scale`, the compositor (the PPA's SRM on the
+device) doing the enlarging — "bake at final size" pointed the other
+way, priced once at the call.
+
+The implementation is the label's own layout walk aimed at
+`surf_image_blit` instead of the framebuffer, which already composites
+every atlas format this can meet: A8 with the tint carrying the
+colour, ARGB for an emoji that keeps its own. A fresh ARGB image
+starts transparent, so blitting IS rendering. The Image is the
+caller's to destroy — unlike a label it holds no reference to a
+runtime Font, because the pixels are copied out at the call.
+`tests/test_text.c` bakes against the synthetic font, where the
+expected alpha and colour are exact numbers.
+
 ## Emoji are a FALLBACK FACE, not a second way to draw
 
 `surfer.emoji("fire")` is the name lookup; `"\U0001F525"` is the same
