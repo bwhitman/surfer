@@ -1058,13 +1058,20 @@ Other knobs: `FONTBAKE_GAMMA`, `FONTBAKE_THRESHOLD[_CUT]`.
 **Two ranges, and which one a face gets is decided by its SHAPE.**
 `SURF_RANGE_BASE` (proportional) is ASCII + the Latin-1 supplement +
 dashes + ellipsis, 194 codepoints. `SURF_RANGE_MONO` (fixed width) is
-ASCII + **CP437** + ellipsis, 256 — box drawing, the block/shade run,
-arrows, the card suits, and the 55 Latin-1 characters CP437 happens to
-carry. Deliberately not the union: a terminal face has no use for the 41
-Latin-1 characters CP437 never had, and a proportional face has none for
-box drawing. Both are `#define`s in `tools/fontbake.c` so the Makefile
-and `ports/esp32p4/main/CMakeLists.txt` cannot drift; a build file asks
-by name (`fontbake NAME PPEM src.ttf out.h mono`).
+ASCII + **CP437** + ellipsis + `SURF_RANGE_TERM`, ~280 — box drawing,
+the block/shade run, arrows, the card suits, the 55 Latin-1 characters
+CP437 happens to carry, and the modern-TUI set (rounded box corners,
+typographic dashes/quotes, check/cross, chevrons, the spinner
+asterisks) that an ssh session running any current terminal program
+lands constantly — added when Claude Code over tulip5's ssh came out as
+rows of `?`. A source face missing some of the TERM set just skips them
+with a warning (DejaVu Sans Mono lacks U+23BF and U+23FA); tulip5's
+vt.py substitutes lookalikes for what a face cannot draw. Deliberately
+not the union with Latin-1: a terminal face has no use for the 41
+Latin-1 characters CP437 never had, and a proportional face has none
+for box drawing. All are `#define`s in `tools/fontbake.c` so the
+Makefile and `ports/esp32p4/main/CMakeLists.txt` cannot drift; a build
+file asks by name (`fontbake NAME PPEM src.ttf out.h mono`).
 
 **A fully-solid atlas is stored ONE BIT PER PIXEL** (`SURF_FMT_A1`),
 decided by MEASURING the bake rather than by a flag, so a face cannot be

@@ -105,15 +105,33 @@
     "9660,9668,9675,9688-9689,9786-9788,9792,9794,9824,9827,9829-9830," \
     "9834-9835"
 
-/* MONO is ASCII + CP437 + the ellipsis, and deliberately NOT all of
- * Latin-1: a terminal face wants the box-drawing half of the codepage,
- * and the 41 Latin-1 characters CP437 never had (Latin-1 has 96, CP437
- * carries 55 of them) are not what anyone reaches a fixed-width font
- * for. A proportional face wants the exact opposite and gets BASE. That
- * split is why there are two names rather than one range plus an
- * extension -- MONO used to be BASE plus the rest of CP437, which gave
- * every terminal face 43 glyphs it had no use for. */
-#define SURF_RANGE_MONO "32-126," SURF_RANGE_CP437 ",8230"
+/* What a MODERN terminal program draws with, and CP437 has not got.
+ * An ssh session running any current TUI (Claude Code was the report,
+ * but Ink, starship and every spinner library share the vocabulary)
+ * lands these constantly, and a codepoint the face lacks is a '?' on
+ * the glass: the rounded box corners (U+256D..2570 -- CP437's box set
+ * stops four short of them), the typographic dashes and quotes prose
+ * arrives in, the check/cross and chevrons shells use for status, the
+ * asterisk family spinners cycle through, U+23BF (the result-connector
+ * corner) and U+23FA (the record dot -- also in the emoji set, but a
+ * terminal wants it one cell wide and tintable, and the face winning
+ * over the fallback is what makes that so). A face whose source font
+ * lacks some of these just skips them -- the bake warns, and tulip5's
+ * vt.py substitutes a CP437 lookalike for what a face cannot draw. */
+#define SURF_RANGE_TERM \
+    "8211-8212,8216-8217,8220-8221,8249-8250,9151,9210,9581-9584," \
+    "10003,10007,10018,10035,10038,10043,10045,10094-10095"
+
+/* MONO is ASCII + CP437 + the ellipsis + the terminal set above, and
+ * deliberately NOT all of Latin-1: a terminal face wants the
+ * box-drawing half of the codepage, and the 41 Latin-1 characters CP437
+ * never had (Latin-1 has 96, CP437 carries 55 of them) are not what
+ * anyone reaches a fixed-width font for. A proportional face wants the
+ * exact opposite and gets BASE. That split is why there are two names
+ * rather than one range plus an extension -- MONO used to be BASE plus
+ * the rest of CP437, which gave every terminal face 43 glyphs it had no
+ * use for. */
+#define SURF_RANGE_MONO "32-126," SURF_RANGE_CP437 ",8230," SURF_RANGE_TERM
 
 static uint32_t cps[MAX_CPS];
 static int ncps;
