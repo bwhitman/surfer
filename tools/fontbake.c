@@ -173,6 +173,35 @@ static uint32_t *ka, *kb;
 static int16_t *kd;
 static int nkern;
 
+static int cmp_cp(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* THE EMITTED GLYPH TABLE MUST BE SORTED BY CODEPOINT, because
+ * `surf_font_glyph` BINARY SEARCHES it (src/text/font.c). Glyphs are
+ * emitted in the order the ranges are parsed, and a range string is
+ * under no obligation to ascend: SURF_RANGE_MONO is
+ * "32-126," CP437 ",8230," TERM, and CP437 runs up to 9835 — so the
+ * ellipsis at 8230 and the whole of the terminal set after it landed
+ * BELOW their predecessors and the search walked past them.
+ *
+ * The symptom is the nastiest kind: those codepoints are present in the
+ * atlas, with real pixels, and `codepoints()` lists them — so the face
+ * CLAIMS a glyph it then fails to draw, and the lookup falls through to
+ * the emoji set and then to '?'. Reported as em dashes, curly quotes and
+ * the ellipsis coming out as question marks over ssh, which sent
+ * everybody looking at the terminal rather than at the baker. Not
+ * all-or-nothing either, which is what made it so hard to read: a
+ * binary search on a nearly-sorted table finds SOME of the misplaced
+ * entries by luck, so the failures looked arbitrary.
+ *
+ * Sorted here rather than at load: the file is generated, so the
+ * invariant costs nothing at runtime and holds for every consumer.
+ * Duplicates are dropped with it — overlapping ranges were previously
+ * baked twice, which wasted atlas space and made the search's answer
+ * depend on which copy it landed on. */
 static void parse_ranges(const char *s)
 {
     while (*s) {
@@ -184,6 +213,12 @@ static void parse_ranges(const char *s)
         if (*s == ',')
             s++;
     }
+    qsort(cps, (size_t)ncps, sizeof(cps[0]), cmp_cp);
+    int n = 0;
+    for (int i = 0; i < ncps; i++)
+        if (i == 0 || cps[i] != cps[i - 1])
+            cps[n++] = cps[i];
+    ncps = n;
 }
 
 static int wanted(uint32_t cp)
