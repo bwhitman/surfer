@@ -2745,6 +2745,13 @@ static mp_obj_t mod_tabs(size_t n_args, const mp_obj_t *args)
                          : SURF_RGB(47, 51, 62);
     st.dim = n_args > 7 ? (surf_color)mp_obj_get_int(args[7])
                         : SURF_RGB(28, 31, 38);
+    /* The legend colours, for a caller whose face is LIGHT: the white
+     * default disappears on a pale page, and the style already carries
+     * both fields -- this only hands them to Python. */
+    st.text = n_args > 8 ? (surf_color)mp_obj_get_int(args[8])
+                         : SURF_RGB(150, 156, 172);
+    st.text_active = n_args > 9 ? (surf_color)mp_obj_get_int(args[9])
+                                : SURF_RGB(255, 255, 255);
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(args[4], &len, &items);
@@ -2769,7 +2776,7 @@ static mp_obj_t mod_tabs(size_t n_args, const mp_obj_t *args)
     surf_tabs_on_change(t, widget_idx_cb, o);
     return MP_OBJ_FROM_PTR(o);
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_tabs_obj, 5, 8, mod_tabs);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_tabs_obj, 5, 10, mod_tabs);
 
 /* surfer.radio(x, y, ["one", "two"], vertical=True) -> Widget
  *
