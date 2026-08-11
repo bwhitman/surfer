@@ -479,6 +479,10 @@ void    surf_sprite_set_xform(surf_node *n, int32_t scale_q16, uint8_t rot,
 int32_t surf_sprite_scale(const surf_node *n);
 uint8_t surf_sprite_rot(const surf_node *n);
 uint8_t surf_sprite_mirror(const surf_node *n);
+/* Can this node carry a transform at all? Only sprites and filmstrips
+ * can; a binding that lets a caller write `rot` to anything else should
+ * refuse rather than let surf_sprite_set_xform quietly drop it. */
+bool surf_node_can_xform(const surf_node *n);
 void surf_group_set_clip(surf_node *g, int16_t w, int16_t h);  /* 0×0 disables */
 void surf_filmstrip_set_frame(surf_node *n, int16_t frame);
 /* Play it: frames per second in Q16, 0 (the default) to leave the frame

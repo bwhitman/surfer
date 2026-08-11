@@ -743,6 +743,11 @@ void surf_sprite_set_xform(surf_node *n, int32_t scale_q16, uint8_t rot,
     surf_damage_subtree(n);
 }
 
+bool surf_node_can_xform(const surf_node *n)
+{
+    return surf_node_xform((surf_node *)n) != NULL;
+}
+
 int32_t surf_sprite_scale(const surf_node *n)
 {
     const surf_xform *xf = surf_node_xform((surf_node *)n);

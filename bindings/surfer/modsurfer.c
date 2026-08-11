@@ -1012,7 +1012,25 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
     }
     /* sprite transform: scale (float, 1.0 = 1:1), rot (degrees CCW,
      * quarter turns only — the P4 PPA's limit), mirror_x / mirror_y
-     * (bools; source flip before rotation) */
+     * (bools; source flip before rotation).
+     *
+     * WRITING one to a node that has no transform RAISES. Only sprites
+     * and filmstrips carry one, and surf_sprite_set_xform quietly
+     * returns for everything else — so `group.rot = 90` was accepted
+     * and did nothing, which cost a Tulip user three model-assisted
+     * rounds against a kitty that never turned. The set_color-on-a-
+     * label trap, except set_color is a guarded no-op by documented
+     * design and this was just a hole. Reads stay lenient (0 / False):
+     * generic code asking a node what it is should get an answer. */
+    if (dest[0] != MP_OBJ_NULL &&
+        (attr == MP_QSTR_scale || attr == MP_QSTR_rot ||
+         attr == MP_QSTR_mirror_x || attr == MP_QSTR_mirror_y) &&
+        !surf_node_can_xform(o->node)) {
+        mp_raise_msg(&mp_type_TypeError,
+                     MP_ERROR_TEXT("only a sprite or filmstrip can "
+                                   "scale/rot/mirror - a group cannot; "
+                                   "transform each child"));
+    }
     if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_scale) {
         dest[0] = mp_obj_new_float((mp_float_t)surf_sprite_scale(o->node) /
                                    (mp_float_t)SURF_ONE);
