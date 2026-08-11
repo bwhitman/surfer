@@ -105,11 +105,30 @@ static void update_view(void)
 #if TARGET_OS_IPHONE
     {
         extern int SDL_tulip_kb_top_pt;
+        extern int SDL_tulip_kb_height_pt;
         S.kb_pt = SDL_tulip_kb_top_pt;
-        if (S.kb_pt > 0 && S.win_h > 0) {
-            int top_px = (int)(((int64_t)S.kb_pt * oh) / S.win_h);
-            if (top_px > 0 && top_px < avail_h)
-                avail_h = top_px;
+        if (S.kb_pt > 0) {
+            /* SCALE BY THE KEYBOARD FRAME'S OWN EXTENT, never by the
+             * window size — SDL's window height disagrees with UIKit's
+             * coordinate space in landscape (measured on an iPhone 17
+             * Pro: SDL says 874x512 while the keyboard frame says the
+             * screen is 402 tall, and 566+308 == 874 exactly in
+             * portrait, so it is the LANDSCAPE window figure that is
+             * wrong). Dividing by it shrank the machine by that ratio
+             * and left a band of dead space above the keyboard.
+             *
+             * top + height is the screen's own height as UIKit measured
+             * it in the same breath as the top, so the fraction is
+             * self-consistent whatever SDL thinks. A keyboard that does
+             * not reach the bottom (an iPad floating panel) makes that
+             * sum short, which fits the view SMALLER — the safe way to
+             * be wrong, and never off by a whole orientation. */
+            int screen_pt = S.kb_pt + SDL_tulip_kb_height_pt;
+            if (screen_pt > 0) {
+                int top_px = (int)(((int64_t)S.kb_pt * oh) / screen_pt);
+                if (top_px > 0 && top_px < avail_h)
+                    avail_h = top_px;
+            }
         }
     }
 #endif
@@ -910,7 +929,12 @@ bool surf_hal_sdl_pump(void)
 #if TARGET_OS_IPHONE
     {
         extern int SDL_tulip_kb_top_pt;
+        extern int SDL_tulip_kb_height_pt;
         if (S.win && SDL_tulip_kb_top_pt != S.kb_pt) {
+            if (getenv("SURF_VIEW_DEBUG"))
+                fprintf(stderr, "surfer: kb top=%d h=%d win=%dx%d\n",
+                        SDL_tulip_kb_top_pt, SDL_tulip_kb_height_pt,
+                        S.win_w, S.win_h);
             update_view();          /* reads and records the new top */
             view_present();
         }
