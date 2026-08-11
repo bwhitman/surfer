@@ -373,13 +373,14 @@ void surf_pad_reset(int pad);       /* neutral (a source disconnected) */
 void surf_pad_reset_all(void);
 
 /* Host chrome drawn OUTSIDE the machine's screen (tulip5's iOS key
- * bar). chrome_pt is the room it wants at the bottom of the window in
- * window points, which the SDL hal fits its view above; ctrl_latch is a
+ * bar). chrome_q16 is the fraction of the window height it wants kept
+ * clear at the bottom, Q16 — a FRACTION because the host measures in
+ * its own space and SDL's window height need not agree; ctrl_latch is a
  * one-shot Ctrl from such chrome, consumed by the next character typed
  * — the only way a soft keyboard with no ctrl key can send ^C. Weak
  * zeroes in input.c, so a host that draws none needs to know nothing
  * about either. */
-extern int surf_host_chrome_pt;
+extern int surf_host_chrome_q16;
 extern int surf_host_ctrl_latch;
 
 /* the platform screen keyboard (iOS): op -1 asks, 1 summons, 0

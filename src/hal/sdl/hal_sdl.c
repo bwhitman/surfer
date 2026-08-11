@@ -130,28 +130,22 @@ static void update_view(void)
                     avail_h = top_px;
             }
         }
-        /* ...and the HOST's own chrome under that, if it has any —
-         * `surf_host_chrome_pt`, in the same window points the keyboard
-         * frame is measured in, 0 where the host draws none. tulip5's
-         * iOS build puts a strip of the keys a soft keyboard lacks
-         * there (drivers/ios_bar.m); surfer only needs to know how much
-         * room it wants. */
-        {
-            int screen_pt = S.kb_pt > 0 ? S.kb_pt + SDL_tulip_kb_height_pt
-                                        : 0;
-            if (surf_host_chrome_pt > 0) {
-                int bar_px;
-                if (screen_pt > 0)
-                    bar_px = (int)(((int64_t)surf_host_chrome_pt * oh)
-                                   / screen_pt);
-                else if (S.win_h > 0)
-                    bar_px = (int)(((int64_t)surf_host_chrome_pt * oh)
-                                   / S.win_h);
-                else
-                    bar_px = 0;
-                if (bar_px > 0 && bar_px < avail_h)
-                    avail_h -= bar_px;
-            }
+        /* ...and the HOST's own chrome under that, if it has any.
+         *
+         * A FRACTION, not a height, and that is the whole point:
+         * `surf_host_chrome_q16` is how much of the window the host
+         * wants kept clear, Q16, measured by the host in its own
+         * coordinate space. Passing points meant dividing by SDL's
+         * window height — which on a real iPhone in landscape is 512
+         * where UIKit says 402, so the bar came out 22% short of the
+         * room it needed and sat ON the machine's task bar. The
+         * keyboard fix above learned the same lesson; this one cannot
+         * relearn it, because there is no denominator left to get
+         * wrong. tulip5's iOS key bar (drivers/ios_bar.m) sets it. */
+        if (surf_host_chrome_q16 > 0) {
+            int bar_px = (int)(((int64_t)oh * surf_host_chrome_q16) >> 16);
+            if (bar_px > 0 && bar_px < avail_h)
+                avail_h -= bar_px;
         }
     }
 #endif
@@ -987,6 +981,18 @@ bool surf_hal_sdl_pump(void)
     {
         extern int SDL_tulip_kb_top_pt;
         extern int SDL_tulip_kb_height_pt;
+        /* The HOST's chrome moves without a keyboard event of its own —
+         * it is created after the window and re-measures on every
+         * rotation — so its fraction is watched here too. Without this
+         * the view kept whatever the bar reported FIRST (a portrait
+         * fraction, on a landscape launch) and the strip sat over the
+         * machine's task bar until something else happened to refit. */
+        static int last_chrome = -1;
+        if (S.win && surf_host_chrome_q16 != last_chrome) {
+            last_chrome = surf_host_chrome_q16;
+            update_view();
+            view_present();
+        }
         if (S.win && SDL_tulip_kb_top_pt != S.kb_pt) {
             if (getenv("SURF_VIEW_DEBUG"))
                 fprintf(stderr, "surfer: kb top=%d h=%d win=%dx%d\n",
