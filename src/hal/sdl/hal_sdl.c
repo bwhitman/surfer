@@ -60,10 +60,11 @@ static struct {
     bool          free_aspect;  /* SURF_FREE_ASPECT: let the window be any shape */
     uint64_t      snap_at;      /* when to put the window back on aspect; 0 = idle */
     int16_t       snap_w, snap_h;  /* the size BEFORE this drag started */
-    bool          kb_shown;     /* the platform's screen keyboard (iOS): the
-                                 * OS shows and hides it without telling SDL
-                                 * in any event, so the pump polls and the
-                                 * view re-anchors on the edge */
+    int           kb_pt;        /* the platform screen keyboard's height in
+                                 * window POINTS (iOS; 0 elsewhere and when
+                                 * down). The OS shows and hides it without
+                                 * telling SDL in any event, so the pump
+                                 * polls and the view refits on a change */
     char          synth_ch;     /* iOS hardware keyboard: last character
                                  * synthesised from a key-down, so a text
                                  * event echoing it can be dropped */
@@ -89,6 +90,26 @@ static void update_view(void)
         return;
     S.out_w = ow;
     S.out_h = oh;
+    /* The platform screen keyboard (iOS) rises over the bottom of the
+     * drawable and SDL neither resizes the window for it nor exposes
+     * its height — SDL_tulip_kb_height_pt is our patch's export from
+     * the uikit view controller, in window points. The view FITS INTO
+     * WHAT THE KEYBOARD LEAVES: subtract it here and every rule below
+     * (aspect fit, whole-multiple snap, centring) applies unchanged to
+     * the space that can actually be seen. */
+    int avail_h = oh;
+#if TARGET_OS_IPHONE
+    {
+        extern int SDL_tulip_kb_height_pt;
+        S.kb_pt = SDL_tulip_kb_height_pt;
+        if (S.kb_pt > 0 && S.win_h > 0) {
+            int kb_px = (int)(((int64_t)S.kb_pt * oh) / S.win_h);
+            if (kb_px > 0 && kb_px < avail_h)
+                avail_h -= kb_px;
+        }
+    }
+#endif
+    oh = avail_h;
     /* Under SURF_NATIVE the framebuffer already fills the drawable at 1x,
      * so with a whole-multiple rule every resize short of an exact
      * DOUBLING left the view at 1x in the middle of a bigger window. And
@@ -109,16 +130,6 @@ static void update_view(void)
     if (S.view.h > oh) S.view.h = oh;
     S.view.x = (ow - S.view.w) / 2;
     S.view.y = (oh - S.view.h) / 2;
-
-    /* A platform screen keyboard (iOS) rises over the BOTTOM of the
-     * drawable and SDL neither resizes the window nor says how tall it
-     * is — so a centred view sits half under it, which reads as the
-     * machine hiding from its own keyboard. Anchor to the top instead
-     * while it is up: in portrait that clears it entirely, and in
-     * landscape it keeps the top of the screen — where the console's
-     * text lives — over the part that can still be seen. */
-    if (S.kb_shown)
-        S.view.y = 0;
 
     if (getenv("SURF_VIEW_DEBUG"))
         fprintf(stderr, "VIEW drawable %dx%d fb %dx%d -> view %dx%d at %d,%d\n",
@@ -780,13 +791,8 @@ int surf_screen_keyboard(int op)
     } else if (op == 0) {
         SDL_StopTextInput();
     }
-    bool kb = SDL_IsScreenKeyboardShown(S.win);
-    if (kb != S.kb_shown) {
-        S.kb_shown = kb;
-        update_view();
-        view_present();
-    }
-    return kb ? 1 : 0;
+    /* the view refit rides the height poll in the pump, next frame */
+    return SDL_IsScreenKeyboardShown(S.win) ? 1 : 0;
 }
 
 void surf_hal_sdl_quit(void)
@@ -894,17 +900,18 @@ bool surf_hal_sdl_pump(void)
         }
     }
     /* The screen keyboard's comings and goings generate no SDL event —
-     * the user can dismiss it from its own key — so its visibility is
-     * polled here and a change re-anchors the view. One SDL call per
-     * pump, and only where a screen keyboard exists at all. */
-    if (S.win && SDL_HasScreenKeyboardSupport()) {
-        bool kb = SDL_IsScreenKeyboardShown(S.win);
-        if (kb != S.kb_shown) {
-            S.kb_shown = kb;
-            update_view();
+     * the user can dismiss it from its own key — so its height is
+     * polled here and a change refits the view into the space left.
+     * One integer compare per pump. */
+#if TARGET_OS_IPHONE
+    {
+        extern int SDL_tulip_kb_height_pt;
+        if (S.win && SDL_tulip_kb_height_pt != S.kb_pt) {
+            update_view();          /* reads and records the new height */
             view_present();
         }
     }
+#endif
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
@@ -1117,8 +1124,18 @@ bool surf_hal_sdl_pump(void)
                 break;
             int16_t x = (int16_t)(e.tfinger.x * (float)S.win_w);
             int16_t y = (int16_t)(e.tfinger.y * (float)S.win_h);
-            S.fing[slot].x = x;
-            S.fing[slot].y = y;
+            /* The contact table hands these straight to touches(), so
+             * they must be CANVAS coordinates like everything else —
+             * push_touch maps its own copy for the dispatch ring, and
+             * storing the unmapped window points here was invisible on
+             * every target whose window IS the canvas (desktop, web)
+             * and wrong by the whole letterbox on the first one whose
+             * window is the screen (iOS): the virtual pad read fingers
+             * hundreds of pixels from where they were. */
+            int16_t cx = x, cy = y;
+            map_pt(&cx, &cy);
+            S.fing[slot].x = cx;
+            S.fing[slot].y = cy;
             push_touch(x, y, down ? SURF_TOUCH_DOWN
                                   : (e.type == SDL_FINGERUP ? SURF_TOUCH_UP
                                                             : SURF_TOUCH_MOVE),
@@ -1135,18 +1152,27 @@ bool surf_hal_sdl_pump(void)
                 break;
             if (e.button.button == SDL_BUTTON_LEFT) {
                 S.mouse_down = true;
-                S.mouse_x = (int16_t)e.button.x;
-                S.mouse_y = (int16_t)e.button.y;
-                push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_DOWN, 0);
+                /* S.mouse_x feeds touches() and so holds CANVAS
+                 * coordinates — the finger table's rule; push_touch maps
+                 * its own copy. Storing window points here was invisible
+                 * in a 1:1 window and wrong under SURF_SCALE and on any
+                 * window that letterboxes (iOS). */
+                int16_t mx = (int16_t)e.button.x, my = (int16_t)e.button.y;
+                push_touch(mx, my, SURF_TOUCH_DOWN, 0);
+                map_pt(&mx, &my);
+                S.mouse_x = mx;
+                S.mouse_y = my;
             }
             break;
         case SDL_MOUSEMOTION:
             if (e.motion.which == SDL_TOUCH_MOUSEID)
                 break;
             if (S.mouse_down) {
-                S.mouse_x = (int16_t)e.motion.x;
-                S.mouse_y = (int16_t)e.motion.y;
-                push_touch(S.mouse_x, S.mouse_y, SURF_TOUCH_MOVE, 0);
+                int16_t mx = (int16_t)e.motion.x, my = (int16_t)e.motion.y;
+                push_touch(mx, my, SURF_TOUCH_MOVE, 0);
+                map_pt(&mx, &my);
+                S.mouse_x = mx;
+                S.mouse_y = my;
             }
             break;
         case SDL_MOUSEWHEEL: {
