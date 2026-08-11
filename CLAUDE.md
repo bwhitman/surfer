@@ -338,6 +338,18 @@ support a host wants was already sitting here.
 - **Late frames are DROPPED, not replayed.** A backgrounded tab or a
   long stall would otherwise flip through thousands of cels catching up
   on a cycle nobody watched.
+- **`play([fps])` / `stop()` / `.playing` are the TRANSPORT, and it is
+  a second axis on purpose.** stop() freezes the strip KEEPING its fps,
+  so play() resumes at the speed it had — which zeroing fps cannot do —
+  and play(fps) sets the speed first. fps is the SPEED (0 = the caller
+  owns the frame); the transport is whether it runs. Conflating the two
+  is how "how do I stop an animation?" got asked from the bench — fps=0
+  then fps=N does restart (and always did: set_fps re-anchors and keeps
+  the count parity), but it reads as a trick rather than an API. One
+  `strip_active()` — fps set AND not stopped — feeds the playing-count
+  parity in set_fps, set_playing and node_free, so the two axes cannot
+  disagree about the bookkeeping; `test_filmstrip_play` drives both
+  routes through the mock clock.
 - The mock hal's clock used to be frozen at 0, which is fine for
   everything that only reads it and useless for anything that waits on
   it. `mock_advance_us()` drives it now; `test_filmstrip_play` is the

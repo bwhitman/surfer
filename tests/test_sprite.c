@@ -177,8 +177,42 @@ static void test_filmstrip_play(void)
     surf_tick();
     OK(surf_filmstrip_frame(n) < 4);
 
+    /* THE TRANSPORT: stop() freezes the strip KEEPING its fps, so
+     * play() resumes at the speed it had — which zeroing fps cannot
+     * do. A second axis, because fps 0 MEANS "the caller owns the
+     * frame", and conflating that with pause is how "how do I stop an
+     * animation" got asked. */
+    surf_filmstrip_set_frame(n, 0);
+    surf_filmstrip_set_playing(n, false);
+    OK(!surf_filmstrip_playing(n));
+    OK(surf_filmstrip_fps(n) == SURF_ONE * 10);    /* the speed keeps */
+    mock_advance_us(1000000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 0);              /* frozen */
+    surf_filmstrip_set_playing(n, true);
+    OK(surf_filmstrip_playing(n));
+    surf_tick();                                   /* re-anchors from now */
+    mock_advance_us(100000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 1);              /* resumed at 10 fps */
+
+    /* ...and the fps route restarts too: 0 stops it, non-zero starts
+     * it again from now. The count parity in set_fps and set_playing
+     * shares one strip_active(), so the two axes cannot disagree. */
+    surf_filmstrip_set_fps(n, 0);
+    OK(!surf_filmstrip_playing(n));
+    mock_advance_us(1000000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 1);
+    surf_filmstrip_set_fps(n, SURF_ONE * 10);
+    surf_tick();
+    mock_advance_us(100000);
+    surf_tick();
+    OK(surf_filmstrip_frame(n) == 2);
+
     /* and the count goes back when the node dies, or the per-tick scan
-     * runs for ever for an animation nobody owns */
+     * runs for ever for an animation nobody owns — a PLAYING strip
+     * here, so node_free's decrement is what this exercises */
     surf_node_destroy(n);
     surf_tick();
     OK(1);

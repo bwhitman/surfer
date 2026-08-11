@@ -470,6 +470,32 @@ static mp_obj_t node_destroy(mp_obj_t self_in)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(node_destroy_obj, node_destroy);
 
+/* filmstrip transport. stop() freezes the strip keeping its fps;
+ * play() resumes at that speed, and play(fps) sets the speed first —
+ * the answer to "I set fps to 0 and then 10", which works too but
+ * conflates the speed with the transport. Both guard on the node type
+ * in C, so they are harmless no-ops on anything else. */
+static mp_obj_t node_play(size_t n_args, const mp_obj_t *args)
+{
+    surf_node *n = node_of(args[0]);
+    if (n_args == 2) {
+        mp_float_t f = mp_obj_get_float(args[1]);
+        if (f < 0)
+            f = 0;
+        surf_filmstrip_set_fps(n, (int32_t)(f * (mp_float_t)SURF_ONE));
+    }
+    surf_filmstrip_set_playing(n, true);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_play_obj, 1, 2, node_play);
+
+static mp_obj_t node_stop(mp_obj_t self_in)
+{
+    surf_filmstrip_set_playing(node_of(self_in), false);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(node_stop_obj, node_stop);
+
 static mp_obj_t node_set_text(mp_obj_t self_in, mp_obj_t s)
 {
     surfer_node_obj_t *o = MP_OBJ_TO_PTR(self_in);
@@ -792,6 +818,8 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_hits), MP_ROM_PTR(&node_hits_obj)},
     {MP_ROM_QSTR(MP_QSTR_detach), MP_ROM_PTR(&node_detach_obj)},
     {MP_ROM_QSTR(MP_QSTR_destroy), MP_ROM_PTR(&node_destroy_obj)},
+    {MP_ROM_QSTR(MP_QSTR_play), MP_ROM_PTR(&node_play_obj)},
+    {MP_ROM_QSTR(MP_QSTR_stop), MP_ROM_PTR(&node_stop_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_text), MP_ROM_PTR(&node_set_text_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_color), MP_ROM_PTR(&node_set_color_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_wrap), MP_ROM_PTR(&node_set_wrap_obj)},
@@ -968,6 +996,17 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
         if (f < 0)
             f = 0;
         surf_filmstrip_set_fps(o->node, (int32_t)(f * (mp_float_t)SURF_ONE));
+        dest[0] = MP_OBJ_NULL;
+        return;
+    }
+    /* .playing: is the strip actually advancing (fps set AND not
+     * stopped). Writable for symmetry; play()/stop() are the verbs. */
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_playing) {
+        dest[0] = mp_obj_new_bool(surf_filmstrip_playing(o->node));
+        return;
+    }
+    if (dest[0] != MP_OBJ_NULL && attr == MP_QSTR_playing) {
+        surf_filmstrip_set_playing(o->node, mp_obj_is_true(dest[1]));
         dest[0] = MP_OBJ_NULL;
         return;
     }
@@ -2207,7 +2246,12 @@ static MP_DEFINE_CONST_FUN_OBJ_3(mod_sprite_obj, mod_sprite);
  * `.fps` is the binding's own and advances `.frame` from tick, wrapping
  * — a caller that wants to drive it by hand leaves fps at 0, which is
  * what a frame PICKER (an editor) wants and what a game that steps the
- * walk cycle off its own physics wants too. */
+ * walk cycle off its own physics wants too.
+ *
+ * `.play([fps])` / `.stop()` / `.playing` are the TRANSPORT: stop
+ * freezes the strip keeping its fps, play resumes at that speed (or
+ * sets a new one first). fps is the SPEED and 0 means caller-driven;
+ * the transport is whether it runs — two different questions. */
 static mp_obj_t mod_filmstrip(size_t n_args, const mp_obj_t *args)
 {
     (void)n_args;

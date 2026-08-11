@@ -89,8 +89,12 @@ struct surf_node {
             /* PLAYBACK, and it is optional: fps 0 means the caller owns
              * the frame — which is what an editor picking a cel wants,
              * and what a game stepping a walk cycle off its own physics
-             * wants. Non-zero and surf_filmstrip_tick advances it. */
+             * wants. Non-zero and surf_filmstrip_tick advances it.
+             * `paused` is the TRANSPORT and is orthogonal: stop() must
+             * keep the speed so play() can resume it, which zeroing fps
+             * cannot. */
             int32_t  fps_q16;
+            bool     paused;
             uint64_t due_us;     /* when the next frame is owed */
         } strip;
         struct {

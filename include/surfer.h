@@ -475,6 +475,12 @@ void surf_filmstrip_set_frame(surf_node *n, int16_t frame);
  * late frames are dropped rather than replayed. */
 void    surf_filmstrip_set_fps(surf_node *n, int32_t fps_q16);
 int32_t surf_filmstrip_fps(const surf_node *n);
+/* The transport, a second axis on purpose: set_playing(false) freezes
+ * the strip KEEPING its fps, so set_playing(true) resumes at the speed
+ * it had — which zeroing fps cannot do. playing() answers "is it
+ * actually advancing": fps set AND not stopped. */
+void    surf_filmstrip_set_playing(surf_node *n, bool on);
+bool    surf_filmstrip_playing(const surf_node *n);
 void    surf_filmstrip_tick(void);
 int16_t surf_filmstrip_frame(const surf_node *n);
 void surf_ninepatch_set_size(surf_node *n, int16_t w, int16_t h);

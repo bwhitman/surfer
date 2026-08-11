@@ -57,7 +57,8 @@ static void node_free(surf_node *n)
     /* A PLAYING strip that is destroyed must give its count back, or the
      * scan in surf_filmstrip_tick keeps running for an animation nobody
      * owns — and after enough app quits it never stops running. */
-    if (n->type == SURF_NODE_FILMSTRIP && n->u.strip.fps_q16)
+    if (n->type == SURF_NODE_FILMSTRIP && n->u.strip.fps_q16
+        && !n->u.strip.paused)
         surf_g.playing--;
     n->type = SURF_NODE_FREE;
     n->next = surf_g.free_list;
@@ -931,22 +932,52 @@ void surf_filmstrip_set_frame(surf_node *n, int16_t frame)
  *
  * A COUNT of animating strips, so the scan below costs nothing at all in
  * the overwhelmingly common case of none. Without it every tick would
- * walk the whole 4096-node pool to discover that nothing is playing. */
+ * walk the whole 4096-node pool to discover that nothing is playing.
+ * `strip_active` is the ONE definition of what counts — fps set AND not
+ * stopped — so set_fps, set_playing and node_free cannot disagree about
+ * the bookkeeping. */
+static bool strip_active(const surf_node *n)
+{
+    return n->u.strip.fps_q16 != 0 && !n->u.strip.paused;
+}
+
 void surf_filmstrip_set_fps(surf_node *n, int32_t fps_q16)
 {
     if (!n || n->type != SURF_NODE_FILMSTRIP)
         return;
     if (fps_q16 < 0)
         fps_q16 = 0;
-    if ((n->u.strip.fps_q16 != 0) != (fps_q16 != 0))
-        surf_g.playing += fps_q16 ? 1 : -1;
+    bool was = strip_active(n);
     n->u.strip.fps_q16 = fps_q16;
+    if (strip_active(n) != was)
+        surf_g.playing += was ? -1 : 1;
     n->u.strip.due_us = 0;       /* re-anchor: start the clock from now */
 }
 
 int32_t surf_filmstrip_fps(const surf_node *n)
 {
     return (n && n->type == SURF_NODE_FILMSTRIP) ? n->u.strip.fps_q16 : 0;
+}
+
+/* THE TRANSPORT, and it is a second axis on purpose: stop() freezes the
+ * strip KEEPING its fps, so play() resumes at the speed it had — which
+ * zeroing fps cannot do, and which is the pair a caller reaches for
+ * before learning that fps 0 means "the frame is mine now". play(0) on
+ * a strip whose fps is 0 stays still: there is no speed to resume. */
+void surf_filmstrip_set_playing(surf_node *n, bool on)
+{
+    if (!n || n->type != SURF_NODE_FILMSTRIP)
+        return;
+    bool was = strip_active(n);
+    n->u.strip.paused = !on;
+    if (strip_active(n) != was)
+        surf_g.playing += was ? -1 : 1;
+    n->u.strip.due_us = 0;       /* resume from NOW, not from a stale due */
+}
+
+bool surf_filmstrip_playing(const surf_node *n)
+{
+    return n && n->type == SURF_NODE_FILMSTRIP && strip_active(n);
 }
 
 void surf_filmstrip_tick(void)
@@ -956,7 +987,7 @@ void surf_filmstrip_tick(void)
     uint64_t now = surf_g.hal->now_us();
     for (int i = 0; i < surf_g.pool_cap; i++) {
         surf_node *n = &surf_g.pool[i];
-        if (n->type != SURF_NODE_FILMSTRIP || !n->u.strip.fps_q16)
+        if (n->type != SURF_NODE_FILMSTRIP || !strip_active(n))
             continue;
         if (n->u.strip.nframes < 2)
             continue;
