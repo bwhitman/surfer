@@ -5,6 +5,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#ifndef TARGET_OS_IPHONE
+#define TARGET_OS_IPHONE 0
+#endif
 #if defined(__EMSCRIPTEN__) && !defined(SURF_HAL_SDL_NO_YIELD)
 #include <emscripten.h>
 EM_ASYNC_JS(void, surf_web_raf_yield, (void), {
@@ -58,6 +64,10 @@ static struct {
                                  * OS shows and hides it without telling SDL
                                  * in any event, so the pump polls and the
                                  * view re-anchors on the edge */
+    char          synth_ch;     /* iOS hardware keyboard: last character
+                                 * synthesised from a key-down, so a text
+                                 * event echoing it can be dropped */
+    uint64_t      synth_at;
 } S;
 
 /* The window is resizable, so the framebuffer rarely covers the drawable
@@ -369,6 +379,23 @@ static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
             }
         }
     }
+}
+
+/* Repaint the window from the texture as it stands — for when the VIEW
+ * moved and the picture did not. A host only presents on damage, so a
+ * view that re-anchors (the screen keyboard going, a resize) with a
+ * quiet framebuffer used to leave the picture drawn at the OLD place
+ * while map_pt already answered for the new one: on an iPad the machine
+ * sat at the top of the screen taking touches for the middle. The
+ * "shrink showed up at the next keystroke" note in update_view was the
+ * same gap on the desktop, priced smaller. */
+static void view_present(void)
+{
+    if (!S.ren || !S.tex)
+        return;
+    SDL_RenderClear(S.ren);
+    SDL_RenderCopy(S.ren, S.tex, NULL, &S.view);
+    SDL_RenderPresent(S.ren);
 }
 
 static void h_present(const surf_rect *dirty, int n)
@@ -757,6 +784,7 @@ int surf_screen_keyboard(int op)
     if (kb != S.kb_shown) {
         S.kb_shown = kb;
         update_view();
+        view_present();
     }
     return kb ? 1 : 0;
 }
@@ -874,6 +902,7 @@ bool surf_hal_sdl_pump(void)
         if (kb != S.kb_shown) {
             S.kb_shown = kb;
             update_view();
+            view_present();
         }
     }
     SDL_Event e;
@@ -891,6 +920,8 @@ bool surf_hal_sdl_pump(void)
                     S.snap_h = S.win_h;
                 }
                 update_view();
+                view_present();     /* the picture must move WITH the
+                                     * view, not at the next keystroke */
                 if (!S.free_aspect)
                     S.snap_at = h_now_us() + SNAP_QUIET_US;
             }
@@ -1002,11 +1033,55 @@ bool surf_hal_sdl_pump(void)
              * control-character filter drops it either way — so it has to
              * come from here to arrive at all. */
             case SDL_SCANCODE_TAB: push_key(SURF_KEY_TEXT, shift, ctrl, "\t"); break;
-            default: break;      /* -Wswitch: SDL_Scancode is an enum */
+            default:
+#if TARGET_OS_IPHONE
+                /* A HARDWARE keyboard on iOS (a keyboard case) delivers
+                 * key-downs through GCKeyboard and its characters reach
+                 * SDL's hidden text field not at all — so on the iPad
+                 * only the named keys above did anything and every
+                 * letter fell on the floor. Synthesise the text from the
+                 * key-down the way the P4's usb_input.c does from HID:
+                 * keysym.sym is the unshifted ASCII under the current
+                 * layout, and the US shift table covers the rest. If
+                 * some path DOES also deliver the SDL_TEXTINPUT, the
+                 * dedupe in that case below drops the echo. */
+                if (!(e.key.keysym.mod & (KMOD_CTRL | KMOD_GUI | KMOD_ALT))
+                        && e.key.keysym.sym >= 0x20
+                        && e.key.keysym.sym < 0x7f) {
+                    char ch = (char)e.key.keysym.sym;
+                    if (shift) {
+                        if (ch >= 'a' && ch <= 'z') {
+                            ch -= 32;
+                        } else {
+                            static const char *from = "1234567890-=[]\\;',./`";
+                            static const char *to = "!@#$%^&*()_+{}|:\"<>?~";
+                            const char *p = strchr(from, ch);
+                            if (p)
+                                ch = to[p - from];
+                        }
+                    }
+                    S.synth_ch = ch;
+                    S.synth_at = h_now_us();
+                    char txt[2] = {ch, 0};
+                    push_key(SURF_KEY_TEXT, shift, false, txt);
+                }
+#endif
+                break;           /* -Wswitch: SDL_Scancode is an enum */
             }
             break;
         }
         case SDL_TEXTINPUT:
+#if TARGET_OS_IPHONE
+            /* the synthesised character's own echo, if a text event does
+             * arrive for a hardware key after all — one character, equal,
+             * and hot on the key-down's heels */
+            if (S.synth_ch && e.text.text[0] == S.synth_ch &&
+                    e.text.text[1] == 0 &&
+                    h_now_us() - S.synth_at < 250000) {
+                S.synth_ch = 0;
+                break;
+            }
+#endif
             /* Drop control characters: some platforms deliver a text
              * event alongside a Ctrl-chord, and a raw ^C landing in an
              * edited line is a stray glyph nobody typed. UTF-8 lead
