@@ -130,6 +130,29 @@ static void update_view(void)
                     avail_h = top_px;
             }
         }
+        /* ...and the HOST's own chrome under that, if it has any —
+         * `surf_host_chrome_pt`, in the same window points the keyboard
+         * frame is measured in, 0 where the host draws none. tulip5's
+         * iOS build puts a strip of the keys a soft keyboard lacks
+         * there (drivers/ios_bar.m); surfer only needs to know how much
+         * room it wants. */
+        {
+            int screen_pt = S.kb_pt > 0 ? S.kb_pt + SDL_tulip_kb_height_pt
+                                        : 0;
+            if (surf_host_chrome_pt > 0) {
+                int bar_px;
+                if (screen_pt > 0)
+                    bar_px = (int)(((int64_t)surf_host_chrome_pt * oh)
+                                   / screen_pt);
+                else if (S.win_h > 0)
+                    bar_px = (int)(((int64_t)surf_host_chrome_pt * oh)
+                                   / S.win_h);
+                else
+                    bar_px = 0;
+                if (bar_px > 0 && bar_px < avail_h)
+                    avail_h -= bar_px;
+            }
+        }
     }
 #endif
     oh = avail_h;
@@ -685,6 +708,40 @@ static void push_touch(int16_t x, int16_t y, uint8_t phase, uint8_t id)
     S.ring_w = next;
 }
 
+#if TARGET_OS_IPHONE
+/* A LATCHED CTRL FROM THE HOST'S KEY BAR, applied to one character.
+ *
+ * It has to mean exactly what ctrl+letter means on a desktop, or the
+ * phone is a machine with different keys: every letter becomes its
+ * control character (^S saves, ^Q quits, ^F finds) EXCEPT ^C, which is
+ * the interrupt and never a keystroke — the same split the KEYDOWN
+ * chord case makes above, and for the same reason: when a runaway loop
+ * has the machine stuck, the key queue is not being read and the
+ * interrupt hook is the only wire still working.
+ *
+ * Returns true if it consumed the character. The latch is one-shot
+ * whatever happened: a modifier that survives its keystroke is one
+ * nobody can turn off. */
+static bool take_ctrl_latch(unsigned char c, void (*on_interrupt)(void))
+{
+    if (!surf_host_ctrl_latch)
+        return false;
+    surf_host_ctrl_latch = 0;
+    if (c >= 'A' && c <= 'Z')
+        c += 'a' - 'A';
+    if (c < 'a' || c > 'z')
+        return true;                 /* ctrl+punctuation: nothing to send */
+    if (c == 'c') {
+        if (on_interrupt)
+            on_interrupt();
+        return true;
+    }
+    char ctl[2] = {(char)(c - 'a' + 1), 0};
+    push_key(SURF_KEY_TEXT, false, false, ctl);
+    return true;
+}
+#endif
+
 const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
 {
 #ifdef SURF_HAL_SDL_NO_YIELD
@@ -1084,6 +1141,16 @@ bool surf_hal_sdl_pump(void)
                         && e.key.keysym.sym >= 0x20
                         && e.key.keysym.sym < 0x7f) {
                     char ch = (char)e.key.keysym.sym;
+                    /* the host bar's latched Ctrl applies to a HARDWARE
+                     * key too — a keyboard case has ctrl of its own, but
+                     * the bar is on screen either way and a button that
+                     * works only sometimes is worse than no button */
+                    if (surf_host_ctrl_latch) {
+                        S.synth_ch = ch;         /* swallow the text echo */
+                        S.synth_at = h_now_us();
+                        take_ctrl_latch((unsigned char)ch, S.on_interrupt);
+                        break;
+                    }
                     if (shift) {
                         if (ch >= 'a' && ch <= 'z') {
                             ch -= 32;
@@ -1116,6 +1183,18 @@ bool surf_hal_sdl_pump(void)
                 S.synth_ch = 0;
                 break;
             }
+#endif
+#if TARGET_OS_IPHONE
+            /* A LATCHED CTRL FROM THE HOST'S KEY BAR turns the next
+             * letter into its control character — the same thing the
+             * desktop's ctrl+letter case does, for a keyboard that HAS
+             * no ctrl key. Without it ^C, ^S and ^Q are unreachable on
+             * a phone, which is most of an editor's command set. The
+             * latch is one-shot: consumed here, whatever the key was,
+             * because a modifier that survives its keystroke is one
+             * nobody can turn off. */
+            if (take_ctrl_latch((unsigned char)e.text.text[0], S.on_interrupt))
+                break;
 #endif
             /* Drop control characters: some platforms deliver a text
              * event alongside a Ctrl-chord, and a raw ^C landing in an

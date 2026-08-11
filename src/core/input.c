@@ -234,3 +234,15 @@ __attribute__((weak)) int surf_screen_keyboard(int op)
     (void)op;
     return -1;
 }
+
+/* HOST CHROME, for a host that draws its own controls outside the
+ * machine's screen. `surf_host_chrome_pt` is how much room at the
+ * bottom of the window it wants kept clear, in window points, and the
+ * SDL hal fits its view above it; `surf_host_ctrl_latch` is a one-shot
+ * Ctrl for a keyboard that has no ctrl key, consumed by the next
+ * character. Both are WEAK and zero here — a host that draws no chrome
+ * (every desktop, the browser, the panel) links this and nothing
+ * changes. tulip5's iOS build defines them strongly in
+ * drivers/ios_bar.m, which is the only reason they exist. */
+__attribute__((weak)) int surf_host_chrome_pt = 0;
+__attribute__((weak)) int surf_host_ctrl_latch = 0;
