@@ -222,3 +222,15 @@ void surf_input_dispatch(const surf_touch *t)
     }
     }
 }
+
+/* The platform screen keyboard. -1 asks, 1 summons, 0 dismisses; the
+ * return is what is actually shown, or -1 where the platform has no
+ * screen keyboard at all — which is this default's whole answer. The
+ * SDL hal overrides it (weak/strong at link) for the one platform that
+ * has one, iOS; a device hal with a glass keyboard of its own would do
+ * the same. */
+__attribute__((weak)) int surf_screen_keyboard(int op)
+{
+    (void)op;
+    return -1;
+}

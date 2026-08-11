@@ -659,7 +659,22 @@ Three checkboxes and a rule is not the same widget.
 
 `update_view` fits the drawable, preserving aspect: an exact multiple
 when the window is one (within ~2.5%, so a hair off 2x IS 2x), the
-largest aspect-preserving fit otherwise, centred and letterboxed. Whole
+largest aspect-preserving fit otherwise, centred and letterboxed.
+
+**On a platform with a SCREEN KEYBOARD (iOS) the view anchors to the
+TOP while the keyboard is up** rather than centring under it — SDL
+neither resizes the window for the keyboard nor says how tall it is, so
+a centred view sits half-hidden behind the thing you type on. Its
+comings and goings also generate NO SDL event (the user dismisses it
+from its own key), so the pump polls `SDL_IsScreenKeyboardShown` once
+per frame and re-anchors on the edge. `surf_screen_keyboard(op)` /
+`surfer.screen_keyboard([show])` is the toggle: -1/no-arg asks, 1/True
+summons, 0/False dismisses, and the answer is always what is ACTUALLY
+shown. Summon is Stop-then-Start deliberately — after a user dismissal
+SDL still believes text input is active, and a plain Start is a no-op.
+The weak default in input.c answers -1 (None from Python) wherever
+there is no screen keyboard — the desktop, the P4 — which is the gate a
+caller puts its keyboard-toggle chrome behind. Whole
 multiples ONLY is the tempting rule — every surfer pixel then covers the
 same count of screen pixels — but it means a window dragged to 1.8x
 still draws at 1x inside bars, which nobody reads as "not a whole

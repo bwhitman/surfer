@@ -372,6 +372,12 @@ void surf_pad_set_axis(int pad, int stick, int axis, int32_t val_q16);
 void surf_pad_reset(int pad);       /* neutral (a source disconnected) */
 void surf_pad_reset_all(void);
 
+/* the platform screen keyboard (iOS): op -1 asks, 1 summons, 0
+ * dismisses; returns what is actually shown, or -1 where the platform
+ * has none — a desktop, a board with real keys. Weak default in
+ * input.c; the SDL hal overrides it. */
+int surf_screen_keyboard(int op);
+
 /* node constructors (from the pool; NULL when exhausted) */
 surf_node *surf_group_new(int16_t x, int16_t y);
 surf_node *surf_rect_new(int16_t x, int16_t y, int16_t w, int16_t h, surf_color c);

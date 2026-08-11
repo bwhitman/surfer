@@ -2024,6 +2024,28 @@ static mp_obj_t mod_wheel(void)
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mod_wheel_obj, mod_wheel);
 
+/* surfer.screen_keyboard() -> True/False/None, surfer.screen_keyboard(on).
+ *
+ * The platform's own on-glass keyboard (iOS). None means the platform
+ * has not got one — a desktop, the P4 — and is the gate a caller draws
+ * its toggle behind: a keyboard button on a machine whose keyboard is
+ * physical is chrome that can only do nothing. With an argument it
+ * summons or dismisses; either way the answer is what is NOW shown,
+ * which can disagree with what was asked — the OS animates it, and the
+ * user can dismiss it from its own key without anyone being told. */
+static mp_obj_t mod_screen_keyboard(size_t n_args, const mp_obj_t *args)
+{
+    int op = -1;
+    if (n_args == 1)
+        op = mp_obj_is_true(args[0]) ? 1 : 0;
+    int r = surf_screen_keyboard(op);
+    if (r < 0)
+        return mp_const_none;
+    return mp_obj_new_bool(r);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_screen_keyboard_obj, 0, 1,
+                                           mod_screen_keyboard);
+
 /* surfer._wheel(x, y, dx, dy) — push one through the normal path, so a
  * headless test can reach anything that reads a wheel. The counterpart
  * of _touch and _key, and it goes through surf_input_wheel rather than
@@ -2935,6 +2957,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_tick), MP_ROM_PTR(&mod_tick_obj)},
     {MP_ROM_QSTR(MP_QSTR_keys), MP_ROM_PTR(&mod_keys_obj)},
     {MP_ROM_QSTR(MP_QSTR_wheel), MP_ROM_PTR(&mod_wheel_obj)},
+    {MP_ROM_QSTR(MP_QSTR_screen_keyboard), MP_ROM_PTR(&mod_screen_keyboard_obj)},
     {MP_ROM_QSTR(MP_QSTR_frame_rate), MP_ROM_PTR(&mod_frame_rate_obj)},
     {MP_ROM_QSTR(MP_QSTR_cpu), MP_ROM_PTR(&mod_cpu_obj)},
     {MP_ROM_QSTR(MP_QSTR_keys_held), MP_ROM_PTR(&mod_keys_held_obj)},

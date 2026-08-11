@@ -54,6 +54,10 @@ static struct {
     bool          free_aspect;  /* SURF_FREE_ASPECT: let the window be any shape */
     uint64_t      snap_at;      /* when to put the window back on aspect; 0 = idle */
     int16_t       snap_w, snap_h;  /* the size BEFORE this drag started */
+    bool          kb_shown;     /* the platform's screen keyboard (iOS): the
+                                 * OS shows and hides it without telling SDL
+                                 * in any event, so the pump polls and the
+                                 * view re-anchors on the edge */
 } S;
 
 /* The window is resizable, so the framebuffer rarely covers the drawable
@@ -95,6 +99,16 @@ static void update_view(void)
     if (S.view.h > oh) S.view.h = oh;
     S.view.x = (ow - S.view.w) / 2;
     S.view.y = (oh - S.view.h) / 2;
+
+    /* A platform screen keyboard (iOS) rises over the BOTTOM of the
+     * drawable and SDL neither resizes the window nor says how tall it
+     * is — so a centred view sits half under it, which reads as the
+     * machine hiding from its own keyboard. Anchor to the top instead
+     * while it is up: in portrait that clears it entirely, and in
+     * landscape it keeps the top of the screen — where the console's
+     * text lives — over the part that can still be seen. */
+    if (S.kb_shown)
+        S.view.y = 0;
 
     if (getenv("SURF_VIEW_DEBUG"))
         fprintf(stderr, "VIEW drawable %dx%d fb %dx%d -> view %dx%d at %d,%d\n",
@@ -722,6 +736,31 @@ fail:
     return NULL;
 }
 
+/* The platform screen keyboard, for hosts whose glass is the keyboard
+ * (iOS; a desktop answers -1 and a caller draws no toggle). op -1 asks,
+ * 1 summons, 0 dismisses; the answer is always what is actually shown.
+ * Summoning is Stop THEN Start deliberately: the user can dismiss the
+ * keyboard from its own key without SDL noticing, after which text
+ * input is still nominally active and a plain Start is a no-op — the
+ * bounce through Stop is what makes the keyboard come back. */
+int surf_screen_keyboard(int op)
+{
+    if (!S.win || !SDL_HasScreenKeyboardSupport())
+        return -1;
+    if (op == 1) {
+        SDL_StopTextInput();
+        SDL_StartTextInput();
+    } else if (op == 0) {
+        SDL_StopTextInput();
+    }
+    bool kb = SDL_IsScreenKeyboardShown(S.win);
+    if (kb != S.kb_shown) {
+        S.kb_shown = kb;
+        update_view();
+    }
+    return kb ? 1 : 0;
+}
+
 void surf_hal_sdl_quit(void)
 {
     if (S.fb) h_free_image(S.fb);
@@ -824,6 +863,17 @@ bool surf_hal_sdl_pump(void)
         } else {
             S.snap_at = 0;
             snap_aspect();
+        }
+    }
+    /* The screen keyboard's comings and goings generate no SDL event —
+     * the user can dismiss it from its own key — so its visibility is
+     * polled here and a change re-anchors the view. One SDL call per
+     * pump, and only where a screen keyboard exists at all. */
+    if (S.win && SDL_HasScreenKeyboardSupport()) {
+        bool kb = SDL_IsScreenKeyboardShown(S.win);
+        if (kb != S.kb_shown) {
+            S.kb_shown = kb;
+            update_view();
         }
     }
     SDL_Event e;
