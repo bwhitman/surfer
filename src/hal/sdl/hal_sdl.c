@@ -60,11 +60,15 @@ static struct {
     bool          free_aspect;  /* SURF_FREE_ASPECT: let the window be any shape */
     uint64_t      snap_at;      /* when to put the window back on aspect; 0 = idle */
     int16_t       snap_w, snap_h;  /* the size BEFORE this drag started */
-    int           kb_pt;        /* the platform screen keyboard's height in
-                                 * window POINTS (iOS; 0 elsewhere and when
-                                 * down). The OS shows and hides it without
-                                 * telling SDL in any event, so the pump
-                                 * polls and the view refits on a change */
+    int           kb_pt;        /* the platform screen keyboard's TOP edge in
+                                 * window POINTS (iOS; 0 = no keyboard). The
+                                 * top rather than the height, because iOS
+                                 * 26's floating keyboard panel makes height
+                                 * understate the footprint — the space
+                                 * above the frame is the usable answer. The
+                                 * OS shows and hides it without telling SDL
+                                 * in any event, so the pump polls and the
+                                 * view refits on a change */
     char          synth_ch;     /* iOS hardware keyboard: last character
                                  * synthesised from a key-down, so a text
                                  * event echoing it can be dropped */
@@ -100,12 +104,12 @@ static void update_view(void)
     int avail_h = oh;
 #if TARGET_OS_IPHONE
     {
-        extern int SDL_tulip_kb_height_pt;
-        S.kb_pt = SDL_tulip_kb_height_pt;
+        extern int SDL_tulip_kb_top_pt;
+        S.kb_pt = SDL_tulip_kb_top_pt;
         if (S.kb_pt > 0 && S.win_h > 0) {
-            int kb_px = (int)(((int64_t)S.kb_pt * oh) / S.win_h);
-            if (kb_px > 0 && kb_px < avail_h)
-                avail_h -= kb_px;
+            int top_px = (int)(((int64_t)S.kb_pt * oh) / S.win_h);
+            if (top_px > 0 && top_px < avail_h)
+                avail_h = top_px;
         }
     }
 #endif
@@ -905,9 +909,9 @@ bool surf_hal_sdl_pump(void)
      * One integer compare per pump. */
 #if TARGET_OS_IPHONE
     {
-        extern int SDL_tulip_kb_height_pt;
-        if (S.win && SDL_tulip_kb_height_pt != S.kb_pt) {
-            update_view();          /* reads and records the new height */
+        extern int SDL_tulip_kb_top_pt;
+        if (S.win && SDL_tulip_kb_top_pt != S.kb_pt) {
+            update_view();          /* reads and records the new top */
             view_present();
         }
     }
