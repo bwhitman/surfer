@@ -1208,6 +1208,13 @@ static void hb_dbg_sync(void *node_obj)
             g->node = NULL;
             e[0] = mp_const_none;
         }
+        /* the entry EXISTING is not the entry being VISIBLE: a colour
+         * set before (or after) visible=False must not draw anything.
+         * Conflating the two is how "I set visible False and still see
+         * it" happened — the colour line on the next row of the app
+         * resurrected the outline. */
+        if (!mp_obj_is_true(e[2]))
+            continue;
         surf_rect r;
         if (!parent || !surf_hitbox_abs(o->node, (int32_t)i, &r) ||
             r.w <= 0 || r.h <= 0)
@@ -1314,8 +1321,13 @@ static void hitbox_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
                 size_t len;
                 mp_obj_t *entries;
                 mp_obj_list_get(o->hb_dbg, &len, &entries);
-                on = (size_t)h->idx < len &&
-                     entries[h->idx] != mp_const_none;
+                if ((size_t)h->idx < len &&
+                    entries[h->idx] != mp_const_none) {
+                    size_t elen;
+                    mp_obj_t *e;
+                    mp_obj_list_get(entries[h->idx], &elen, &e);
+                    on = mp_obj_is_true(e[2]);
+                }
             }
             dest[0] = mp_obj_new_bool(on);
             return;
@@ -1358,23 +1370,24 @@ static void hitbox_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
         b.x, b.y, b.w, (int16_t)mp_obj_get_int(dest[1])); break;
     case MP_QSTR_visible: {
         mp_obj_t *e = hb_dbg_entry(o, h->idx);
-        if (mp_obj_is_true(dest[1])) {
-            if (*e == mp_const_none) {
-                mp_obj_t items[2] = {mp_const_none,
-                                     MP_OBJ_NEW_SMALL_INT(HB_DBG_DEFAULT)};
-                *e = mp_obj_new_list(2, items);
-            }
+        bool on = mp_obj_is_true(dest[1]);
+        if (*e == mp_const_none) {
+            mp_obj_t items[3] = {mp_const_none,
+                                 MP_OBJ_NEW_SMALL_INT(HB_DBG_DEFAULT),
+                                 mp_obj_new_bool(on)};
+            *e = mp_obj_new_list(3, items);
         } else {
-            hb_entry_kill(*e);
-            *e = mp_const_none;
+            mp_obj_subscr(*e, MP_OBJ_NEW_SMALL_INT(2), mp_obj_new_bool(on));
         }
         break;
     }
     case MP_QSTR_visible_color: {
         mp_obj_t *e = hb_dbg_entry(o, h->idx);
         if (*e == mp_const_none) {
-            mp_obj_t items[2] = {mp_const_none, dest[1]};
-            *e = mp_obj_new_list(2, items);
+            /* remember the colour, draw NOTHING: visibility is its own
+             * switch and only visible=True throws it */
+            mp_obj_t items[3] = {mp_const_none, dest[1], mp_const_false};
+            *e = mp_obj_new_list(3, items);
         } else {
             mp_obj_subscr(*e, MP_OBJ_NEW_SMALL_INT(1), dest[1]);
         }
