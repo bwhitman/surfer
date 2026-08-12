@@ -771,6 +771,19 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
      * rather than a 2048pt window on a 1710pt desktop. */
     int req_w = w * S.scale, req_h = h * S.scale;
     uint32_t flags = SDL_WINDOW_ALLOW_HIGHDPI;
+#if TARGET_OS_IPHONE
+    /* BORDERLESS ON iOS, AND THAT IS WHAT HIDES THE STATUS BAR. SDL's
+     * view controller answers prefersStatusBarHidden from the window's
+     * FULLSCREEN|BORDERLESS flags and nothing else — an Info.plist
+     * UIStatusBarHidden does not reach it, because iOS 13+ resolves the
+     * status bar through the view controller for a scene-based app. So
+     * a plain window kept the clock and the battery drawn over the
+     * machine's top rows: harmless where the view is letterboxed, and
+     * on an iPad with the keyboard up (where the view fills to the top)
+     * it sat over the world app's tab strip. A phone or tablet app IS
+     * the whole screen; there is no border for it to have. */
+    flags |= SDL_WINDOW_BORDERLESS;
+#endif
 #ifndef __EMSCRIPTEN__
     flags |= SDL_WINDOW_RESIZABLE;
     SDL_Rect usable;
