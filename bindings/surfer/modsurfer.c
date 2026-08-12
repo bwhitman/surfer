@@ -1329,6 +1329,15 @@ static void hitbox_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
                                         MP_OBJ_SENTINEL);
             return;
         }
+        case MP_QSTR_index:
+            /* what hits() reports this box as -- the join between the
+             * object add() returned and the tuple a collision answers.
+             * NOTE remove() shifts LATER boxes down: an item held from
+             * before an earlier box was removed is stale, so re-read
+             * n.hitboxes[i] after removing rather than keeping old
+             * handles around. */
+            dest[0] = MP_OBJ_NEW_SMALL_INT(h->idx);
+            return;
         case MP_QSTR_remove:
             dest[0] = MP_OBJ_FROM_PTR(&hitbox_remove_obj);
             dest[1] = self_in;
