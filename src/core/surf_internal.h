@@ -73,6 +73,8 @@ struct surf_node {
             surf_xform xf;
             bool fast_pan;       /* set_src rides band_shift (cameras) */
             bool pan_shifted;    /* a shift ran on the last src change */
+            surf_hitbox *hb;     /* caller-authored collision rects */
+            uint8_t hbn;
         } sprite;
         struct {
             const surf_image *strip;
@@ -96,6 +98,8 @@ struct surf_node {
             int32_t  fps_q16;
             bool     paused;
             uint64_t due_us;     /* when the next frame is owed */
+            surf_hitbox *hb;     /* caller-authored collision rects */
+            uint8_t hbn;
         } strip;
         struct {
             const surf_image *img;

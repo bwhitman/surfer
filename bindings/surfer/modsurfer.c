@@ -157,11 +157,19 @@ static void prepare_assets(void)
 
 /* ---- object types ---- */
 
+static mp_obj_t hitboxes_obj_new(mp_obj_t node_ref);
+static void hb_dbg_sync(void *node_obj);
+static void hb_dbg_teardown(void *node_obj);
+
 typedef struct {
     mp_obj_base_t base;
     surf_node *node;
     mp_obj_t touch_cb;  /* node.on_touch: fn(phase, x, y) or None */
     mp_obj_t img_ref;   /* sprites: keeps the Image object alive */
+    mp_obj_t hb_dbg;    /* hitbox debug outlines: None, or a list of
+                           per-index entries [group_wrapper|None, color] --
+                           binding state, because C has no drawing to do
+                           for a box that is not being debugged */
     bool     is_input;  /* textinput: taps place the caret (see ti_touch) */
 } surfer_node_obj_t;
 
@@ -305,6 +313,7 @@ static surfer_node_obj_t *new_node_obj_raw(surf_node *n)
     o->node = n;
     o->touch_cb = mp_const_none;
     o->img_ref = mp_const_none;
+    o->hb_dbg = mp_const_none;
     o->is_input = false;
     return o;
 }
@@ -464,6 +473,7 @@ static MP_DEFINE_CONST_FUN_OBJ_1(node_detach_obj, node_detach);
 static mp_obj_t node_destroy(mp_obj_t self_in)
 {
     surfer_node_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    hb_dbg_teardown(o);
     surf_node_destroy(o->node);
     o->node = NULL;
     return mp_const_none;
@@ -714,7 +724,21 @@ static MP_DEFINE_CONST_FUN_OBJ_1(node_damage_obj, node_damage);
  * corners do not collide. See surf_node_overlaps in surfer.h. */
 static mp_obj_t node_hits(mp_obj_t self_in, mp_obj_t other_in)
 {
-    return mp_obj_new_bool(surf_node_overlaps(node_of(self_in), node_of(other_in)));
+    surf_node *a = node_of(self_in), *b = node_of(other_in);
+    /* With hitboxes the answer is WHICH ones: a tuple of indices, empty
+     * when nothing hit -- truthy exactly when a bool would have been, so
+     * every `if a.hits(b):` ever written keeps working. Without them the
+     * bool it has always been. */
+    if (surf_hitbox_count(a)) {
+        uint32_t m = surf_node_overlaps_which(a, b);
+        mp_obj_t items[SURF_MAX_HITBOXES];
+        size_t k = 0;
+        for (int32_t i = 0; i < SURF_MAX_HITBOXES; i++)
+            if (m & (1u << i))
+                items[k++] = MP_OBJ_NEW_SMALL_INT(i);
+        return mp_obj_new_tuple(k, items);
+    }
+    return mp_obj_new_bool(surf_node_overlaps(a, b));
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_hits_obj, node_hits);
 
@@ -1053,6 +1077,7 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
                               (int32_t)(mp_obj_get_float(dest[1]) * SURF_ONE),
                               surf_sprite_rot(o->node),
                               surf_sprite_mirror(o->node));
+        hb_dbg_sync(o);
         dest[0] = MP_OBJ_NULL;
         return;
     }
@@ -1064,6 +1089,7 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
         surf_sprite_set_xform(o->node, surf_sprite_scale(o->node),
                               (uint8_t)(deg / 90),
                               surf_sprite_mirror(o->node));
+        hb_dbg_sync(o);
         dest[0] = MP_OBJ_NULL;
         return;
     }
@@ -1074,16 +1100,369 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
         m = mp_obj_is_true(dest[1]) ? (m | bit) : (m & ~bit);
         surf_sprite_set_xform(o->node, surf_sprite_scale(o->node),
                               surf_sprite_rot(o->node), m);
+        hb_dbg_sync(o);
         dest[0] = MP_OBJ_NULL;
         return;
     }
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_hitboxes) {
+        if (!surf_node_can_xform(o->node))
+            mp_raise_msg(&mp_type_TypeError,
+                         MP_ERROR_TEXT("only a sprite or filmstrip has "
+                                       "hitboxes"));
+        dest[0] = hitboxes_obj_new(self_in);
+        return;
+    }
+    bool storing = dest[0] != MP_OBJ_NULL;
     surf_point p = surf_node_pos(o->node);
     surf_point s = surf_node_size(o->node);
     node_pos_attr(o->node, attr, dest, p.x, p.y, s.x, s.y);
+    /* debug outlines follow the sprite: a position store that was
+     * consumed re-syncs them (event-driven -- never the frame path) */
+    if (storing && dest[0] == MP_OBJ_NULL && o->hb_dbg != mp_const_none &&
+        (attr == MP_QSTR_x_pos || attr == MP_QSTR_y_pos))
+        hb_dbg_sync(o);
 }
 
 MP_DEFINE_CONST_OBJ_TYPE(surfer_node_type, MP_QSTR_Node, MP_TYPE_FLAG_NONE,
                          attr, node_attr, locals_dict, &node_locals_dict);
+
+/* ---- hitboxes: n.hitboxes, its items, and the debug outlines --------
+ *
+ * Storage and collision are the core's (surf_hitbox_*); what lives here
+ * is the LIST shape Python wants and the debug visualization. The
+ * outlines are REAL RECT NODES in the sprite's parent -- an outline
+ * drawn by the compose path outside the sprite's own box would break
+ * dirty-rect damage accounting, and a box is allowed to hang outside
+ * the picture, so the honest mechanism is scene nodes like any other
+ * chrome. They are rebuilt on the mutations that move things (position,
+ * transform, box edits), which is event-driven and never per frame; a
+ * sprite riding a moving GROUP carries them for free, since they live
+ * in the same parent. */
+
+extern const mp_obj_type_t surfer_hitboxes_type;
+extern const mp_obj_type_t surfer_hitbox_type;
+
+typedef struct {
+    mp_obj_base_t base;
+    mp_obj_t node_ref;
+} surfer_hitboxes_obj_t;
+
+typedef struct {
+    mp_obj_base_t base;
+    mp_obj_t node_ref;
+    int32_t idx;
+} surfer_hitbox_obj_t;
+
+#define HB_DBG_LINE 2
+#define HB_DBG_DEFAULT SURF_RGB(255, 255, 255)
+
+static void hb_entry_kill(mp_obj_t entry)
+{
+    if (entry == mp_const_none)
+        return;
+    size_t elen;
+    mp_obj_t *e;
+    mp_obj_list_get(entry, &elen, &e);
+    if (e[0] != mp_const_none) {
+        surfer_node_obj_t *g = MP_OBJ_TO_PTR(e[0]);
+        if (g->node)
+            surf_node_destroy(g->node);
+        g->node = NULL;
+        e[0] = mp_const_none;
+    }
+}
+
+static void hb_dbg_teardown(void *node_obj)
+{
+    surfer_node_obj_t *o = node_obj;
+    if (o->hb_dbg == mp_const_none)
+        return;
+    size_t len;
+    mp_obj_t *entries;
+    mp_obj_list_get(o->hb_dbg, &len, &entries);
+    for (size_t i = 0; i < len; i++)
+        hb_entry_kill(entries[i]);
+    o->hb_dbg = mp_const_none;
+}
+
+static void hb_dbg_sync(void *node_obj)
+{
+    surfer_node_obj_t *o = node_obj;
+    if (o->hb_dbg == mp_const_none || !o->node)
+        return;
+    size_t len;
+    mp_obj_t *entries;
+    mp_obj_list_get(o->hb_dbg, &len, &entries);
+    surf_node *parent = surf_node_parent(o->node);
+    for (size_t i = 0; i < len; i++) {
+        if (entries[i] == mp_const_none)
+            continue;
+        size_t elen;
+        mp_obj_t *e;
+        mp_obj_list_get(entries[i], &elen, &e);
+        /* rebuild from scratch: four rects is cheap, and an event */
+        if (e[0] != mp_const_none) {
+            surfer_node_obj_t *g = MP_OBJ_TO_PTR(e[0]);
+            if (g->node)
+                surf_node_destroy(g->node);
+            g->node = NULL;
+            e[0] = mp_const_none;
+        }
+        surf_rect r;
+        if (!parent || !surf_hitbox_abs(o->node, (int32_t)i, &r) ||
+            r.w <= 0 || r.h <= 0)
+            continue;
+        int16_t px, py;
+        surf_node_abs_pos(parent, &px, &py);
+        surf_color c = (surf_color)mp_obj_get_int(e[1]);
+        surf_node *g = surf_group_new((int16_t)(r.x - px),
+                                      (int16_t)(r.y - py));
+        if (!g)
+            continue;
+        int16_t t = HB_DBG_LINE;
+        if (r.w <= 2 * t || r.h <= 2 * t) {
+            surf_node_add(g, surf_rect_new(0, 0, r.w, r.h, c));
+        } else {
+            surf_node_add(g, surf_rect_new(0, 0, r.w, t, c));
+            surf_node_add(g, surf_rect_new(0, (int16_t)(r.h - t), r.w, t, c));
+            surf_node_add(g, surf_rect_new(0, t, t, (int16_t)(r.h - 2 * t), c));
+            surf_node_add(g, surf_rect_new((int16_t)(r.w - t), t, t,
+                                           (int16_t)(r.h - 2 * t), c));
+        }
+        surf_node_add(parent, g);
+        e[0] = MP_OBJ_FROM_PTR(new_node_obj(g));
+    }
+}
+
+/* the entry list, grown on demand so indices always line up */
+static mp_obj_t *hb_dbg_entry(surfer_node_obj_t *o, int32_t idx)
+{
+    if (o->hb_dbg == mp_const_none)
+        o->hb_dbg = mp_obj_new_list(0, NULL);
+    size_t len;
+    mp_obj_t *entries;
+    mp_obj_list_get(o->hb_dbg, &len, &entries);
+    while ((int32_t)len <= idx) {
+        mp_obj_list_append(o->hb_dbg, mp_const_none);
+        mp_obj_list_get(o->hb_dbg, &len, &entries);
+    }
+    return &entries[idx];
+}
+
+static surfer_node_obj_t *hb_owner(mp_obj_t node_ref, int32_t idx)
+{
+    surfer_node_obj_t *o = MP_OBJ_TO_PTR(node_ref);
+    if (!o->node)
+        mp_raise_ValueError(MP_ERROR_TEXT("node destroyed"));
+    if (idx >= 0 && idx >= surf_hitbox_count(o->node))
+        mp_raise_msg(&mp_type_IndexError,
+                     MP_ERROR_TEXT("hitbox removed or out of range"));
+    return o;
+}
+
+static mp_obj_t hitbox_obj_new(mp_obj_t node_ref, int32_t idx)
+{
+    surfer_hitbox_obj_t *h = mp_obj_malloc(surfer_hitbox_obj_t,
+                                           &surfer_hitbox_type);
+    h->node_ref = node_ref;
+    h->idx = idx;
+    return MP_OBJ_FROM_PTR(h);
+}
+
+static mp_obj_t hitbox_remove(mp_obj_t self_in)
+{
+    surfer_hitbox_obj_t *h = MP_OBJ_TO_PTR(self_in);
+    surfer_node_obj_t *o = hb_owner(h->node_ref, h->idx);
+    /* later boxes shift down, so their debug entries shift with them */
+    if (o->hb_dbg != mp_const_none) {
+        size_t len;
+        mp_obj_t *entries;
+        mp_obj_list_get(o->hb_dbg, &len, &entries);
+        if ((size_t)h->idx < len) {
+            hb_entry_kill(entries[h->idx]);
+            for (size_t k = h->idx; k + 1 < len; k++)
+                entries[k] = entries[k + 1];
+            entries[len - 1] = mp_const_none;
+        }
+    }
+    surf_hitbox_remove(o->node, h->idx);
+    hb_dbg_sync(o);
+    h->idx = -1;                       /* this handle is dead */
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(hitbox_remove_obj, hitbox_remove);
+
+static void hitbox_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
+{
+    surfer_hitbox_obj_t *h = MP_OBJ_TO_PTR(self_in);
+    if (h->idx < 0)
+        mp_raise_ValueError(MP_ERROR_TEXT("hitbox removed"));
+    surfer_node_obj_t *o = hb_owner(h->node_ref, h->idx);
+    surf_hitbox b;
+    if (!surf_hitbox_get(o->node, h->idx, &b))
+        mp_raise_msg(&mp_type_IndexError, MP_ERROR_TEXT("hitbox gone"));
+
+    if (dest[0] == MP_OBJ_NULL) {                    /* load */
+        switch (attr) {
+        case MP_QSTR_x: dest[0] = MP_OBJ_NEW_SMALL_INT(b.x); return;
+        case MP_QSTR_y: dest[0] = MP_OBJ_NEW_SMALL_INT(b.y); return;
+        case MP_QSTR_w: dest[0] = MP_OBJ_NEW_SMALL_INT(b.w); return;
+        case MP_QSTR_h: dest[0] = MP_OBJ_NEW_SMALL_INT(b.h); return;
+        case MP_QSTR_visible: {
+            bool on = false;
+            if (o->hb_dbg != mp_const_none) {
+                size_t len;
+                mp_obj_t *entries;
+                mp_obj_list_get(o->hb_dbg, &len, &entries);
+                on = (size_t)h->idx < len &&
+                     entries[h->idx] != mp_const_none;
+            }
+            dest[0] = mp_obj_new_bool(on);
+            return;
+        }
+        case MP_QSTR_visible_color: {
+            mp_obj_t *e = hb_dbg_entry(o, h->idx);
+            if (*e == mp_const_none)
+                dest[0] = MP_OBJ_NEW_SMALL_INT(HB_DBG_DEFAULT);
+            else
+                dest[0] = mp_obj_subscr(*e, MP_OBJ_NEW_SMALL_INT(1),
+                                        MP_OBJ_SENTINEL);
+            return;
+        }
+        case MP_QSTR_remove:
+            dest[0] = MP_OBJ_FROM_PTR(&hitbox_remove_obj);
+            dest[1] = self_in;
+            return;
+        default:
+            return;
+        }
+    }
+    /* store */
+    switch (attr) {
+    case MP_QSTR_x: surf_hitbox_set(o->node, h->idx,
+        (int16_t)mp_obj_get_int(dest[1]), b.y, b.w, b.h); break;
+    case MP_QSTR_y: surf_hitbox_set(o->node, h->idx,
+        b.x, (int16_t)mp_obj_get_int(dest[1]), b.w, b.h); break;
+    case MP_QSTR_w: surf_hitbox_set(o->node, h->idx,
+        b.x, b.y, (int16_t)mp_obj_get_int(dest[1]), b.h); break;
+    case MP_QSTR_h: surf_hitbox_set(o->node, h->idx,
+        b.x, b.y, b.w, (int16_t)mp_obj_get_int(dest[1])); break;
+    case MP_QSTR_visible: {
+        mp_obj_t *e = hb_dbg_entry(o, h->idx);
+        if (mp_obj_is_true(dest[1])) {
+            if (*e == mp_const_none) {
+                mp_obj_t items[2] = {mp_const_none,
+                                     MP_OBJ_NEW_SMALL_INT(HB_DBG_DEFAULT)};
+                *e = mp_obj_new_list(2, items);
+            }
+        } else {
+            hb_entry_kill(*e);
+            *e = mp_const_none;
+        }
+        break;
+    }
+    case MP_QSTR_visible_color: {
+        mp_obj_t *e = hb_dbg_entry(o, h->idx);
+        if (*e == mp_const_none) {
+            mp_obj_t items[2] = {mp_const_none, dest[1]};
+            *e = mp_obj_new_list(2, items);
+        } else {
+            mp_obj_subscr(*e, MP_OBJ_NEW_SMALL_INT(1), dest[1]);
+        }
+        break;
+    }
+    default:
+        return;                                       /* not consumed */
+    }
+    hb_dbg_sync(o);
+    dest[0] = MP_OBJ_NULL;
+}
+
+static const mp_rom_map_elem_t hitbox_locals_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_remove), MP_ROM_PTR(&hitbox_remove_obj)},
+};
+static MP_DEFINE_CONST_DICT(hitbox_locals_dict, hitbox_locals_table);
+
+MP_DEFINE_CONST_OBJ_TYPE(surfer_hitbox_type, MP_QSTR_Hitbox,
+                         MP_TYPE_FLAG_NONE, attr, hitbox_attr,
+                         locals_dict, &hitbox_locals_dict);
+
+static mp_obj_t hitboxes_add(size_t n_args, const mp_obj_t *args)
+{
+    (void)n_args;
+    surfer_hitboxes_obj_t *hb = MP_OBJ_TO_PTR(args[0]);
+    surfer_node_obj_t *o = hb_owner(hb->node_ref, -1);
+    int32_t i = surf_hitbox_add(o->node,
+                                (int16_t)mp_obj_get_int(args[1]),
+                                (int16_t)mp_obj_get_int(args[2]),
+                                (int16_t)mp_obj_get_int(args[3]),
+                                (int16_t)mp_obj_get_int(args[4]));
+    if (i < 0)
+        mp_raise_ValueError(MP_ERROR_TEXT("hitbox add failed (32 max, "
+                                          "w/h > 0)"));
+    return hitbox_obj_new(hb->node_ref, i);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(hitboxes_add_obj, 5, 5,
+                                           hitboxes_add);
+
+static mp_obj_t hitboxes_clear(mp_obj_t self_in)
+{
+    surfer_hitboxes_obj_t *hb = MP_OBJ_TO_PTR(self_in);
+    surfer_node_obj_t *o = hb_owner(hb->node_ref, -1);
+    hb_dbg_teardown(o);
+    while (surf_hitbox_count(o->node))
+        surf_hitbox_remove(o->node, 0);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(hitboxes_clear_obj, hitboxes_clear);
+
+static mp_obj_t hitboxes_unary(mp_unary_op_t op, mp_obj_t self_in)
+{
+    surfer_hitboxes_obj_t *hb = MP_OBJ_TO_PTR(self_in);
+    surfer_node_obj_t *o = MP_OBJ_TO_PTR(hb->node_ref);
+    mp_int_t n = o->node ? surf_hitbox_count(o->node) : 0;
+    switch (op) {
+    case MP_UNARY_OP_LEN: return MP_OBJ_NEW_SMALL_INT(n);
+    case MP_UNARY_OP_BOOL: return mp_obj_new_bool(n != 0);
+    default: return MP_OBJ_NULL;
+    }
+}
+
+static mp_obj_t hitboxes_subscr(mp_obj_t self_in, mp_obj_t index,
+                                mp_obj_t value)
+{
+    if (value != MP_OBJ_SENTINEL)
+        mp_raise_msg(&mp_type_TypeError,
+                     MP_ERROR_TEXT("edit a hitbox through its item"));
+    surfer_hitboxes_obj_t *hb = MP_OBJ_TO_PTR(self_in);
+    surfer_node_obj_t *o = MP_OBJ_TO_PTR(hb->node_ref);
+    mp_int_t n = o->node ? surf_hitbox_count(o->node) : 0;
+    mp_int_t i = mp_obj_get_int(index);
+    if (i < 0)
+        i += n;
+    if (i < 0 || i >= n)
+        mp_raise_msg(&mp_type_IndexError, MP_ERROR_TEXT("hitbox index"));
+    return hitbox_obj_new(hb->node_ref, (int32_t)i);
+}
+
+static const mp_rom_map_elem_t hitboxes_locals_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_add), MP_ROM_PTR(&hitboxes_add_obj)},
+    {MP_ROM_QSTR(MP_QSTR_clear), MP_ROM_PTR(&hitboxes_clear_obj)},
+};
+static MP_DEFINE_CONST_DICT(hitboxes_locals_dict, hitboxes_locals_table);
+
+MP_DEFINE_CONST_OBJ_TYPE(surfer_hitboxes_type, MP_QSTR_Hitboxes,
+                         MP_TYPE_FLAG_NONE, unary_op, hitboxes_unary,
+                         subscr, hitboxes_subscr,
+                         locals_dict, &hitboxes_locals_dict);
+
+static mp_obj_t hitboxes_obj_new(mp_obj_t node_ref)
+{
+    surfer_hitboxes_obj_t *hb = mp_obj_malloc(surfer_hitboxes_obj_t,
+                                              &surfer_hitboxes_type);
+    hb->node_ref = node_ref;
+    return MP_OBJ_FROM_PTR(hb);
+}
 
 /* ---- Image (runtime PNG) ---- */
 

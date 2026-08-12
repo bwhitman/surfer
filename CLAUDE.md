@@ -434,6 +434,39 @@ box, scale, rot/mirror against the hal's mapping, invalidation after a
 fill, and a filmstrip colliding with the frame it shows rather than the
 sheet.
 
+## Hitboxes ride the transform
+
+`surf_hitbox_*` (node.c): caller-authored collision rects on a sprite
+or filmstrip, at most 32, offsets in the UNROTATED source frame —
+negative or past w/h is legal, a reach that sticks out of the picture.
+`surf_hitbox_abs` maps a box through the transform with the FORWARD
+form of `ink_at`'s inverse, derived case by case from it so the two
+cannot disagree about what a quarter turn means — which is the whole
+point: a box authored on the head stays on the head through every
+mirror and turn, and the class of per-facing reposition code a Tulip
+user spent four model-assisted rounds fighting is gone.
+
+- **While a node has hitboxes they ARE its collision shape.**
+  `surf_node_overlaps` hands off to `surf_node_overlaps_which` (a
+  bitmask of a's boxes that hit), the node's own box and ink stop
+  mattering, and the OTHER node's ink still counts. Nothing in the
+  hitbox path early-outs on the NODE boxes — a box may sit entirely
+  outside its sprite, which is exactly the case the early-out would
+  wrongly kill.
+- **The binding returns the indices**: `a.hits(b)` is a tuple when `a`
+  has hitboxes (empty = falsy, so every `if a.hits(b):` keeps working)
+  and the bool it always was when it has none.
+- **Debug outlines are REAL RECT NODES built by the binding** in the
+  sprite's parent, rebuilt on the mutations that move things (position,
+  transform, box edits) — never the frame path. An outline drawn by the
+  compose path outside the sprite's own box would break dirty-rect
+  damage accounting, which is why this is scene chrome and not a
+  compositor feature. `hitboxes[i].visible / .visible_color` drive it.
+- Storage is a malloc'd array per node, freed in node_free; add/remove
+  are events. tests/test_hitbox.c holds the mapping (against the
+  framebuffer-probe rotation convention), the outside-the-node case,
+  both-sides-with-boxes, and the four-facings head-box case whole.
+
 ## An image can be saved now
 
 `surf_image_to_png` / `surfer.write_png(img)` — the other half of

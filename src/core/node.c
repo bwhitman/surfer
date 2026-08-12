@@ -54,6 +54,14 @@ static void node_free(surf_node *n)
     }
     if (n->type == SURF_NODE_SCROLLVIEW)
         surf_scroll_forget(n);
+    if (n->type == SURF_NODE_SPRITE && n->u.sprite.hb) {
+        free(n->u.sprite.hb);
+        n->u.sprite.hb = NULL; n->u.sprite.hbn = 0;
+    }
+    if (n->type == SURF_NODE_FILMSTRIP && n->u.strip.hb) {
+        free(n->u.strip.hb);
+        n->u.strip.hb = NULL; n->u.strip.hbn = 0;
+    }
     /* A PLAYING strip that is destroyed must give its count back, or the
      * scan in surf_filmstrip_tick keeps running for an animation nobody
      * owns — and after enough app quits it never stops running. */
@@ -600,11 +608,67 @@ static bool ink_at(const ink_view *v, const surf_node *n, int32_t dx, int32_t dy
     return (v->bits[(size_t)sy * v->wpr + (sx >> 5)] >> (sx & 31)) & 1;
 }
 
+/* one absolute rect against node b's box-and-ink -- the middle of the
+ * plain overlaps below, factored out so a HITBOX (a pure box that may
+ * sit entirely outside its node) can run the same test */
+static bool rect_hits_node(surf_rect ra, const surf_node *b)
+{
+    int16_t bx, by;
+    surf_node_abs_pos(b, &bx, &by);
+    surf_rect rb = {bx, by, b->w, b->h};
+    if (!surf_rect_overlaps(ra, rb))
+        return false;
+    ink_view vb;
+    if (!node_ink(b, &vb))
+        return true;
+    surf_rect ix = surf_rect_intersect(ra, rb);
+    for (int32_t y = 0; y < ix.h; y++)
+        for (int32_t x = 0; x < ix.w; x++)
+            if (ink_at(&vb, b, ix.x + x - bx, ix.y + y - by))
+                return true;
+    return false;
+}
+
+uint32_t surf_node_overlaps_which(const surf_node *a, const surf_node *b)
+{
+    if (!a || !b || surf_hitbox_count(a) == 0 ||
+        (a->flags & SURF_NF_HIDDEN) || (b->flags & SURF_NF_HIDDEN) ||
+        !surf_node_attached(a) || !surf_node_attached(b))
+        return 0;
+    /* While a node has hitboxes they ARE its collision shape: its own
+     * box and ink stop mattering, and a box is allowed to sit entirely
+     * outside the picture -- which is why nothing here early-outs on
+     * the NODE boxes the way the plain path below does. */
+    uint32_t hits = 0;
+    int32_t na = surf_hitbox_count(a), nb = surf_hitbox_count(b);
+    for (int32_t i = 0; i < na; i++) {
+        surf_rect ra;
+        if (!surf_hitbox_abs(a, i, &ra))
+            continue;
+        bool hit = false;
+        if (nb) {
+            for (int32_t j = 0; j < nb && !hit; j++) {
+                surf_rect rb;
+                hit = surf_hitbox_abs(b, j, &rb) && surf_rect_overlaps(ra, rb);
+            }
+        } else {
+            hit = rect_hits_node(ra, b);
+        }
+        if (hit)
+            hits |= 1u << i;
+    }
+    return hits;
+}
+
 bool surf_node_overlaps(const surf_node *a, const surf_node *b)
 {
     if (!a || !b || (a->flags & SURF_NF_HIDDEN) || (b->flags & SURF_NF_HIDDEN) ||
         !surf_node_attached(a) || !surf_node_attached(b))
         return false;
+    if (surf_hitbox_count(a))
+        return surf_node_overlaps_which(a, b) != 0;
+    if (surf_hitbox_count(b))
+        return surf_node_overlaps_which(b, a) != 0;
     int16_t ax, ay, bx, by;
     surf_node_abs_pos(a, &ax, &ay);
     surf_node_abs_pos(b, &bx, &by);
@@ -764,6 +828,144 @@ uint8_t surf_sprite_mirror(const surf_node *n)
 {
     const surf_xform *xf = surf_node_xform((surf_node *)n);
     return xf ? xf->mirror : 0;
+}
+
+surf_node *surf_node_parent(surf_node *n)
+{
+    return n ? n->parent : NULL;
+}
+
+/* ---- hitboxes -------------------------------------------------------
+ * Storage is a plain malloc'd array per node -- add/remove are events,
+ * never the frame path -- freed in node_free. Offsets live in the
+ * UNROTATED source frame; surf_hitbox_abs is the FORWARD map of the
+ * inverse ink_at() runs, derived case by case from it so the two cannot
+ * disagree about what a quarter turn means. */
+
+static surf_hitbox **hb_slot(surf_node *n, uint8_t **cnt)
+{
+    if (!n)
+        return NULL;
+    if (n->type == SURF_NODE_SPRITE) {
+        *cnt = &n->u.sprite.hbn;
+        return &n->u.sprite.hb;
+    }
+    if (n->type == SURF_NODE_FILMSTRIP) {
+        *cnt = &n->u.strip.hbn;
+        return &n->u.strip.hb;
+    }
+    return NULL;
+}
+
+int32_t surf_hitbox_count(const surf_node *n)
+{
+    uint8_t *cnt;
+    surf_hitbox **hb = hb_slot((surf_node *)n, &cnt);
+    return hb ? *cnt : 0;
+}
+
+int32_t surf_hitbox_add(surf_node *n, int16_t x, int16_t y,
+                        int16_t w, int16_t h)
+{
+    uint8_t *cnt;
+    surf_hitbox **hb = hb_slot(n, &cnt);
+    if (!hb || *cnt >= SURF_MAX_HITBOXES || w <= 0 || h <= 0)
+        return -1;
+    surf_hitbox *grown = realloc(*hb, ((size_t)*cnt + 1) * sizeof **hb);
+    if (!grown)
+        return -1;
+    *hb = grown;
+    grown[*cnt] = (surf_hitbox){x, y, w, h};
+    return (*cnt)++;
+}
+
+bool surf_hitbox_set(surf_node *n, int32_t i, int16_t x, int16_t y,
+                     int16_t w, int16_t h)
+{
+    uint8_t *cnt;
+    surf_hitbox **hb = hb_slot(n, &cnt);
+    if (!hb || i < 0 || i >= *cnt || w <= 0 || h <= 0)
+        return false;
+    (*hb)[i] = (surf_hitbox){x, y, w, h};
+    return true;
+}
+
+bool surf_hitbox_get(const surf_node *n, int32_t i, surf_hitbox *out)
+{
+    uint8_t *cnt;
+    surf_hitbox **hb = hb_slot((surf_node *)n, &cnt);
+    if (!hb || i < 0 || i >= *cnt)
+        return false;
+    *out = (*hb)[i];
+    return true;
+}
+
+bool surf_hitbox_remove(surf_node *n, int32_t i)
+{
+    uint8_t *cnt;
+    surf_hitbox **hb = hb_slot(n, &cnt);
+    if (!hb || i < 0 || i >= *cnt)
+        return false;
+    for (int32_t k = i; k < *cnt - 1; k++)
+        (*hb)[k] = (*hb)[k + 1];
+    (*cnt)--;
+    if (*cnt == 0) {
+        free(*hb);
+        *hb = NULL;
+    }
+    return true;
+}
+
+/* which cell the offsets are authored against */
+static bool hb_cell(const surf_node *n, int32_t *cw, int32_t *ch)
+{
+    if (n->type == SURF_NODE_SPRITE) {
+        *cw = n->u.sprite.src.w;
+        *ch = n->u.sprite.src.h;
+    } else {
+        *cw = n->u.strip.fw;
+        *ch = n->u.strip.fh;
+    }
+    return *cw > 0 && *ch > 0;
+}
+
+bool surf_hitbox_abs(const surf_node *n, int32_t i, surf_rect *out)
+{
+    surf_hitbox b;
+    if (!surf_hitbox_get(n, i, &b) || !out)
+        return false;
+    int32_t cw, ch;
+    if (!hb_cell(n, &cw, &ch))
+        return false;
+    const surf_xform *xf = surf_node_xform((surf_node *)n);
+    /* the PRE-rotation footprint, i.e. the scaled frame (ink_at's W0/H0) */
+    int32_t W0 = (xf->rot & 1) ? n->h : n->w;
+    int32_t H0 = (xf->rot & 1) ? n->w : n->h;
+    if (W0 <= 0 || H0 <= 0)
+        return false;
+    /* scale the source-frame box onto the footprint, end minus start so
+     * adjacent boxes stay adjacent under a fractional scale */
+    int32_t X0 = (int32_t)((int64_t)b.x * W0 / cw);
+    int32_t X1 = (int32_t)((int64_t)(b.x + b.w) * W0 / cw);
+    int32_t Y0 = (int32_t)((int64_t)b.y * H0 / ch);
+    int32_t Y1 = (int32_t)((int64_t)(b.y + b.h) * H0 / ch);
+    int32_t X = X0, Y = Y0, Wb = X1 - X0, Hb = Y1 - Y0;
+    if (xf->mirror & 1)
+        X = W0 - X - Wb;
+    if (xf->mirror & 2)
+        Y = H0 - Y - Hb;
+    int32_t dx, dy, dw, dh;
+    switch (xf->rot) {
+    default: dx = X;            dy = Y;            dw = Wb; dh = Hb; break;
+    case 1:  dx = Y;            dy = W0 - X - Wb;  dw = Hb; dh = Wb; break;
+    case 2:  dx = W0 - X - Wb;  dy = H0 - Y - Hb;  dw = Wb; dh = Hb; break;
+    case 3:  dx = H0 - Y - Hb;  dy = X;            dw = Hb; dh = Wb; break;
+    }
+    int16_t ax, ay;
+    surf_node_abs_pos(n, &ax, &ay);
+    *out = (surf_rect){(int16_t)(ax + dx), (int16_t)(ay + dy),
+                       (int16_t)dw, (int16_t)dh};
+    return true;
 }
 
 surf_node *surf_layer_new(const surf_image *strip, int16_t x, int16_t y,

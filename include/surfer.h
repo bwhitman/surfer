@@ -479,6 +479,32 @@ void    surf_sprite_set_xform(surf_node *n, int32_t scale_q16, uint8_t rot,
 int32_t surf_sprite_scale(const surf_node *n);
 uint8_t surf_sprite_rot(const surf_node *n);
 uint8_t surf_sprite_mirror(const surf_node *n);
+
+/* HITBOXES: caller-authored collision rects on a sprite or filmstrip.
+ * Offsets are in the UNROTATED source frame's coordinates -- negative
+ * or past w/h is legal (a reach that sticks out of the picture) -- and
+ * collision maps them through the node's transform with the same
+ * arithmetic the ink mask uses, so a box authored on the head stays on
+ * the head through every mirror and quarter turn. While a node has any,
+ * they REPLACE its box-and-ink answer in surf_node_overlaps: the boxes
+ * are what collides, and the OTHER node's ink still counts. At most
+ * SURF_MAX_HITBOXES (32) per node, so a hit reports as a bitmask. */
+typedef struct { int16_t x, y, w, h; } surf_hitbox;
+#define SURF_MAX_HITBOXES 32
+int32_t surf_hitbox_add(surf_node *n, int16_t x, int16_t y,
+                        int16_t w, int16_t h);      /* -> index, or -1 */
+bool    surf_hitbox_set(surf_node *n, int32_t i, int16_t x, int16_t y,
+                        int16_t w, int16_t h);
+bool    surf_hitbox_get(const surf_node *n, int32_t i, surf_hitbox *out);
+bool    surf_hitbox_remove(surf_node *n, int32_t i); /* later boxes shift down */
+int32_t surf_hitbox_count(const surf_node *n);
+/* the box mapped through the transform, in ABSOLUTE screen coords --
+ * what actually collides, and what a debug outline should draw */
+bool    surf_hitbox_abs(const surf_node *n, int32_t i, surf_rect *out);
+/* which of a's hitboxes overlap b: bit i set = hitbox i hit */
+uint32_t surf_node_overlaps_which(const surf_node *a, const surf_node *b);
+/* the node's parent, for a caller placing chrome beside it */
+surf_node *surf_node_parent(surf_node *n);
 /* Can this node carry a transform at all? Only sprites and filmstrips
  * can; a binding that lets a caller write `rot` to anything else should
  * refuse rather than let surf_sprite_set_xform quietly drop it. */
