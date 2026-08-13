@@ -783,6 +783,18 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title)
      * it sat over the world app's tab strip. A phone or tablet app IS
      * the whole screen; there is no border for it to have. */
     flags |= SDL_WINDOW_BORDERLESS;
+    /* ...AND THE EDGE GESTURES STAY THE SYSTEM'S. SDL reads the same
+     * two flags for preferredScreenEdgesDeferringSystemGestures and
+     * gives a borderless window UIRectEdgeAll by default, so asking for
+     * a hidden status bar silently opted the machine into DEFERRING
+     * every edge swipe: the home-indicator swipe up needed one gesture
+     * to arm it and another to act, reported as "I have to swipe a few
+     * times to switch apps". A machine somebody keeps a REPL in is not
+     * a game that must not be swiped out of by accident — the system's
+     * gestures are how they leave, and they should work first time.
+     * "0" means show the indicator and defer nothing (only "2" defers;
+     * see SDL_uikitviewcontroller's rule). */
+    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "0");
 #endif
 #ifndef __EMSCRIPTEN__
     flags |= SDL_WINDOW_RESIZABLE;
