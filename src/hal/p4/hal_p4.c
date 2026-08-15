@@ -41,6 +41,30 @@ static struct {
     bool                 prev_overflow;  /* prev list truncated: unusable */
     uint32_t             frame_no;
     uint32_t             fb_stamp[3];    /* frame each buffer is current to */
+    /* rotated scanout (cfg.rotation != 0). `comp` is the compose buffer
+     * in LOGICAL orientation — S.fb points at it and everything that
+     * draws, reads back or screenshots sees only that, so the rotation
+     * exists nowhere above present(). pw/ph are the panel's own raster,
+     * swapped from cfg.w/h at 90 and 270. */
+    int16_t              rot;
+    void                *comp;
+    int16_t              pw, ph;
+    /* WHAT EACH SCAN BUFFER IS MISSING. The compose buffer is always
+     * current, so the only question per buffer is which rects have
+     * landed since that buffer was last written — and with three
+     * buffers in rotation that is two frames' worth, not one.
+     *
+     * The first cut leaned on fb_stamp/age the way the unrotated path
+     * does and got it wrong in a way that undid the entire point: it
+     * stamped only the buffer it wrote, so age was 3 every frame, the
+     * `age > 2` arm fired every frame, and every frame did a
+     * FULL-SCREEN rotate no matter how little had changed. Measured on
+     * the 8.8": damaging 64x64 cost 44.4 ms and damaging 230,400 px
+     * cost 44.7 — flat, because the damage was never what was being
+     * rotated. */
+    surf_rect            acc_r[3][SURF_MAX_DIRTY_P4];
+    uint8_t              acc_n[3];
+    bool                 acc_over[3];   /* list full: owes everything */
     ppa_client_handle_t  fill_cl, srm_cl, blend_cl;
     SemaphoreHandle_t    ppa_sem;   /* one op in flight; see ppa_begin */
     esp_async_fbcpy_handle_t fbcpy;
@@ -549,6 +573,202 @@ static void fwd_copy(int src_fb, int dst_fb, surf_rect r)
     fbcpy_sync(&t);
 }
 
+/* ---- rotated present ------------------------------------------------
+ *
+ * One dirty rect out of the compose buffer and into a scan buffer, turned
+ * on the way by the SRM engine. The arithmetic is the whole of it, and it
+ * is worth writing down because getting it 180 degrees wrong still draws
+ * a picture:
+ *
+ * PPA rotates COUNTER-CLOCKWISE. At 90 the source's top-right corner
+ * becomes the destination's top-left, so a logical (x, y) lands at
+ * (y, W-1-x) and a block of (w, h) comes out (h, w). At 270 it is
+ * (H-1-y, x), and at 180 the plain (W-1-x, H-1-y).
+ *
+ * `S.comp` is CPU-written in places (textgrid), and the PPA reads
+ * physical memory — so the caller writes back before the first rect of a
+ * frame, not once per rect. */
+static void rot_copy(int dst_fb, surf_rect r)
+{
+    const int16_t W = S.cfg.w, H = S.cfg.h;
+    uint32_t angle;
+    int32_t dx, dy;
+
+    switch (S.rot) {
+    case 90:
+        angle = PPA_SRM_ROTATION_ANGLE_90;
+        dx = r.y;
+        dy = W - r.x - r.w;
+        break;
+    case 180:
+        angle = PPA_SRM_ROTATION_ANGLE_180;
+        dx = W - r.x - r.w;
+        dy = H - r.y - r.h;
+        break;
+    default: /* 270 */
+        angle = PPA_SRM_ROTATION_ANGLE_270;
+        dx = H - r.y - r.h;
+        dy = r.x;
+        break;
+    }
+
+    ppa_srm_oper_config_t op = {
+        .in = {
+            .buffer = S.comp,
+            .pic_w = (uint32_t)W,
+            .pic_h = (uint32_t)H,
+            .block_w = (uint32_t)r.w,
+            .block_h = (uint32_t)r.h,
+            .block_offset_x = (uint32_t)r.x,
+            .block_offset_y = (uint32_t)r.y,
+            .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+        },
+        .out = {
+            .buffer = S.cfg.scan_fbs[dst_fb],
+            .buffer_size = (size_t)S.pw * S.ph * 2,
+            .pic_w = (uint32_t)S.pw,
+            .pic_h = (uint32_t)S.ph,
+            .block_offset_x = (uint32_t)dx,
+            .block_offset_y = (uint32_t)dy,
+            .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+        },
+        .rotation_angle = angle,
+        .scale_x = 1.0f,
+        .scale_y = 1.0f,
+        .mode = PPA_TRANS_MODE_NON_BLOCKING,
+    };
+    ppa_srm_sync(&op);
+}
+
+/* ROTATE, THEN FLIP — the order is forced, not chosen. Unrotated, present
+ * flips to the buffer just composed and only then brings the NEXT one up
+ * to date, so the copy is off the critical path. Here nothing has been
+ * composed into a scan buffer at all: the frame has to be turned into one
+ * before there is anything to show.
+ *
+ * What that buys back is the bookkeeping. Unrotated, a stale rect is
+ * fetched from whichever scan buffer happens to be newest; here the
+ * source is always `comp`, which is always current — so the only thing
+ * to track is WHICH RECTS each scan buffer has not seen yet. Every
+ * frame's damage is owed to the two buffers we are not writing, and the
+ * one we are writing is brought current from its own list and then
+ * cleared.
+ *
+ * A list per buffer and not a bounding union, which was the cheap
+ * version and is wrong on this machine specifically: the console is at
+ * the top and the task bar's clock is at the bottom, so the union of a
+ * typed character and a ticking minute is the whole screen. Overflowing
+ * the list is the only thing that falls back to a full rotate. */
+static bool acc_overlap(surf_rect a, surf_rect b)
+{
+    return a.x < b.x + b.w && b.x < a.x + a.w &&
+           a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+static surf_rect acc_union(surf_rect a, surf_rect b)
+{
+    int16_t x0 = a.x < b.x ? a.x : b.x;
+    int16_t y0 = a.y < b.y ? a.y : b.y;
+    int16_t x1 = a.x + a.w > b.x + b.w ? (int16_t)(a.x + a.w) : (int16_t)(b.x + b.w);
+    int16_t y1 = a.y + a.h > b.y + b.h ? (int16_t)(a.y + a.h) : (int16_t)(b.y + b.h);
+    return (surf_rect){x0, y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0)};
+}
+
+/* MERGE ON INSERT, surf_dirty_add's own rule and for a sharper reason
+ * here. Without it a full-screen repaint every frame put the SAME whole
+ * screen into each buffer's list once per frame it was not chosen, and
+ * the chosen buffer then rotated three of them: measured 135 ms against
+ * the 44 one rotate costs. Rotating a rect twice is only wasted work,
+ * but wasting it three times over the whole panel is the difference
+ * between 7 fps and 22.
+ *
+ * The grown rect may newly overlap others, so it repeats until it
+ * settles — a list of touching rects has to collapse to one. */
+static void acc_add(int b, surf_rect r)
+{
+    if (S.acc_over[b])
+        return;                       /* already owes everything */
+    bool merged = true;
+    while (merged) {
+        merged = false;
+        for (int i = 0; i < S.acc_n[b]; i++) {
+            if (acc_overlap(S.acc_r[b][i], r)) {
+                r = acc_union(S.acc_r[b][i], r);
+                S.acc_r[b][i] = S.acc_r[b][--S.acc_n[b]];
+                merged = true;
+                break;
+            }
+        }
+    }
+    if (S.acc_n[b] >= SURF_MAX_DIRTY_P4) {
+        S.acc_over[b] = true;
+        return;
+    }
+    S.acc_r[b][S.acc_n[b]++] = r;
+}
+
+static void present_rotated(const surf_rect *dirty, int n)
+{
+    uint8_t live = S.live;            /* snapshot: the ISR moves it */
+    int back = -1;
+    for (int i = 0; i < 3; i++) {
+        if (i != live && i != S.last_flip) {
+            back = i;
+            break;
+        }
+    }
+    if (back < 0)
+        back = (S.last_flip + 1) % 3;
+
+    /* CPU writes reach physical memory once per frame, not once per rect
+     * — and over the DAMAGED ROWS, not the whole buffer. The first cut
+     * wrote back all of it: 1.84 MB and 14,400 cache lines every frame,
+     * to publish what is usually a few hundred rows of a console. PPA
+     * and DMA2D content is not cached at all, so the only thing this has
+     * to catch is a CPU write (a textgrid), and those live inside the
+     * damage like everything else. */
+    int miny = S.cfg.h, maxy = 0;
+    for (int i = 0; i < n; i++) {
+        if (dirty[i].y < miny) miny = dirty[i].y;
+        if (dirty[i].y + dirty[i].h > maxy) maxy = dirty[i].y + dirty[i].h;
+    }
+    if (maxy > miny)
+        surf_hal_p4_sync((uint8_t *)S.comp + (size_t)miny * S.cfg.w * 2,
+                         (size_t)(maxy - miny) * S.cfg.w * 2);
+
+    /* scroll_rect moved pixels outside the damage system's view, so no
+     * buffer can be trusted rect-by-rect — including this one. */
+    if (S.scrolled) {
+        S.scrolled = false;
+        S.shift_acc = 0;
+        for (int i = 0; i < 3; i++)
+            S.acc_over[i] = true;
+    }
+
+    /* EVERY buffer owes this frame, the one we are about to write
+     * included — so that what it missed and what just happened coalesce
+     * into ONE list before any of it is rotated, rather than being two
+     * lists rotated back to back over the same pixels. */
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < n; j++)
+            acc_add(i, dirty[j]);
+
+    if (S.acc_over[back]) {
+        surf_rect full = {0, 0, S.cfg.w, S.cfg.h};
+        rot_copy(back, full);
+    } else {
+        for (int j = 0; j < S.acc_n[back]; j++)
+            rot_copy(back, S.acc_r[back][j]);
+    }
+    S.acc_n[back] = 0;
+    S.acc_over[back] = false;
+
+    esp_lcd_panel_draw_bitmap(S.cfg.panel, 0, 0, S.pw, S.ph,
+                              S.cfg.scan_fbs[back]);
+    S.last_flip = (uint8_t)back;
+    /* S.fb never moves: compose always goes to the one logical buffer */
+}
+
 /* Flip to the buffer we just composed (draw_bitmap with an in-fb pointer is
  * a zero-copy scanout switch that latches at the next frame boundary),
  * then rotate to a buffer that is neither on glass nor pending — with
@@ -559,6 +779,11 @@ static void h_present(const surf_rect *dirty, int n)
 {
     if (n == 0)
         return;
+
+    if (S.rot) {
+        present_rotated(dirty, n);
+        return;
+    }
 
     int miny = S.cfg.h, maxy = 0;
     for (int i = 0; i < n; i++) {
@@ -923,7 +1148,11 @@ static void h_scroll_rect(surf_rect r, int16_t dy)
     if (ady >= r.h)
         return;
 
-    if (S.nfbs == 3) {
+    /* !S.rot: the cross-buffer source is the last SCANNED frame, which
+     * under rotation is not in the orientation this shift is expressed
+     * in. Fall through to the in-place strip shift, which moves pixels
+     * inside the compose buffer and is orientation-agnostic. */
+    if (S.nfbs == 3 && !S.rot) {
         S.shift_acc += dy;
         int32_t acc = S.shift_acc;
         int32_t aacc = acc < 0 ? -acc : acc;
@@ -1161,8 +1390,18 @@ const surf_hal *surf_hal_p4_init(const surf_hal_p4_cfg *cfg)
 {
     if (!cfg || cfg->w <= 0 || cfg->h <= 0)
         return NULL;
+    if (cfg->rotation != 0 && cfg->rotation != 90 && cfg->rotation != 180 &&
+        cfg->rotation != 270)
+        return NULL;
     S.cfg = *cfg;
     S.fb_bytes = (size_t)cfg->w * cfg->h * 2;
+    /* A rotation needs somewhere to compose that is not a scan buffer, so
+     * it needs all three of them free to be written into — and it needs
+     * the flip, which single-buffer has not got. */
+    S.rot = (cfg->panel && !cfg->single_buffer && cfg->scan_fbs[0] &&
+             cfg->scan_fbs[1] && cfg->scan_fbs[2]) ? cfg->rotation : 0;
+    S.pw = (S.rot == 90 || S.rot == 270) ? cfg->h : cfg->w;
+    S.ph = (S.rot == 90 || S.rot == 270) ? cfg->w : cfg->h;
     /* DMA2D rect copies back scroll_rect in every mode, and the
      * damage-forward path in triple-buffer mode */
     if (esp_async_fbcpy_install(&(esp_async_fbcpy_config_t){}, &S.fbcpy) != ESP_OK)
@@ -1184,6 +1423,23 @@ const surf_hal *surf_hal_p4_init(const surf_hal_p4_cfg *cfg)
         S.last_flip = 0;
         S.back = 1;
         S.fb = cfg->scan_fbs[1];
+        if (S.rot) {
+            /* compose off to the side, in logical orientation, and never
+             * move: with one always-current source there is no buffer to
+             * bring up to date but the scanout's own. */
+            S.comp = h_alloc_image(S.fb_bytes);
+            if (!S.comp)
+                return NULL;
+            memset(S.comp, 0, S.fb_bytes);
+            surf_hal_p4_sync(S.comp, S.fb_bytes);
+            S.fb = S.comp;
+            /* nothing has been rotated into any of them yet, and what
+             * they hold is whatever the allocator left there */
+            for (int i = 0; i < 3; i++) {
+                S.acc_n[i] = 0;
+                S.acc_over[i] = true;
+            }
+        }
         esp_lcd_dpi_panel_event_callbacks_t cbs = {.on_refresh_done = vsync_cb};
         if (esp_lcd_dpi_panel_register_event_callbacks(cfg->panel, &cbs, NULL) != ESP_OK)
             return NULL;
@@ -1195,7 +1451,10 @@ const surf_hal *surf_hal_p4_init(const surf_hal_p4_cfg *cfg)
     S.hz_c0 = S.vsync_count;
 
     /* streaming layers need the just-presented buffer as source */
-    hal_p4.band_shift = S.nfbs == 3 ? h_band_shift : NULL;
+    /* ...and NOT while rotating: a band shift copies from the last
+     * scanned frame, which is turned. Nulling it is how a layer falls
+     * back to repainting, exactly as it does in single-buffer mode. */
+    hal_p4.band_shift = (S.nfbs == 3 && !S.rot) ? h_band_shift : NULL;
     hal_p4.wait_frame = S.nfbs == 3 ? h_wait_frame : NULL;
     hal_p4.frame_hz = S.nfbs == 3 ? h_frame_hz : NULL;
 

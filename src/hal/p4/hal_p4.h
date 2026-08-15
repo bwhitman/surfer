@@ -27,6 +27,26 @@ typedef struct {
      * composition into scan_fbs[0]: present is free but mid-paint states
      * are visible on large updates (kept for A/B measurement). */
     bool                   single_buffer;
+    /* QUARTER TURNS CCW BETWEEN WHAT IS COMPOSED AND WHAT IS SCANNED OUT,
+     * for a panel mounted the other way up from the picture — 0, 90, 180,
+     * 270, anything else refused.
+     *
+     * `w` and `h` above stay the LOGICAL size, the one surfer draws in
+     * and the one every coordinate anywhere is expressed in; at 90 or 270
+     * the panel's own raster is h x w. A board glue that rotates owes its
+     * touch controller the same transform, because nothing here sees the
+     * finger.
+     *
+     * It is not free and it is not proportional to the screen: composition
+     * moves into a buffer of its own and present ROTATES THE DIRTY RECTS
+     * into the scanout, so a still screen costs nothing and a full repaint
+     * costs one whole-screen SRM pass. Two things are given up while it is
+     * on, both by being switched off rather than by going wrong: streaming
+     * band shifts (layers fall back to repainting, as they do in
+     * single-buffer mode) and the scroll_rect cross-buffer path, since
+     * both read the last SCANNED frame and that frame is no longer in the
+     * orientation anyone composed. */
+    int16_t                rotation;
 } surf_hal_p4_cfg;
 
 const surf_hal *surf_hal_p4_init(const surf_hal_p4_cfg *cfg);
