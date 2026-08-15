@@ -102,6 +102,7 @@ static void update_view(void)
      * (aspect fit, whole-multiple snap, centring) applies unchanged to
      * the space that can actually be seen. */
     int avail_h = oh;
+    int top_px = 0;             /* the notch/island band, kept clear */
 #if TARGET_OS_IPHONE
     {
         extern int SDL_tulip_kb_top_pt;
@@ -147,6 +148,20 @@ static void update_view(void)
             if (bar_px > 0 && bar_px < avail_h)
                 avail_h -= bar_px;
         }
+        /* ...and the same at the TOP, which is the notch or the island.
+         * It cannot be bought with slack the way a caller might expect
+         * — ask for a shorter framebuffer and the CENTRING pushes it
+         * down — because there is no slack left when the screen
+         * keyboard has taken the bottom of the window: the fit is
+         * against a short band and lands hard against the top, under
+         * the island. Reserved here, it is clear in both cases. */
+        if (surf_host_chrome_top_q16 > 0) {
+            int t = (int)(((int64_t)oh * surf_host_chrome_top_q16) >> 16);
+            if (t > 0 && t < avail_h) {
+                top_px = t;
+                avail_h -= t;
+            }
+        }
     }
 #endif
     oh = avail_h;
@@ -169,7 +184,7 @@ static void update_view(void)
     if (S.view.w > ow) S.view.w = ow;
     if (S.view.h > oh) S.view.h = oh;
     S.view.x = (ow - S.view.w) / 2;
-    S.view.y = (oh - S.view.h) / 2;
+    S.view.y = top_px + (oh - S.view.h) / 2;
 
     if (getenv("SURF_VIEW_DEBUG"))
         fprintf(stderr, "VIEW drawable %dx%d fb %dx%d -> view %dx%d at %d,%d\n",
@@ -1047,9 +1062,11 @@ bool surf_hal_sdl_pump(void)
          * the view kept whatever the bar reported FIRST (a portrait
          * fraction, on a landscape launch) and the strip sat over the
          * machine's task bar until something else happened to refit. */
-        static int last_chrome = -1;
-        if (S.win && surf_host_chrome_q16 != last_chrome) {
+        static int last_chrome = -1, last_chrome_top = -1;
+        if (S.win && (surf_host_chrome_q16 != last_chrome ||
+                      surf_host_chrome_top_q16 != last_chrome_top)) {
             last_chrome = surf_host_chrome_q16;
+            last_chrome_top = surf_host_chrome_top_q16;
             update_view();
             view_present();
         }

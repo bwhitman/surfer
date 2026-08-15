@@ -741,6 +741,27 @@ size it reports cannot change.
   so a second pass would leak the first copy. Those pixels belong to
   the process, not to the hal, and outlive it.
 
+## Host chrome at BOTH ends
+
+`surf_host_chrome_q16` is how much of the window height a host wants
+kept clear at the bottom for chrome of its own (tulip5's iOS key bar);
+`surf_host_chrome_top_q16` is the same at the top, which is a notch, an
+island or a status bar. Q16 fractions rather than points, because the
+host measures in its own coordinate space and SDL's window height does
+not always agree with it. Weak zeroes in input.c, so a host that draws
+none needs to know nothing about either.
+
+**The top one exists because clearance cannot be bought with slack.**
+The obvious way for a host to dodge an island is to ask for a SHORTER
+framebuffer and let `update_view`'s centring push the picture down —
+which works, costs double (slack is split, so 62 points at the top
+costs 62 at the bottom), and then **fails completely the moment a
+screen keyboard is up**: the fit is against the short band above the
+keyboard, there is no slack at all, and the machine lands hard against
+the top of the screen with its first line under the island. Reported
+from a real iPhone as a Tulip cut off at the top. Reserved here, the
+band is clear in both cases and the doubled cost goes away.
+
 ## The desktop window
 
 `update_view` fits the drawable, preserving aspect: an exact multiple

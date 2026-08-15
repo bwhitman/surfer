@@ -381,6 +381,12 @@ void surf_pad_reset_all(void);
  * zeroes in input.c, so a host that draws none needs to know nothing
  * about either. */
 extern int surf_host_chrome_q16;
+/* ...and the same at the TOP: a notch, an island, a status bar. Kept
+ * clear rather than paid for with slack — a caller can shrink what it
+ * asks for and let the centring push the picture down, but only while
+ * there IS slack, and there is none when a screen keyboard has taken
+ * the bottom half of the window. */
+extern int surf_host_chrome_top_q16;
 extern int surf_host_ctrl_latch;
 
 /* the platform screen keyboard (iOS): op -1 asks, 1 summons, 0
