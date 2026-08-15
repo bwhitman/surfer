@@ -2388,6 +2388,32 @@ static mp_obj_t mod_init(size_t n_args, const mp_obj_t *args)
         widget_font_name[0] = '\0';
         widget_font_unnamed = false;
         surf_deinit();
+        /* ...AND A DIFFERENT SIZE NEEDS A DIFFERENT DISPLAY. The hal
+         * allocates its framebuffer at the size it was built with and
+         * has no way to be told otherwise, so re-initialising the CORE
+         * at a new size while keeping the old hal composes w-wide rows
+         * into the wrong stride — it runs, and writes past the end of
+         * every row. Hosts whose screen can change shape under them (a
+         * phone turned on its side, a resizable window) are exactly the
+         * ones that reach this, so the display is re-shaped in place —
+         * IN PLACE, because tearing it down destroys the platform's own
+         * window and, on iOS, left a keyboard notification aimed at a
+         * view controller that had gone (a segfault inside UIKit on the
+         * second rotation).
+         *
+         * The same size keeps the hal it has, which is the common case
+         * by far — a soft reset — and is what makes this free where
+         * nothing moved. A panel port never sees it at all: the size it
+         * reports cannot change.
+         *
+         * prepare_assets() is deliberately NOT re-run. It re-homes each
+         * atlas ONCE, in place (on the device, flash .rodata into a
+         * fresh PSRAM allocation), so a second pass would leak the
+         * first copy and re-do the work; those pixels belong to the
+         * process, not to the hal, and survive it. */
+        if ((w != g_scr_w || h != g_scr_h) && !surfer_port_resize(w, h))
+            mp_raise_msg(&mp_type_RuntimeError,
+                         MP_ERROR_TEXT("display cannot change size"));
         g_scr_w = w;
         g_scr_h = h;
         if (!surf_init(g_hal, w, h, &cfg))

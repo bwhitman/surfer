@@ -29,6 +29,13 @@ const surf_hal *surfer_port_init(int16_t w, int16_t h, bool single_buffer)
     return hal;
 }
 
+/* A new framebuffer at a new shape, on the window that is already up.
+ * See surfer_port.h for why it is not a teardown. */
+bool surfer_port_resize(int16_t w, int16_t h)
+{
+    return surf_hal_sdl_resize(w, h);
+}
+
 /* read the first attached SDL game controller into pad 0 (source 0),
  * matching the device XInput mapping. Opened lazily; SDL keeps its state
  * current from the events the hal pump already drains. */

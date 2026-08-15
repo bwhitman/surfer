@@ -15,6 +15,20 @@
  * for full-screen-every-frame animation, DESIGN.md §5.6); ignored on
  * hosts without the choice. */
 const surf_hal *surfer_port_init(int16_t w, int16_t h, bool single_buffer);
+/* Re-shape the display in place. Called ONLY when `surfer.init()` asks
+ * for a size the live one was not built at — a host whose screen can
+ * change shape under it: a phone turned on its side, a resizable
+ * window. False if this port cannot, and a panel port simply cannot:
+ * the size it reports never changes, so it is never asked.
+ *
+ * IN PLACE, and not a quit-and-init pair, which is what this was
+ * first. Tearing the display down means destroying the platform's own
+ * window and view objects, and on iOS that left a keyboard
+ * notification pointing at a view controller that had gone — the app
+ * segfaulted inside UIKit on the SECOND rotation, from an observer
+ * nothing here can see. Re-shaping touches only what the hal itself
+ * allocated. */
+bool surfer_port_resize(int16_t w, int16_t h);
 bool surfer_port_pump(void);   /* false = the host wants to quit; also the
                                 * host's chance to poll input and push it
                                 * into surfer's feed API (surf_key_*) */

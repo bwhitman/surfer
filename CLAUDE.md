@@ -700,6 +700,47 @@ Three checkboxes and a rule is not the same widget.
   checkbox beside it: a radio and a checkbox on one panel that disagree
   about their own greys look like two libraries.
 
+## The display can change shape under you
+
+`surfer.init(w, h)` on a LIVE scene is the soft-reset path — the VM
+dropped every Python object, so the C scene is rebuilt on the surviving
+hal. That was true right up until a host asked for a **different size**:
+the hal allocates its framebuffer at the size it was built with and has
+no way to be told otherwise, so re-initialising the core alone composes
+w-wide rows into the old stride and writes past the end of every one.
+
+So a size that MOVED re-shapes the display, through the port:
+`surfer_port_resize(w, h)` → `surf_hal_sdl_resize`, a new texture and
+framebuffer on the SAME window, renderer untouched. The same size keeps
+everything as it was, which is the common case by far and is what makes
+a soft reset free. A panel port answers false and is never asked — the
+size it reports cannot change.
+
+- **IN PLACE, not a quit-and-init pair**, which is what this was first
+  and is the part worth keeping. Tearing the display down destroys the
+  platform's own window and view objects, and on iOS that left a
+  KEYBOARD NOTIFICATION aimed at an `SDL_uikitviewcontroller` that had
+  gone: the app segfaulted inside UIKit — `objc_retain` under
+  `-[SDL_uikitviewcontroller updateKeyboard]` — on the SECOND rotation,
+  from an observer nothing in this repo can see. Re-shaping touches
+  only what the hal itself allocated, and the whole class goes away.
+- **Both allocations succeed before either old one is freed**, so a
+  failed resize leaves the caller the display it already had rather
+  than none.
+- **`SDL_SetWindowSize` is called too, and on iOS that is load-bearing
+  rather than cosmetic**: `UIKit_GetSupportedOrientations` derives the
+  orientations the app is ALLOWED from the window's own aspect when the
+  window is not resizable (SDL_uikitwindow.c), so a host that has just
+  become landscape stays locked to portrait until this lands. A
+  fullscreen window keeps the screen's size regardless; what changes is
+  what SDL believes it was asked for. (The host still has to ask UIKit
+  to re-evaluate — `setNeedsUpdateOfSupportedInterfaceOrientations` —
+  which is its business, not this library's.)
+- **`prepare_assets()` is NOT re-run.** It re-homes each atlas once, in
+  place — on the device, flash .rodata into a fresh PSRAM allocation —
+  so a second pass would leak the first copy. Those pixels belong to
+  the process, not to the hal, and outlive it.
+
 ## The desktop window
 
 `update_view` fits the drawable, preserving aspect: an exact multiple

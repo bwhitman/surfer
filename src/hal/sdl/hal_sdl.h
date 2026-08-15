@@ -12,6 +12,12 @@ const surf_hal *surf_hal_sdl_init(int16_t w, int16_t h, const char *title);
  * before init. */
 struct SDL_Window *surf_hal_sdl_window(void);
 void            surf_hal_sdl_quit(void);
+/* A new framebuffer at a new shape on the SAME window, for a host whose
+ * screen changed under it (a phone turned on its side). The window,
+ * renderer and every UIKit object stay exactly as they are — see
+ * bindings/surfer/surfer_port.h for why that matters. False if the
+ * allocation fails, and the old framebuffer is then still good. */
+bool            surf_hal_sdl_resize(int16_t w, int16_t h);
 bool            surf_hal_sdl_pump(void);  /* process events; false on quit */
 
 /* Desktop keyboard → textinput plumbing. A physical keyboard is a desktop

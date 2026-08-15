@@ -894,6 +894,41 @@ int surf_screen_keyboard(int op)
     return SDL_IsScreenKeyboardShown(S.win) ? 1 : 0;
 }
 
+bool surf_hal_sdl_resize(int16_t w, int16_t h)
+{
+    if (!S.win || !S.ren || w <= 0 || h <= 0)
+        return false;
+    if (w == S.w && h == S.h)
+        return true;
+    /* BUILD BOTH BEFORE FREEING EITHER, so a failure leaves the caller
+     * with the display it already had rather than none. */
+    SDL_Texture *tex = SDL_CreateTexture(S.ren, SDL_PIXELFORMAT_RGB565,
+                                         SDL_TEXTUREACCESS_STREAMING, w, h);
+    void *fb = h_alloc_image((size_t)w * h * 2);
+    if (!tex || !fb) {
+        if (tex) SDL_DestroyTexture(tex);
+        if (fb) h_free_image(fb);
+        return false;
+    }
+    SDL_DestroyTexture(S.tex);
+    h_free_image(S.fb);
+    S.tex = tex;
+    S.fb = fb;
+    S.w = w;
+    S.h = h;
+    memset(S.fb, 0, (size_t)w * h * 2);
+    /* The WINDOW is told too, and on iOS that is the load-bearing half
+     * rather than cosmetic: UIKit_GetSupportedOrientations derives the
+     * orientations the app is allowed from the window's own aspect when
+     * the window is not resizable (SDL_uikitwindow.c), so a machine that
+     * has just become landscape stays locked to portrait until this
+     * lands. A fullscreen window ignores the size itself and keeps the
+     * screen's; what changes is what SDL believes it asked for. */
+    SDL_SetWindowSize(S.win, w, h);
+    update_view();
+    return true;
+}
+
 void surf_hal_sdl_quit(void)
 {
     if (S.fb) h_free_image(S.fb);
