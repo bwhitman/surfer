@@ -30,6 +30,10 @@ surfer.rgb(r, g, b)          # 0-255 each → packed RGB565 color int
 surfer.screenshot(path)      # dump the framebuffer as binary PPM → bool
                              # (desktop/web; on the P4 use fb_read + Python IO)
 surfer.fb_read(x, y, w, h)   # framebuffer region → RGB888 bytes, every port
+surfer.fb_image(x, y, w, h)  # ...or as an Image (a copy), every port. All four
+                             # args optional — bare, it is the whole screen.
+                             # write_png(fb_image()) is a PNG screenshot;
+                             # image_scale() into a smaller one is a thumbnail
 surfer.wheel()               # drain wheel/two-finger pushes NO scrollview took
                              # → [(x, y, dx, dy), ...]; dx/dy are pixels of
                              # content movement, x/y framebuffer pixels

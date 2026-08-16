@@ -2134,6 +2134,63 @@ static mp_obj_t mod_fb_read(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_fb_read_obj, 4, 4, mod_fb_read);
 
+/* surfer.fb_image(x=0, y=0, w=all, h=all) -> Image
+ *
+ * The framebuffer as an ordinary Image, so everything that already takes
+ * one takes a screenshot: write_png() to encode it, image_scale() to
+ * make a thumbnail, blit() to put it in something, the buffer protocol
+ * to read the bytes.
+ *
+ * THIS IS THE PIECE THAT WAS MISSING, and its absence was expensive
+ * rather than merely awkward. A caller wanting a PNG of the screen had
+ * exactly two doors and neither led anywhere: screenshot() writes a PPM
+ * and only where the port implements it (desktop and web), and
+ * write_png() takes an Image and never the screen. So the only route
+ * was fb_read() -> RGB888 bytes -> a PER-PIXEL PYTHON LOOP repacking
+ * them to 565 -> image_new. That is 42 ms of MicroPython for one
+ * 1024x546 screen on a laptop and seconds of it on an ESP32-P4, to do
+ * a job that is a memcpy per row: the framebuffer is RGB565 and so is
+ * an Image, so nothing needs converting at all.
+ *
+ * It is a COPY, not a view. A view would alias memory the compositor
+ * writes whenever anything is damaged, so the picture would change
+ * under whoever was encoding it — and freeing it would free the screen.
+ *
+ * fb_read() stays: it answers in RGB888, which is what a test comparing
+ * pixels or a caller writing a PPM actually wants, and it needs no
+ * image allocation to answer a four-pixel question. */
+static mp_obj_t mod_fb_image(size_t n_args, const mp_obj_t *args)
+{
+    if (!g_hal || !g_hal->fb_ptr)
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("no framebuffer"));
+    mp_int_t x = n_args > 0 ? mp_obj_get_int(args[0]) : 0;
+    mp_int_t y = n_args > 1 ? mp_obj_get_int(args[1]) : 0;
+    mp_int_t w = n_args > 2 ? mp_obj_get_int(args[2]) : g_scr_w - x;
+    mp_int_t h = n_args > 3 ? mp_obj_get_int(args[3]) : g_scr_h - y;
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
+        x + w > g_scr_w || y + h > g_scr_h)
+        mp_raise_ValueError(MP_ERROR_TEXT("region out of bounds"));
+    surfer_port_fb_sync_for_read();
+    int32_t stride;
+    const uint8_t *fb = g_hal->fb_ptr(&stride);
+    surf_image *img = surf_image_new((int16_t)w, (int16_t)h, SURF_FMT_RGB565);
+    if (!img)
+        mp_raise_ValueError(MP_ERROR_TEXT("image_new failed"));
+    for (mp_int_t j = 0; j < h; j++)
+        memcpy((uint8_t *)img->pixels + (size_t)j * img->stride,
+               fb + (size_t)(y + j) * stride + (size_t)x * 2,
+               (size_t)w * 2);
+    /* The CPU wrote those bytes and on the P4 the blitter reads memory,
+     * so publish them the way every other producer here does. */
+    surf_image_flush(img);
+    surfer_image_obj_t *o = mp_obj_malloc(surfer_image_obj_t,
+                                          &surfer_image_type);
+    o->img = img;
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_fb_image_obj, 0, 4,
+                                           mod_fb_image);
+
 /* surfer.frame_rate(fps) — game mode: lock tick to the panel at the
  * nearest divisor of its MEASURED refresh rate, returning the actual
  * locked fps (this panel refreshes at 69.7 Hz, so frame_rate(30) locks
@@ -3473,6 +3530,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_image_scale), MP_ROM_PTR(&mod_image_scale_obj)},
     {MP_ROM_QSTR(MP_QSTR_layer), MP_ROM_PTR(&mod_layer_obj)},
     {MP_ROM_QSTR(MP_QSTR_fb_read), MP_ROM_PTR(&mod_fb_read_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fb_image), MP_ROM_PTR(&mod_fb_image_obj)},
     {MP_ROM_QSTR(MP_QSTR_has_touch), MP_ROM_PTR(&mod_has_touch_obj)},
     {MP_ROM_QSTR(MP_QSTR__touch_info), MP_ROM_PTR(&mod_touch_info_obj)},
     {MP_ROM_QSTR(MP_QSTR_sprite), MP_ROM_PTR(&mod_sprite_obj)},
