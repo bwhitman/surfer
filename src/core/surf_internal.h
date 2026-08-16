@@ -124,6 +124,16 @@ struct surf_node {
             int32_t    len, cap;
             int32_t    caret, anchor;  /* byte idx; selection = [min..max) */
             int16_t    scroll_x;
+            /* MULTILINE (surf_textarea_new): the same buffer and the
+             * same editing, laid out with the wrap the text node
+             * already has. A textarea IS a textinput with more than one
+             * line — sharing the node keeps insert/backspace/caret/
+             * selection one implementation rather than two that agree
+             * until somebody fixes a bug in one of them. `rows` is 0
+             * for a single-line field, and every path below reduces to
+             * the old arithmetic when it is. */
+            int16_t    scroll_y;
+            int16_t    rows;     /* 0 = one line, no wrap, no y-scroll */
             char       mask;     /* != 0: draw this instead of every char */
             surf_image img;      /* atlas header copy; tint = text color */
         } input;

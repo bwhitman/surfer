@@ -45,8 +45,84 @@ static int16_t caret_x(const surf_node *n, int32_t idx)
     return x;
 }
 
+static bool multi(const surf_node *n)
+{
+    return n->u.input.rows > 0;
+}
+
+/* WHERE THE CARET IS, in a wrapped layout: (x, top of its line).
+ *
+ * Walked with surf_tlayout, which is the same iterator the paint uses
+ * and already does word wrapping — so the caret cannot disagree with
+ * the glyphs about where a line broke, which is the one bug a second
+ * implementation of wrapping guarantees.
+ *
+ * The caret sits BEFORE the glyph whose byte index it matches. At the
+ * end of a line, and at the end of the text, there is no such glyph, so
+ * the walk carries the pen and the line top forward and answers with
+ * where the NEXT glyph would have gone. */
+static void caret_xy(const surf_node *n, int32_t idx, int16_t *cx,
+                     int16_t *cy)
+{
+    const surf_font *f = n->u.input.font;
+    const char *s = n->u.input.buf ? n->u.input.buf : "";
+    int16_t lh = surf_font_line_h(f);
+    surf_tlayout it;
+    surf_tglyph tg;
+    surf_tlayout_begin(&it, f, s, n->u.input.rows ? n->w : 0,
+                       SURF_ALIGN_LEFT, 0);
+    int16_t x = 0, y = 0;
+    while (surf_tlayout_next(&it, &tg)) {
+        if (tg.byte_idx == idx) {
+            *cx = (int16_t)(tg.x - tg.g->xoff);
+            *cy = (int16_t)(it.base_y - f->ascent);
+            return;
+        }
+        if (tg.byte_idx > idx) {
+            /* THE CARET IS IN A GAP, and the commonest gap is a
+             * NEWLINE — which has no glyph, so the walk steps straight
+             * from the last character of one line to the first of the
+             * next. Answering with the glyph FOUND puts a caret sitting
+             * at the end of a line at the start of the following one:
+             * pressing Down from there then skipped a whole line, and
+             * the caret drawn while somebody typed Enter jumped ahead
+             * of the line they were opening. It belongs after the
+             * PREVIOUS glyph, which is what the carried pen is. */
+            break;
+        }
+        x = it.pen_x;
+        y = (int16_t)(it.base_y - f->ascent);
+    }
+    /* PAST THE LAST GLYPH — the commonest position there is, since it is
+     * where a caret sits while somebody types. A trailing newline has no
+     * glyph at all, so the line it opens has to be counted by hand. */
+    if (idx > 0 && s[idx - 1] == '\n') {
+        x = 0;
+        y = (int16_t)(y + lh);
+    }
+    *cx = x;
+    *cy = y;
+}
+
 static void scroll_into_view(surf_node *n)
 {
+    if (multi(n)) {
+        /* THE WINDOW FOLLOWS THE CARET, BOTH WAYS. Only chasing it
+         * downward is the bug that reads as a field which stops
+         * accepting text: type past the last row, arrow back up, and
+         * the view stays where the typing left it. */
+        int16_t lh = surf_font_line_h(n->u.input.font);
+        int16_t cx2, cy;
+        caret_xy(n, n->u.input.caret, &cx2, &cy);
+        if (cy < n->u.input.scroll_y)
+            n->u.input.scroll_y = cy;
+        else if (cy + lh > n->u.input.scroll_y + n->h)
+            n->u.input.scroll_y = (int16_t)(cy + lh - n->h);
+        if (n->u.input.scroll_y < 0)
+            n->u.input.scroll_y = 0;
+        n->u.input.scroll_x = 0;      /* wrapped text never scrolls sideways */
+        return;
+    }
     int16_t cx = caret_x(n, n->u.input.caret);
     int16_t view = (int16_t)(n->w - CARET_W - PAD);
     if (cx - n->u.input.scroll_x > view)
@@ -82,6 +158,72 @@ surf_node *surf_textinput_new(const surf_font *f, int16_t x, int16_t y,
     return n;
 }
 
+/* A MULTILINE field: the same node, laid out with a wrap and a height.
+ *
+ * It is textinput rather than a type of its own because the parts that
+ * are hard — a UTF-8 buffer, a caret, a selection, insert/backspace/
+ * delete — are identical, and two copies of those agree right up until
+ * somebody fixes a bug in one. What multiline adds is where a caret IS,
+ * which is arithmetic over the layout walker that already wraps.
+ *
+ * `rows` is remembered as well as `h` because the height is what the
+ * caller drew and the rows are what it MEANT: a face is a preference
+ * (CLAUDE.md's rule for every textgrid in this tree), so a field asked
+ * for as five lines has to be five lines of whatever face it is given. */
+surf_node *surf_textarea_new(const surf_font *f, int16_t x, int16_t y,
+                             int16_t w, int16_t rows, surf_color c)
+{
+    if (!f || w <= 0 || rows <= 0)
+        return NULL;
+    surf_node *n = surf_textinput_new(f, x, y, w, c);
+    if (!n)
+        return NULL;
+    n->u.input.rows = rows;
+    n->h = (int16_t)(rows * surf_font_line_h(f));
+    return n;
+}
+
+int16_t surf_textinput_rows(const surf_node *n)
+{
+    return is_input(n) ? n->u.input.rows : 0;
+}
+
+/* How many lines the text actually takes, wrapped — what a scrollbar
+ * needs and what "is there more than fits" is asked with. */
+int16_t surf_textinput_lines(const surf_node *n)
+{
+    if (!is_input(n))
+        return 0;
+    const surf_font *f = n->u.input.font;
+    surf_point m = surf_text_measure(f, n->u.input.buf ? n->u.input.buf : "",
+                                     n->u.input.rows ? n->w : 0);
+    int16_t lh = surf_font_line_h(f);
+    return (int16_t)(lh > 0 ? m.y / lh : 1);
+}
+
+void surf_textinput_scroll_to(surf_node *n, int16_t y)
+{
+    if (!is_input(n) || !multi(n))
+        return;
+    int16_t lh = surf_font_line_h(n->u.input.font);
+    int16_t max = (int16_t)(surf_textinput_lines(n) * lh - n->h);
+    if (max < 0)
+        max = 0;
+    if (y < 0)
+        y = 0;
+    if (y > max)
+        y = max;
+    if (y == n->u.input.scroll_y)
+        return;
+    n->u.input.scroll_y = y;
+    surf_damage_subtree(n);
+}
+
+int16_t surf_textinput_scroll_y(const surf_node *n)
+{
+    return is_input(n) ? n->u.input.scroll_y : 0;
+}
+
 void surf_textinput_set_text(surf_node *n, const char *str)
 {
     if (!is_input(n))
@@ -97,6 +239,7 @@ void surf_textinput_set_text(surf_node *n, const char *str)
     n->u.input.cap = len + 1;
     n->u.input.caret = n->u.input.anchor = len;
     n->u.input.scroll_x = 0;
+    n->u.input.scroll_y = 0;
     input_changed(n);
 }
 
@@ -203,6 +346,87 @@ void surf_textinput_move(surf_node *n, int32_t delta_cp, bool extend)
     surf_textinput_set_caret(n, i, extend);
 }
 
+/* WHICH CHARACTER IS UNDER A FINGER, in a wrapped layout.
+ *
+ * Two passes' worth of work in one walk: find the line whose band
+ * contains `local_y`, then the nearest glyph boundary on it. A tap
+ * below the last line lands at the end of the text and a tap above the
+ * first at the start, which is what dragging off the top or bottom of a
+ * field should mean.
+ */
+int32_t surf_textinput_index_from_xy(const surf_node *n, int16_t local_x,
+                                     int16_t local_y)
+{
+    if (!is_input(n) || !n->u.input.buf)
+        return 0;
+    if (!multi(n))
+        return surf_textinput_index_from_x(n, local_x);
+    const surf_font *f = n->u.input.font;
+    int16_t lh = surf_font_line_h(f);
+    int16_t want = (int16_t)(local_y + n->u.input.scroll_y);
+    surf_tlayout it;
+    surf_tglyph tg;
+    surf_tlayout_begin(&it, f, n->u.input.buf, n->w, SURF_ALIGN_LEFT, 0);
+    int32_t best = n->u.input.len;
+    bool on_line = false;
+    while (surf_tlayout_next(&it, &tg)) {
+        int16_t top = (int16_t)(it.base_y - f->ascent);
+        if (want < top) {
+            if (on_line)
+                break;                       /* past the line we wanted */
+            return tg.byte_idx;              /* above the first line */
+        }
+        if (want >= top + lh)
+            continue;                        /* still above this one */
+        if (!on_line) {
+            on_line = true;
+            best = tg.byte_idx;
+        }
+        /* The pen BEFORE this glyph is where its cell starts, so the
+         * caret goes in front of it up to the halfway point and behind
+         * it after — which is what every text field does and is why a
+         * tap on the right half of a letter puts the caret after it. */
+        int16_t x0 = (int16_t)(tg.x - tg.g->xoff);
+        if (local_x < x0 + tg.g->adv / 2)
+            return tg.byte_idx;
+        int32_t j = tg.byte_idx;
+        surf_utf8_next(n->u.input.buf, &j);
+        best = j;
+    }
+    return best;
+}
+
+/* UP AND DOWN ARE A LINE OF THE WRAPPED LAYOUT, which is the only
+ * definition that matches what is on the screen: a paragraph somebody
+ * typed as one line may be five, and moving by the newlines they typed
+ * would jump the caret past four rows they can see.
+ *
+ * NO GOAL COLUMN, deliberately: the caret's x is taken from where it IS
+ * each time, so crossing a short line and coming out the other side
+ * lands at the short line's width rather than back at the column you
+ * started from. A goal column means a remembered x on the node and
+ * every other movement invalidating it, which is a piece of state
+ * earning its keep in a code editor and not in a five-line blurb. */
+void surf_textinput_move_line(surf_node *n, int dir, bool extend)
+{
+    if (!is_input(n) || !multi(n) || !n->u.input.buf)
+        return;
+    int16_t lh = surf_font_line_h(n->u.input.font);
+    int16_t cx, cy;
+    caret_xy(n, n->u.input.caret, &cx, &cy);
+    int16_t want_y = (int16_t)(cy + dir * lh);
+    if (want_y < 0) {
+        surf_textinput_set_caret(n, 0, extend);
+        return;
+    }
+    /* index_from_xy works in the VIEW's coordinates, so the scroll goes
+     * back on before asking and the answer is a buffer index either
+     * way. */
+    int32_t at = surf_textinput_index_from_xy(
+        n, cx, (int16_t)(want_y - n->u.input.scroll_y));
+    surf_textinput_set_caret(n, at, extend);
+}
+
 int32_t surf_textinput_index_from_x(const surf_node *n, int16_t local_x)
 {
     if (!is_input(n) || !n->u.input.buf)
@@ -291,23 +515,50 @@ void surf_textinput_paint(const surf_paint_ent *e)
             prev = m;
         }
     } else {
+        int16_t sy = n->u.input.scroll_y;
+        int16_t lh = surf_font_line_h(f);
         surf_tlayout it;
         surf_tglyph tg;
-        surf_tlayout_begin(&it, f, s, 0, SURF_ALIGN_LEFT, 0);
+        /* THE SAME WALKER THE CARET USES, with the node's own width as
+         * the wrap where this is multiline — so a line breaks in one
+         * place rather than two. */
+        surf_tlayout_begin(&it, f, s, n->u.input.rows ? n->w : 0,
+                           SURF_ALIGN_LEFT, 0);
         while (surf_tlayout_next(&it, &tg)) {
             if (tg.g->w <= 0)
                 continue;
+            /* Whole lines above and below the window are skipped rather
+             * than blitted and clipped: a 2 KB blurb in a five-line box
+             * is mostly off-screen, and `vis` would otherwise reject
+             * every glyph of it one at a time. */
+            if (n->u.input.rows) {
+                int16_t top = (int16_t)(it.base_y - f->ascent);
+                if (top + lh <= sy)
+                    continue;
+                if (top - sy >= n->h)
+                    break;
+            }
             surf_image im =
                 surf_glyph_image(&n->u.input.img, f, tg.font);
             surf_glyph_blit(&im, tg.g,
                             (int16_t)(e->ax + tg.x - sx),
-                            (int16_t)(e->ay + tg.y), e->vis);
+                            (int16_t)(e->ay + tg.y - sy), e->vis);
         }
     }
 
     if (n->flags & SURF_NF_FOCUS) {
-        int16_t cx = (int16_t)(caret_x(n, n->u.input.caret) - sx);
-        surf_rect caret = {(int16_t)(e->ax + cx), e->ay, CARET_W, n->h};
+        int16_t cx, cy;
+        if (multi(n)) {
+            caret_xy(n, n->u.input.caret, &cx, &cy);
+            cy = (int16_t)(cy - n->u.input.scroll_y);
+        } else {
+            cx = caret_x(n, n->u.input.caret);
+            cy = 0;
+        }
+        cx = (int16_t)(cx - sx);
+        int16_t ch = multi(n) ? surf_font_line_h(f) : n->h;
+        surf_rect caret = {(int16_t)(e->ax + cx), (int16_t)(e->ay + cy),
+                           CARET_W, ch};
         caret = surf_rect_intersect(caret, e->vis);
         if (!surf_rect_empty(caret))
             surf_g.hal->fill(caret, n->u.input.img.tint);

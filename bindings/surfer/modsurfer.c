@@ -829,8 +829,31 @@ static mp_obj_t node_key(mp_obj_t self_in, mp_obj_t k)
     case SURFER_KEY_END:       surf_textinput_move(n, 99999, shift); break;
     case SURFER_KEY_BACKSPACE: surf_textinput_backspace(n); break;
     case SURFER_KEY_DELETE:    surf_textinput_delete(n); break;
+    case SURFER_KEY_ENTER:
+        /* A NEW LINE IN A MULTILINE FIELD, AND THE CALLER'S OTHERWISE.
+         * A one-line field's Enter has always meant `submit` — every
+         * host here binds it — so taking it would break every one of
+         * them; in a textarea it can only mean a line break, and a
+         * caller that had to special-case that would be writing the one
+         * thing the widget is for. False still means "not handled",
+         * which is how the single-line answer stays exactly as it was. */
+        if (!surf_textinput_rows(n))
+            return mp_const_false;
+        surf_textinput_insert(n, "\n");
+        break;
+    case SURFER_KEY_UP:
+    case SURFER_KEY_DOWN: {
+        /* UP AND DOWN ARE A LINE, and only a wrapped field can say what
+         * a line is: the caret's own x carried to the row above or
+         * below, through the same layout the glyphs were painted with.
+         * A single-line field has nowhere to go and says so. */
+        if (!surf_textinput_rows(n))
+            return mp_const_false;
+        surf_textinput_move_line(n, kind == SURFER_KEY_UP ? -1 : 1, shift);
+        break;
+    }
     default:
-        return mp_const_false;   /* Enter, PgUp/Dn, arrows up/down: yours */
+        return mp_const_false;   /* PgUp/Dn and the rest: yours */
     }
     return mp_const_true;
 }
@@ -933,9 +956,17 @@ static void ti_touch(surf_node *n, const surf_touch *t, void *user)
     if (t->phase != SURF_TOUCH_UP) {
         int16_t ax, ay;
         surf_node_abs_pos(n, &ax, &ay);
-        surf_textinput_set_caret(n,
-                                 surf_textinput_index_from_x(n, (int16_t)(t->x - ax)),
-                                 t->phase == SURF_TOUCH_MOVE);
+        /* TWO DIMENSIONS WHERE THERE ARE TWO. `index_from_xy` is the
+         * single-line call for a single-line field, so this is one
+         * branch in the widget rather than one in every caller — and a
+         * caller could not make it anyway, since `local_y` needs the
+         * node's ABSOLUTE position and Python cannot walk up the tree
+         * to find it. That gap is why tulip5's hand-rolled box had no
+         * tap-to-place-the-caret at all. */
+        surf_textinput_set_caret(
+            n, surf_textinput_index_from_xy(n, (int16_t)(t->x - ax),
+                                            (int16_t)(t->y - ay)),
+            t->phase == SURF_TOUCH_MOVE);
     }
     if (o->touch_cb != mp_const_none)
         node_touch_tramp(n, t, user);
@@ -947,6 +978,26 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
     if (!o->node) {
         if (dest[0] == MP_OBJ_NULL)
             dest[1] = MP_OBJ_SENTINEL;
+        return;
+    }
+    if (o->is_input && dest[0] == MP_OBJ_NULL) {
+        switch (attr) {
+        case MP_QSTR_rows:                 /* 0 = a single-line field */
+            dest[0] = MP_OBJ_NEW_SMALL_INT(surf_textinput_rows(o->node));
+            return;
+        case MP_QSTR_lines:                /* what the TEXT takes, wrapped */
+            dest[0] = MP_OBJ_NEW_SMALL_INT(surf_textinput_lines(o->node));
+            return;
+        case MP_QSTR_scroll_y:
+            dest[0] = MP_OBJ_NEW_SMALL_INT(surf_textinput_scroll_y(o->node));
+            return;
+        default:
+            break;
+        }
+    }
+    if (o->is_input && dest[0] != MP_OBJ_NULL && attr == MP_QSTR_scroll_y) {
+        surf_textinput_scroll_to(o->node, (int16_t)mp_obj_get_int(dest[1]));
+        dest[0] = MP_OBJ_NULL;
         return;
     }
     if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_on_touch) {
@@ -2876,6 +2927,44 @@ static mp_obj_t mod_textinput(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_textinput_obj, 3, 5, mod_textinput);
 
+/* surfer.textarea(x, y, w, rows, color=, font=) -> Node
+ *
+ * The MULTILINE field, and the thing every host was hand-rolling
+ * without one. textinput is a LINE, so a paragraph meant a textgrid
+ * with a caret painted into it by hand — which is monospaced by
+ * construction (a textgrid refuses a proportional face), re-wrapped in
+ * the host language on every keystroke, and a second opinion about
+ * where a word breaks.
+ *
+ * This is the same node as textinput with a wrap and a height, so the
+ * buffer, the caret, the selection and every edit are the ones already
+ * there — and the wrap is `surf_tlayout`'s, the walker the label and
+ * the paint already use. Proportional faces, kerning and the emoji
+ * fallback all come free for exactly that reason.
+ *
+ * `rows` is LINES, not pixels: a face is the host's preference, so a
+ * field asked for as five lines is five lines of whatever it is given.
+ * Enter is the caller's — `node.key()` returns False for it, the way it
+ * always has — because only the caller knows whether Enter means a new
+ * line or `submit`. */
+static mp_obj_t mod_textarea(size_t n_args, const mp_obj_t *args)
+{
+    surf_color c = n_args > 4 ? (surf_color)mp_obj_get_int(args[4])
+                              : SURF_RGB(240, 242, 248);
+    mp_obj_t fref = mp_const_none;
+    const surf_font *f = n_args > 5 ? font_arg(args[5], &fref)
+                                    : font_named(DEFAULT_FONT);
+    surfer_node_obj_t *o = new_node_obj(surf_textarea_new(
+        f, mp_obj_get_int(args[0]), mp_obj_get_int(args[1]),
+        mp_obj_get_int(args[2]), mp_obj_get_int(args[3]), c));
+    o->img_ref = fref;
+    o->is_input = true;
+    surf_node_set_on_touch(o->node, ti_touch, o);
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_textarea_obj, 4, 6,
+                                           mod_textarea);
+
 /* ---- Font (runtime textgrid font) ---- */
 
 static mp_obj_t font_destroy(mp_obj_t self_in)
@@ -3539,6 +3628,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_label), MP_ROM_PTR(&mod_label_obj)},
     {MP_ROM_QSTR(MP_QSTR_text_image), MP_ROM_PTR(&mod_text_image_obj)},
     {MP_ROM_QSTR(MP_QSTR_textinput), MP_ROM_PTR(&mod_textinput_obj)},
+    {MP_ROM_QSTR(MP_QSTR_textarea), MP_ROM_PTR(&mod_textarea_obj)},
     {MP_ROM_QSTR(MP_QSTR_textgrid), MP_ROM_PTR(&mod_textgrid_obj)},
     {MP_ROM_QSTR(MP_QSTR_font), MP_ROM_PTR(&mod_font_obj)},
     {MP_ROM_QSTR(MP_QSTR_fonts), MP_ROM_PTR(&mod_fonts_obj)},

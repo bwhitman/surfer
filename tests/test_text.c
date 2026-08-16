@@ -312,6 +312,82 @@ static void test_bake(void)
     OK(surf_text_bake(NULL, "A", 0, 0) == NULL);
 }
 
+/* THE MULTILINE FORM. A textarea is a textinput with more than one
+ * line, sharing the node so that the buffer, the caret and every edit
+ * are one implementation — so what is worth checking here is only the
+ * part that differs: where a caret IS once the text wraps, and that a
+ * single-line field is untouched by any of it. */
+static void test_textarea(void)
+{
+    fresh(200, 100, 32);
+
+    /* tfont is 10 wide and 16 tall, so 50px is five characters a line. */
+    surf_node *n = surf_textarea_new(&tfont, 10, 10, 50, 3,
+                                     SURF_RGB(255, 255, 255));
+    OK(n && n->w == 50 && n->h == 3 * 16);
+    OK(surf_textinput_rows(n) == 3);
+    surf_node_add(surf_screen(), n);
+
+    /* ROWS ARE WHAT IT SHOWS; LINES ARE WHAT THE TEXT TAKES. A caller
+     * asking "is there more than fits" needs both and they are not the
+     * same number. */
+    surf_textinput_set_text(n, "AB");
+    OK(surf_textinput_lines(n) == 1);
+    surf_textinput_set_text(n, "AAAAA BBBBB CCCCC DDDDD");
+    OK(surf_textinput_lines(n) == 4);
+
+    /* A TYPED NEWLINE IS A LINE, even when nothing wrapped. */
+    surf_textinput_set_text(n, "A\nB\nC");
+    OK(surf_textinput_lines(n) == 3);
+
+    /* THE WINDOW FOLLOWS THE CARET, BOTH WAYS — the bug that reads as a
+     * field which has stopped accepting text is only chasing it down. */
+    surf_textinput_set_text(n, "A\nB\nC\nD\nE");   /* 5 lines in a 3-line box */
+    OK(surf_textinput_scroll_y(n) == 2 * 16);
+    surf_textinput_set_caret(n, 0, false);
+    OK(surf_textinput_scroll_y(n) == 0);
+
+    /* UP AND DOWN ARE A LINE OF THE WRAPPED LAYOUT, and there is NO
+     * goal column: the x is taken from where the caret is each time, so
+     * crossing a short line lands at that line's width rather than
+     * coming back out at the column it started from. */
+    surf_textinput_set_text(n, "AAAAA\nB\nCCCCC");
+    surf_textinput_set_caret(n, 3, false);        /* line 0, column 3 */
+    surf_textinput_move_line(n, 1, false);
+    OK(surf_textinput_caret(n) == 7);             /* line 1 is one char long */
+    surf_textinput_move_line(n, 1, false);
+    OK(surf_textinput_caret(n) == 9);             /* ...so col 1 on line 2 */
+    surf_textinput_move_line(n, -99, false);
+    OK(surf_textinput_caret(n) == 0);
+
+    /* A CARET AT THE END OF A LINE IS ON THAT LINE, not on the next
+     * one. A newline has no glyph, so the layout walk steps straight
+     * over it — answering with the glyph it FOUND put the caret a whole
+     * line ahead, which is what made Down skip a line from there. */
+    surf_textinput_set_text(n, "AAAAA\nBBBBB");
+    surf_textinput_set_caret(n, 5, false);        /* just before the \n */
+    surf_textinput_move_line(n, 1, false);
+    OK(surf_textinput_caret(n) == 11);            /* end of line 1, not past */
+
+    /* A TAP LANDS ON THE LINE IT WAS AIMED AT, which a single-line hit
+     * test cannot answer at all. */
+    surf_textinput_set_text(n, "AAAAA\nBBBBB");
+    OK(surf_textinput_index_from_xy(n, 0, 2) == 0);
+    OK(surf_textinput_index_from_xy(n, 0, 18) == 6);
+    OK(surf_textinput_index_from_xy(n, 100, 18) == 11);
+
+    /* AND A ONE-LINE FIELD IS UNTOUCHED BY ANY OF IT. */
+    surf_node *one = surf_textinput_new(&tfont, 0, 0, 50,
+                                        SURF_RGB(255, 255, 255));
+    surf_textinput_set_text(one, "AAAAAAAAAA");
+    OK(surf_textinput_rows(one) == 0);
+    OK(surf_textinput_lines(one) == 1);
+    OK(surf_textinput_scroll_y(one) == 0);
+    surf_textinput_move_line(one, 1, false);       /* nowhere to go */
+    OK(surf_textinput_caret(one) == 10);
+    OK(surf_textarea_new(&tfont, 0, 0, 50, 0, 0) == NULL);
+}
+
 void run_text_tests(void)
 {
     mkfont();
@@ -319,6 +395,7 @@ void run_text_tests(void)
     test_measure();
     test_label();
     test_textinput();
+    test_textarea();
     test_fallback_lookup();
     test_fallback_label();
     test_bake();

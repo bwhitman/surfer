@@ -694,6 +694,22 @@ void        surf_textinput_set_focused(surf_node *n, bool focused);
  * buffer is untouched — surf_textinput_text() still returns what was
  * typed — and the caret, the hit test and the paint all measure the mask,
  * so the caret lands where the asterisks are. */
+/* ...and the MULTILINE form: the same node, laid out with the wrap the
+ * text node already has and a height in LINES. A textarea is a
+ * textinput with more than one line — sharing the node keeps the
+ * buffer, the caret, the selection and every edit one implementation
+ * rather than two. `rows` in lines of the face it is given, because a
+ * face is the host's preference and a field asked for as five lines has
+ * to be five lines of whatever that turns out to be. */
+surf_node  *surf_textarea_new(const surf_font *f, int16_t x, int16_t y,
+                              int16_t w, int16_t rows, surf_color c);
+int16_t     surf_textinput_rows(const surf_node *n);   /* 0 = single line */
+int16_t     surf_textinput_lines(const surf_node *n);  /* wrapped, of text */
+void        surf_textinput_scroll_to(surf_node *n, int16_t y);
+int16_t     surf_textinput_scroll_y(const surf_node *n);
+int32_t     surf_textinput_index_from_xy(const surf_node *n, int16_t local_x,
+                                         int16_t local_y);
+void        surf_textinput_move_line(surf_node *n, int dir, bool extend);
 void        surf_textinput_set_mask(surf_node *n, char c);
 char        surf_textinput_mask(const surf_node *n);
 
