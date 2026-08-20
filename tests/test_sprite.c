@@ -327,6 +327,129 @@ static void test_filmstrip_xform(void)
     OK(surf_node_size(n).x == 8 && surf_node_size(n).y == 8);
 }
 
+/* ---- set_image: swapping the picture on a node that already exists ----
+ *
+ * The whole point is that this is NOT a new node, so what the test has
+ * to prove is that everything hanging off the node survived and that
+ * the compositor was told about the rect the node VACATED. A two-line
+ * assignment passes every "is it drawing the new picture" check and
+ * leaves the old one on screen wherever the new one is smaller. */
+static bool dirty_covers(surf_rect want)
+{
+    for (int i = 0; i < surf_g.dirty.n; i++) {
+        surf_rect r = surf_rect_intersect(surf_g.dirty.r[i], want);
+        if (r.w == want.w && r.h == want.h)
+            return true;
+    }
+    return false;
+}
+
+static bool composed_from(const surf_image *img)
+{
+    for (int i = 0; i < nops; i++)
+        if (ops[i].imgv.pixels == img->pixels)
+            return true;
+    return false;
+}
+
+static uint16_t px_big[48 * 40], px_small[16 * 12];
+static const surf_image img_big = {
+    .pixels = px_big, .w = 48, .h = 40, .stride = 48 * 2,
+    .format = SURF_FMT_RGB565, .opaque = false,
+};
+static const surf_image img_small = {
+    .pixels = px_small, .w = 16, .h = 12, .stride = 16 * 2,
+    .format = SURF_FMT_RGB565, .opaque = false,
+};
+
+static void test_sprite_set_image(void)
+{
+    fresh(200, 200, 32);
+    surf_node *s = surf_sprite_new(&img_big, 10, 10);
+    surf_node_add(surf_screen(), s);
+    surf_tick();
+
+    /* the same picture is a no-op — nothing to repaint */
+    surf_g.dirty.n = 0;
+    OK(surf_sprite_set_image(s, &img_big));
+    OK(surf_g.dirty.n == 0);
+
+    /* ...and a different one damages what it LEAVES as well as what it
+     * takes, or the 48x40 stays on screen round the new 16x12 */
+    surf_g.dirty.n = 0;
+    nops = 0;
+    OK(surf_sprite_set_image(s, &img_small));
+    OK(dirty_covers((surf_rect){10, 10, 48, 40}));
+    OK(surf_node_size(s).x == 16 && surf_node_size(s).y == 12);
+    surf_tick();
+    OK(composed_from(&img_small));
+    OK(!composed_from(&img_big));
+
+    /* the src window is the new picture WHOLE, whatever it was before */
+    surf_sprite_set_src(s, (surf_rect){2, 2, 8, 8});
+    OK(surf_sprite_set_image(s, &img_big));
+    OK(surf_node_size(s).x == 48 && surf_node_size(s).y == 40);
+
+    /* a band shift belongs to the picture it shifted: left set, the
+     * next set_src refreshes a band out of an image that is gone */
+    surf_sprite_set_fast_pan(s, true);
+    s->u.sprite.pan_shifted = true;
+    OK(surf_sprite_set_image(s, &img_small));
+    OK(!s->u.sprite.pan_shifted);
+
+    /* THE NODE'S OWN PROPERTIES SURVIVE. A swap that reset them would
+     * make a state change cost a rebuild by another route. */
+    surf_sprite_set_xform(s, SURF_ONE * 2, 1, 0);
+    OK(surf_hitbox_add(s, 1, 2, 3, 4) == 0);
+    OK(surf_sprite_set_image(s, &img_big));
+    OK(surf_sprite_scale(s) == SURF_ONE * 2 && surf_sprite_rot(s) == 1);
+    /* 48x40 doubled, sides swapped by the quarter turn */
+    OK(surf_node_size(s).x == 80 && surf_node_size(s).y == 96);
+    OK(surf_hitbox_count(s) == 1);
+
+    /* nothing else can hold a picture, and saying so beats dropping it */
+    surf_node *r = surf_rect_new(0, 0, 10, 10, 0xf800);
+    surf_node_add(surf_screen(), r);
+    OK(!surf_sprite_set_image(r, &img_big));
+    OK(!surf_sprite_set_image(s, NULL));
+    OK(!surf_sprite_set_image(NULL, &img_big));
+    surf_node_destroy(r);
+    surf_node_destroy(s);
+}
+
+/* A strip swap keeps the CEL SIZE and recounts the frames — trading a
+ * walk cycle for a death cycle at the same size is one call. */
+static void test_filmstrip_set_image(void)
+{
+    fresh(200, 200, 32);
+    /* 48x40 at 16x20 cels: 3 across, 2 down = 6 */
+    surf_node *f = surf_filmstrip_new(&img_big, 16, 20, 0, 0);
+    surf_node_add(surf_screen(), f);
+    surf_filmstrip_set_fps(f, SURF_ONE * 10);
+    surf_filmstrip_set_frame(f, 5);
+    surf_tick();
+    OK(f->u.strip.nframes == 6 && surf_filmstrip_frame(f) == 5);
+
+    /* the short strip holds one cel: the frame has to come back inside */
+    OK(!surf_sprite_set_image(f, &img_small));  /* 16x12 -- too SHORT */
+    OK(f->u.strip.nframes == 6 && surf_filmstrip_frame(f) == 5);  /* refused */
+
+    static uint16_t px_two[32 * 20];
+    static const surf_image two = {
+        .pixels = px_two, .w = 32, .h = 20, .stride = 32 * 2,
+        .format = SURF_FMT_RGB565, .opaque = false,
+    };
+    OK(surf_sprite_set_image(f, &two));
+    OK(f->u.strip.nframes == 2 && surf_filmstrip_frame(f) == 1);
+    OK(surf_node_size(f).x == 16 && surf_node_size(f).y == 20);  /* cel kept */
+    /* the TRANSPORT is the node's: a playing strip keeps playing */
+    OK(surf_filmstrip_fps(f) == SURF_ONE * 10 && surf_filmstrip_playing(f));
+    nops = 0;
+    surf_tick();
+    OK(composed_from(&two));
+    surf_node_destroy(f);
+}
+
 void run_sprite_tests(void)
 {
     test_filmstrip_play();
@@ -335,6 +458,8 @@ void run_sprite_tests(void)
     test_image_flush();
     test_sprite_pan_damages_other_branches();
     test_sprite_pan_skips_hidden_branches();
+    test_sprite_set_image();
+    test_filmstrip_set_image();
     fresh(200, 200, 16);
     surf_node *s = surf_sprite_new(&img64, 10, 10);
     surf_node_add(surf_screen(), s);

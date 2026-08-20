@@ -469,6 +469,25 @@ void surf_node_set_hidden(surf_node *n, bool hidden);
 void surf_rect_set_color(surf_node *n, surf_color c);
 void surf_rect_set_size(surf_node *n, int16_t w, int16_t h);
 void surf_sprite_set_src(surf_node *n, surf_rect src);
+/* SWAP THE PICTURE. A sprite's image used to be fixed at birth, so a
+ * slime that died meant destroying its node and building another in its
+ * place — and the cheap answer (both states in one image, set_src
+ * picking a cell) only covers pictures somebody baked together. This
+ * covers the rest: two files, two sizes, an image rendered at runtime.
+ *
+ * The src window RESETS to the whole new picture, which is what the
+ * constructor would have given, and the node's footprint follows —
+ * scale, rotation, mirror, hitboxes, fast_pan and the filmstrip's
+ * transport all stay, because they are the NODE's and not the
+ * picture's. Both old and new rects are damaged. Swapping in the image
+ * already there is a no-op and does NOT reset a src window.
+ *
+ * On a FILMSTRIP the declared frame size stays and the frame COUNT is
+ * recomputed from the new strip (the frame clamps into it), so trading
+ * a walk cycle for a death cycle at the same cel size is one call.
+ * False means nothing changed: no node, not a sprite or filmstrip, no
+ * image, or a strip too small to hold one frame. */
+bool surf_sprite_set_image(surf_node *n, const surf_image *img);
 /* Fast pan (opt-in): when only src.x/src.y change on an identity,
  * opaque, unclipped, fully-on-screen sprite — a camera window over a
  * big baked world image — the move becomes one hal band_shift plus

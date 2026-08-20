@@ -395,6 +395,68 @@ the frame's own cell**, and that going back to 1:1 returns to the plain
 blit — a fast path lost to a node that merely COULD be transformed is a
 cost nobody would notice until the panel.
 
+## A sprite's picture is NOT fixed at birth any more
+
+`surf_sprite_new(const surf_image *img, ...)` took the image and nothing
+ever repointed it, so a slime that died meant **destroying the node and
+building another in its place**. Reported from a Tulip in exactly those
+words, and the answer up to now was the cheap one: bake both states into
+one image and `set_src` a cell. That really is cheaper — one decode, one
+allocation, one thing the compositor tracks, and it is how the widgets,
+a 52-card deck and an icon set are all drawn — but it only covers
+pictures somebody baked TOGETHER. Two files, two sizes, or an image
+rendered at runtime had no answer at all.
+
+`surf_sprite_set_image(n, img)` -> bool, `node.set_image(img)` from
+Python. Sprites and filmstrips both, for the reason the xform above
+shares one implementation: past the source rect they are the same
+picture-on-a-node.
+
+- **The src window RESETS to the whole new picture**, which is what the
+  constructor would have given, and the footprint follows. Keeping a
+  window into the OLD image would be a cell number that means nothing
+  in the new one. Swapping in the image already there is a NO-OP and
+  deliberately does not reset a window — every other setter here
+  early-returns on no change, and a caller wanting the whole picture
+  can say `set_src` in the same breath.
+- **DAMAGE BOTH RECTS, old before the write and new after** —
+  `set_src`'s own slow path. The two-line assignment version passes
+  every "is it drawing the new picture" check and leaves the old one on
+  screen wherever the new one is SMALLER, which is the shape of bug
+  that reads as a compositor fault.
+- **`pan_shifted` is cleared.** It is a claim about a band shift of the
+  picture that just left; left set, the next `set_src` refreshes a band
+  out of an image nothing points at.
+- **Everything the CALLER put on the node stays** — scale, rotation,
+  mirror, hitboxes, fast_pan, and a strip's fps and transport. Those
+  describe how the node behaves, not what it is a picture of, and a
+  swap that reset them would make the cheap thing (a state change) cost
+  the expensive thing (a rebuild) by another route, which is the whole
+  reason this exists. Hitboxes are the one worth arguing about, since
+  boxes drawn round a live slime may not fit a dead one — but only the
+  caller knows that, and clearing them silently is the worse failure: a
+  node that has quietly stopped colliding looks perfect.
+- **A strip smaller than its own cel is REFUSED**, the check
+  `surf_filmstrip_new` already makes at construction, because a
+  filmstrip with zero frames draws from a source rect that is not in
+  the image. On a strip the cel size is kept and the frame COUNT is
+  recomputed, the frame clamping into it — so a walk cycle becomes a
+  death cycle in one call.
+- **THE BINDING'S OWN HALF IS `img_ref`**, and it is why this could not
+  be a one-liner over the core call: a node object anchors the Image
+  object it draws from, so a swap that moved the C pointer and left the
+  reference behind would root the picture nobody draws and leave the
+  new one collectable — pixels freed under a live sprite, which on a
+  Tulip is an exit with status 0 and no traceback anywhere. Rebound
+  AFTER the core call takes it, never before, so a refusal cannot
+  repoint the anchor. Python RAISES rather than returning False:
+  every way it can fail is a mistake in the calling line, and a
+  silently unchanged picture is precisely what `surf_sprite_set_xform`
+  spent a release doing.
+
+`test_sprite_set_image` and `test_filmstrip_set_image` cover the
+vacated rect, the surviving properties, the clamp and both refusals.
+
 ## hits() counts INK, not the box
 
 `surf_node_overlaps` (Python: `a.hits(b)`) reads the pixels now. Boxes

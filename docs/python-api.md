@@ -164,7 +164,21 @@ s.fast_scroll(True)   # ...and pan it as one DMA band shift per frame —
                       # frame; overlay sprites must be later siblings).
                       # Measured on the P4: forest walking went 20 -> 240
                       # fps compute rate this way.
+
+s.set_image(other)    # SHOW A DIFFERENT PICTURE on the same node — the
+                      # slime that just died, without destroying its
+                      # sprite and building another in its place. The
+                      # src window resets to the new picture whole and
+                      # `w`/`h` follow; scale, rot, mirror, hitboxes and
+                      # fast_scroll stay, because they are the NODE's.
 ```
+
+Two pictures somebody baked side by side in one image are still cheaper —
+`set_src` picks a cell with no second decode and no second allocation, and
+that is how the widgets, a card deck and an icon set are all drawn.
+`set_image` is for the rest: two files, two sizes, or an image rendered at
+runtime.
+
 
 ## Filmstrips (animation)
 
@@ -181,6 +195,12 @@ f.frame = 2           # pick a cel; clamped to the last one
 f.fps = 12.0          # ...or play it: advances from tick() and wraps
 f.fps = 0             # back to manual — what a cel EDITOR wants
 ```
+
+`set_image` works here too and keeps the **cel size**, recounting the
+frames from the new strip — so trading a walk cycle for a death cycle at
+the same size is one call, and the fps and the transport carry over. A
+strip too small to hold one frame is refused rather than left drawing
+from nowhere.
 
 `fps` 0 is the default and hands the frame to the caller, which is also
 what a game stepping a walk cycle off its own physics wants. A playing

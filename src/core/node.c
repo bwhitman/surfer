@@ -692,6 +692,64 @@ bool surf_node_overlaps(const surf_node *a, const surf_node *b)
     return false;
 }
 
+/* SWAP THE PICTURE — see the header for the contract.
+ *
+ * The obvious shape is a two-line assignment, and it is wrong twice.
+ * The FOOTPRINT can change (a different-sized picture, and on a strip a
+ * different frame count), so the old rect has to be damaged BEFORE the
+ * write and the new one after — set_src's own slow path, which is the
+ * only ordering that repaints what the node is vacating. And
+ * `pan_shifted` is a claim about a band shift of the OLD picture: left
+ * set, the next set_src would refresh a band from a strip that is no
+ * longer there.
+ *
+ * What deliberately does NOT change is everything the caller put on the
+ * node. A transform, hitboxes, fast_pan and a filmstrip's fps and
+ * transport describe how this node behaves, not what it is a picture
+ * of; a swap that reset them would make the cheap thing (a state
+ * change) do the expensive thing (rebuild the node) by another route,
+ * which is what this exists to avoid. Hitboxes are the one to think
+ * about — boxes drawn round a live slime may not fit a dead one — but
+ * only the caller knows, and clearing them silently is the worse
+ * failure: a node that has quietly stopped colliding looks perfect. */
+bool surf_sprite_set_image(surf_node *n, const surf_image *img)
+{
+    if (!n || !img)
+        return false;
+    if (n->type == SURF_NODE_SPRITE) {
+        if (n->u.sprite.img == img)
+            return true;
+        surf_damage_subtree(n);
+        n->u.sprite.pan_shifted = false;
+        n->u.sprite.img = img;
+        n->u.sprite.src = (surf_rect){0, 0, img->w, img->h};
+        sprite_update_size(n);
+        surf_damage_subtree(n);
+        return true;
+    }
+    if (n->type == SURF_NODE_FILMSTRIP) {
+        /* A strip that cannot hold one frame would compute nframes 0,
+         * and a filmstrip with no frames draws from a source rect that
+         * is not in the image. surf_filmstrip_new refuses the same
+         * thing at construction; this refuses it at the swap. */
+        if (img->w < n->u.strip.fw || img->h < n->u.strip.fh)
+            return false;
+        if (n->u.strip.img == img)
+            return true;
+        surf_damage_subtree(n);
+        n->u.strip.img = img;
+        n->u.strip.per_row = (int16_t)(img->w / n->u.strip.fw);
+        n->u.strip.nframes = (int16_t)(n->u.strip.per_row *
+                                       (img->h / n->u.strip.fh));
+        if (n->u.strip.frame >= n->u.strip.nframes)
+            n->u.strip.frame = (int16_t)(n->u.strip.nframes - 1);
+        sprite_update_size(n);
+        surf_damage_subtree(n);
+        return true;
+    }
+    return false;
+}
+
 void surf_sprite_set_fast_pan(surf_node *n, bool on)
 {
     if (n && n->type == SURF_NODE_SPRITE)

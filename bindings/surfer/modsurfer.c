@@ -631,6 +631,41 @@ static mp_obj_t node_set_src(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_set_src_obj, 5, 5, node_set_src);
 
+/* sprite.set_image(img) / filmstrip.set_image(img) — show a DIFFERENT
+ * picture on the node that is already there.
+ *
+ * The binding's own half of this is `img_ref`, and it is the whole
+ * reason this cannot be a one-liner over the core call: a node object
+ * anchors the Image object it draws from, so a swap that moved the C
+ * pointer and left the reference behind would root the picture nobody
+ * is drawing and leave the new one collectable — and an Image collected
+ * out from under a live sprite is pixels freed while the compositor
+ * still blits them, which on this machine is an exit with status 0 and
+ * no traceback anywhere. Rebound after the core call takes it, never
+ * before: a refusal must not repoint the anchor.
+ *
+ * It RAISES rather than returning False, because every reason it can
+ * fail is a mistake in the calling line — a label instead of a sprite,
+ * a strip narrower than the frame size it was built with — and a
+ * silently unchanged picture is the failure mode surf_sprite_set_xform
+ * spent a release having (the code looks right and the picture never
+ * moves). */
+static mp_obj_t node_set_image(mp_obj_t self_in, mp_obj_t img_in)
+{
+    if (!mp_obj_is_type(img_in, &surfer_image_type))
+        mp_raise_TypeError(MP_ERROR_TEXT("expected surfer Image"));
+    surfer_image_obj_t *io = MP_OBJ_TO_PTR(img_in);
+    if (!io->img)
+        mp_raise_ValueError(MP_ERROR_TEXT("image destroyed"));
+    surfer_node_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (!surf_sprite_set_image(node_of(self_in), io->img))
+        mp_raise_ValueError(MP_ERROR_TEXT(
+            "set_image wants a sprite or a filmstrip big enough for its frame"));
+    o->img_ref = img_in;
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(node_set_image_obj, node_set_image);
+
 /* layer.set_offset(px) — float pixels; wraps at the strip width */
 static mp_obj_t node_set_offset(mp_obj_t self_in, mp_obj_t off)
 {
@@ -882,6 +917,7 @@ static const mp_rom_map_elem_t node_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_history), MP_ROM_PTR(&node_history_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_offset), MP_ROM_PTR(&node_set_offset_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_src), MP_ROM_PTR(&node_set_src_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_image), MP_ROM_PTR(&node_set_image_obj)},
     {MP_ROM_QSTR(MP_QSTR_fast_scroll), MP_ROM_PTR(&node_fast_scroll_obj)},
     {MP_ROM_QSTR(MP_QSTR_scroll_to), MP_ROM_PTR(&node_scroll_to_obj)},
     {MP_ROM_QSTR(MP_QSTR_scroll_offset), MP_ROM_PTR(&node_scroll_offset_obj)},
