@@ -514,23 +514,60 @@ bool surf_node_can_fade(const surf_node *n);
 bool surf_node_set_opacity(surf_node *n, uint8_t opa);  /* false: wrong type */
 uint8_t surf_node_opacity(const surf_node *n);          /* 255 where unsupported */
 
-/* ...AND OVER TIME. surf_tick drives the tween, so the app writes one
- * line and never touches it again — no per-frame clock arithmetic, and
- * it keeps running through frames the app itself is not being called
- * for. Same machinery as a playing filmstrip and ticked beside it.
+/* ...AND OVER TIME, along with everything else a node can be moved by.
  *
- * Linear, deliberately: a fade is the one tween where an ease buys
- * nothing anybody can see, and easing curves are a menu that never
- * stops growing.
+ * `surf_node_tween(n, prop, to, ms, ease)` walks ONE property to a
+ * value. surf_tick drives it, so the app writes one line and never
+ * holds a clock, and it keeps running through frames the app itself is
+ * not being called for — a screen backgrounded mid-move comes back
+ * finished rather than frozen half way. Same machinery as a playing
+ * filmstrip, ticked beside it.
  *
- * A DIRECT surf_node_set_opacity() CANCELS a running fade — otherwise
- * the tween would overwrite it on the next tick and the write would look
- * like it did nothing. Starting a fade replaces any fade already on that
- * node, destroying a node cancels its fade, and ms <= 0 lands on the end
- * value at once. It does NOT hide the node at the end: opacity 0 already
- * paints nothing and never reaches the hal, and auto-hiding would
- * silently change hit testing, which the opacity note above promises it
- * never does. */
+ * SEVERAL AT ONCE ON ONE NODE, because the table is keyed by (node,
+ * property): a dying enemy drifts up and fades, which is two tweens.
+ * Starting a second on the SAME property replaces it, which is what
+ * reversing a fade mid-flight means.
+ *
+ * `to` IS Q16 FOR EVERY PROPERTY — SURF_TW_OPACITY 0..255<<16, X and Y
+ * in pixels<<16, SCALE the same Q16 the transform already uses. One
+ * type through the interpolation; only the write knows the difference.
+ *
+ * A DIRECT WRITE TO THAT PROPERTY CANCELS ITS TWEEN — set_pos kills an
+ * X or Y tween, set_xform kills a SCALE one, set_opacity kills a fade —
+ * otherwise the tween would overwrite it on the next tick and the write
+ * would look like it did nothing. Destroying a node cancels all of its
+ * tweens; ms <= 0 lands on the end value at once.
+ *
+ * THERE IS NO ROT TWEEN, and that is the hardware rather than an
+ * omission: the P4's PPA rotates in QUARTER TURNS only (surf_sprite_set_xform
+ * refuses anything else), so a "smooth" rotate could only ever be a
+ * four-frame flip-book. Asking for one is refused rather than served
+ * badly. */
+enum {
+    SURF_TW_OPACITY = 0,
+    SURF_TW_X       = 1,
+    SURF_TW_Y       = 2,
+    SURF_TW_SCALE   = 3,
+    SURF_TW_NPROPS  = 4,
+};
+/* Linear is the default and is right for a fade. MOTION is what wants
+ * the others: ease-out on a slide is the difference between cheap and
+ * polished, which is why these arrived with position tweens and not
+ * with opacity. */
+enum {
+    SURF_EASE_LINEAR  = 0,
+    SURF_EASE_IN      = 1,   /* quadratic */
+    SURF_EASE_OUT     = 2,
+    SURF_EASE_IN_OUT  = 3,
+};
+bool surf_node_tween(surf_node *n, uint8_t prop, int32_t to_q16,
+                     int32_t ms, uint8_t ease);
+/* prop < 0 cancels every tween on the node */
+void surf_node_tween_cancel(surf_node *n, int prop);
+bool surf_node_tweening(const surf_node *n, int prop);   /* prop < 0 = any */
+int32_t surf_node_tween_value(const surf_node *n, uint8_t prop);  /* Q16 now */
+
+/* Opacity's named shortcuts, which is what a fade reads as. */
 bool surf_node_fade_to(surf_node *n, uint8_t to, int32_t ms);
 void surf_node_fade_cancel(surf_node *n);
 bool surf_node_fading(const surf_node *n);

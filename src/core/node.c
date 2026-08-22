@@ -72,8 +72,8 @@ static void node_free(surf_node *n)
     /* A tween outliving its node is a write through a freed pointer every
      * frame. Gated on the counter, so surf_init's 4096 node_free calls
      * cost one comparison each rather than a table scan. */
-    if (surf_g.nfades > 0)
-        surf_fade_drop(n);
+    if (surf_g.ntweens > 0)
+        surf_tween_drop(n, -1);
     n->type = SURF_NODE_FREE;
     n->next = surf_g.free_list;
     surf_g.free_list = n;
@@ -139,7 +139,7 @@ void surf_tick(void)
         surf_input_dispatch(&t);
     surf_scroll_tick();  /* momentum + spring-back (DESIGN.md §2.3 step 1) */
     surf_filmstrip_tick();  /* playing animations advance themselves */
-    surf_fade_tick();       /* ...and so do opacity tweens */
+    surf_tween_tick();      /* ...and so do property tweens */
     surf_compose();
     if (surf_g.frame_div > 0 && surf_g.hal->wait_frame)
         surf_g.hal->wait_frame(surf_g.frame_div);
@@ -477,7 +477,9 @@ void surf_node_destroy(surf_node *n)
 
 /* ---- properties: damage old rect, mutate, damage new rect ---- */
 
-void surf_node_set_pos(surf_node *n, int16_t x, int16_t y)
+/* The move itself, cancelling nothing — what a running X or Y tween
+ * calls. The public setter below kills those tweens first. */
+static void node_set_pos_raw(surf_node *n, int16_t x, int16_t y)
 {
     if (!n || (n->x == x && n->y == y))
         return;
@@ -503,6 +505,16 @@ void surf_node_set_pos(surf_node *n, int16_t x, int16_t y)
         if (!surf_rect_empty(b))
             surf_dirty_add(&surf_g.dirty, b);
     }
+}
+
+void surf_node_set_pos(surf_node *n, int16_t x, int16_t y)
+{
+    /* A DIRECT MOVE WINS over a tween walking the same axis, or the
+     * tween overwrites it on the next tick and the write silently does
+     * nothing. Both axes, because set_pos writes both. */
+    surf_tween_drop(n, SURF_TW_X);
+    surf_tween_drop(n, SURF_TW_Y);
+    node_set_pos_raw(n, x, y);
 }
 
 void surf_node_set_hidden(surf_node *n, bool hidden)
@@ -563,98 +575,213 @@ bool surf_node_set_opacity(surf_node *n, uint8_t opa)
      * on the very next tick, so `spr.opacity = 1` in the middle of a
      * fade-out would appear to do nothing at all — the shape of silent
      * failure this API spent a whole section avoiding. */
-    surf_fade_drop(n);
+    surf_tween_drop(n, SURF_TW_OPACITY);
     fade_apply(n, opa);
     return true;
 }
 
-/* ---- fades: opacity over time, driven by surf_tick ---- */
+/* ---- tweens: a node property over time, driven by surf_tick ---- */
 
-static surf_fade *fade_of(const surf_node *n)
+static void node_set_pos_raw(surf_node *n, int16_t x, int16_t y);
+static void xform_apply(surf_node *n, int32_t scale_q16, uint8_t rot,
+                        uint8_t mirror);
+static void fade_apply(surf_node *n, uint8_t opa);
+
+/* The write, per property, WITHOUT cancelling anything — this is what
+ * the tick calls sixty times a second, and it must not kill the tween
+ * that is driving it. The public setters cancel and then land here. */
+static void tw_write(surf_node *n, uint8_t prop, int32_t q16)
 {
-    if (surf_g.nfades <= 0)
+    switch (prop) {
+    case SURF_TW_OPACITY: {
+        int32_t v = q16 >> 16;
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        fade_apply(n, (uint8_t)v);
+        return;
+    }
+    case SURF_TW_X:
+        node_set_pos_raw(n, (int16_t)(q16 >> 16), n->y);
+        return;
+    case SURF_TW_Y:
+        node_set_pos_raw(n, n->x, (int16_t)(q16 >> 16));
+        return;
+    case SURF_TW_SCALE: {
+        surf_xform *xf = surf_node_xform(n);
+        if (xf)
+            xform_apply(n, q16, xf->rot, xf->mirror);
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+/* Where a property is NOW, in the same Q16 the tween interpolates. */
+int32_t surf_node_tween_value(const surf_node *n, uint8_t prop)
+{
+    if (!n)
+        return 0;
+    switch (prop) {
+    case SURF_TW_OPACITY: return (int32_t)n->opa << 16;
+    case SURF_TW_X:       return (int32_t)n->x << 16;
+    case SURF_TW_Y:       return (int32_t)n->y << 16;
+    case SURF_TW_SCALE:   return surf_sprite_scale(n);
+    default:              return 0;
+    }
+}
+
+/* Which properties a node type actually has. Refused rather than
+ * quietly ignored — the .rot-on-a-group lesson. */
+static bool tw_can(const surf_node *n, uint8_t prop)
+{
+    if (!n || prop >= SURF_TW_NPROPS)
+        return false;
+    if (prop == SURF_TW_OPACITY)
+        return surf_node_can_fade(n);
+    if (prop == SURF_TW_SCALE)
+        return surf_node_can_xform(n);
+    return true;                      /* every node has a position */
+}
+
+static surf_tween *tw_of(const surf_node *n, int prop)
+{
+    if (surf_g.ntweens <= 0)
         return NULL;
-    for (int i = 0; i < SURF_MAX_FADES; i++)
-        if (surf_g.fades[i].n == n)
-            return &surf_g.fades[i];
+    for (int i = 0; i < SURF_MAX_TWEENS; i++) {
+        surf_tween *t = &surf_g.tweens[i];
+        if (t->n == n && (prop < 0 || t->prop == (uint8_t)prop))
+            return t;
+    }
     return NULL;
 }
 
-void surf_fade_drop(surf_node *n)
+void surf_tween_drop(surf_node *n, int prop)
 {
-    surf_fade *f = fade_of(n);
-    if (!f)
+    if (surf_g.ntweens <= 0)
         return;
-    f->n = NULL;
-    surf_g.nfades--;
+    for (int i = 0; i < SURF_MAX_TWEENS; i++) {
+        surf_tween *t = &surf_g.tweens[i];
+        if (t->n == n && (prop < 0 || t->prop == (uint8_t)prop)) {
+            t->n = NULL;
+            surf_g.ntweens--;
+            if (prop >= 0)
+                return;               /* one property: there is only one */
+        }
+    }
+}
+
+void surf_node_tween_cancel(surf_node *n, int prop)
+{
+    surf_tween_drop(n, prop);
+}
+
+bool surf_node_tweening(const surf_node *n, int prop)
+{
+    return tw_of(n, prop) != NULL;
+}
+
+bool surf_node_tween(surf_node *n, uint8_t prop, int32_t to_q16,
+                     int32_t ms, uint8_t ease)
+{
+    if (!tw_can(n, prop))
+        return false;
+    surf_tween_drop(n, prop);         /* a new one replaces the old */
+    int32_t from = surf_node_tween_value(n, prop);
+    /* Nothing to animate: no duration, no distance, or no clock to
+     * measure with. Land on the value rather than refusing — a caller
+     * asking to end up at `to` should end up at `to`. */
+    if (ms <= 0 || from == to_q16 || !surf_g.hal || !surf_g.hal->now_us) {
+        tw_write(n, prop, to_q16);
+        return true;
+    }
+    for (int i = 0; i < SURF_MAX_TWEENS; i++) {
+        surf_tween *t = &surf_g.tweens[i];
+        if (t->n)
+            continue;
+        t->n = n;
+        t->prop = prop;
+        t->ease = ease > SURF_EASE_IN_OUT ? SURF_EASE_LINEAR : ease;
+        t->from = from;
+        t->to = to_q16;
+        t->t0_us = surf_g.hal->now_us();
+        t->dur_us = (uint32_t)ms * 1000u;
+        surf_g.ntweens++;
+        return true;
+    }
+    tw_write(n, prop, to_q16);        /* table full: instant, not ignored */
+    return true;
+}
+
+/* p is Q16 progress 0..1. Quadratic, in fixed point — DESIGN.md's habit,
+ * and the products fit int64 with room to spare. */
+static int32_t ease_at(uint8_t how, int32_t p)
+{
+    int64_t q = p;
+    switch (how) {
+    case SURF_EASE_IN:
+        return (int32_t)((q * q) >> 16);
+    case SURF_EASE_OUT: {
+        int64_t inv = SURF_ONE - q;
+        return (int32_t)(SURF_ONE - ((inv * inv) >> 16));
+    }
+    case SURF_EASE_IN_OUT:
+        if (q < SURF_ONE / 2)
+            return (int32_t)((2 * q * q) >> 16);
+        else {
+            int64_t inv = SURF_ONE - q;
+            return (int32_t)(SURF_ONE - ((2 * inv * inv) >> 16));
+        }
+    default:
+        return p;
+    }
+}
+
+void surf_tween_tick(void)
+{
+    if (surf_g.ntweens <= 0 || !surf_g.hal || !surf_g.hal->now_us)
+        return;
+    uint64_t now = surf_g.hal->now_us();
+    for (int i = 0; i < SURF_MAX_TWEENS; i++) {
+        surf_tween *t = &surf_g.tweens[i];
+        if (!t->n)
+            continue;
+        uint64_t el = now - t->t0_us;
+        if (el >= t->dur_us) {
+            surf_node *n = t->n;
+            uint8_t prop = t->prop;
+            int32_t to = t->to;
+            t->n = NULL;               /* clear BEFORE applying: the write
+                                        * damages, and a half-freed slot
+                                        * seen from a damage path would be
+                                        * a tween that never ends */
+            surf_g.ntweens--;
+            tw_write(n, prop, to);
+            continue;
+        }
+        int32_t p = (int32_t)(((int64_t)el << 16) / (int64_t)t->dur_us);
+        p = ease_at(t->ease, p);
+        int64_t span = (int64_t)t->to - (int64_t)t->from;
+        tw_write(t->n, t->prop, t->from + (int32_t)((span * p) >> 16));
+    }
+}
+
+/* ---- opacity's named shortcuts ---- */
+
+bool surf_node_fade_to(surf_node *n, uint8_t to, int32_t ms)
+{
+    return surf_node_tween(n, SURF_TW_OPACITY, (int32_t)to << 16, ms,
+                           SURF_EASE_LINEAR);
 }
 
 void surf_node_fade_cancel(surf_node *n)
 {
-    surf_fade_drop(n);
+    surf_tween_drop(n, SURF_TW_OPACITY);
 }
 
 bool surf_node_fading(const surf_node *n)
 {
-    return fade_of(n) != NULL;
-}
-
-bool surf_node_fade_to(surf_node *n, uint8_t to, int32_t ms)
-{
-    if (!surf_node_can_fade(n))
-        return false;
-    surf_fade_drop(n);                 /* a new fade replaces the old one */
-    /* Nothing to animate: no duration, no distance, or no clock to
-     * measure with. Land on the value rather than refusing — a caller
-     * asking to end up at `to` should end up at `to`. */
-    if (ms <= 0 || n->opa == to || !surf_g.hal || !surf_g.hal->now_us) {
-        fade_apply(n, to);
-        return true;
-    }
-    for (int i = 0; i < SURF_MAX_FADES; i++) {
-        surf_fade *f = &surf_g.fades[i];
-        if (f->n)
-            continue;
-        f->n = n;
-        f->from = n->opa;
-        f->to = to;
-        f->t0_us = surf_g.hal->now_us();
-        f->dur_us = (uint32_t)ms * 1000u;
-        surf_g.nfades++;
-        return true;
-    }
-    fade_apply(n, to);                 /* table full: instant, not ignored */
-    return true;
-}
-
-void surf_fade_tick(void)
-{
-    if (surf_g.nfades <= 0 || !surf_g.hal || !surf_g.hal->now_us)
-        return;
-    uint64_t now = surf_g.hal->now_us();
-    for (int i = 0; i < SURF_MAX_FADES; i++) {
-        surf_fade *f = &surf_g.fades[i];
-        if (!f->n)
-            continue;
-        uint64_t el = now - f->t0_us;
-        if (el >= f->dur_us) {
-            surf_node *n = f->n;
-            uint8_t to = f->to;
-            f->n = NULL;               /* clear BEFORE applying: the write
-                                        * damages, and a half-freed slot
-                                        * seen from a damage path would be
-                                        * a fade that never ends */
-            surf_g.nfades--;
-            fade_apply(n, to);
-            continue;
-        }
-        /* Integer lerp, no float: DESIGN.md's habit, and the numbers are
-         * tiny — 255 * 4e6 us fits int64 with room to spare. */
-        int32_t span = (int32_t)f->to - (int32_t)f->from;
-        int32_t at = f->from + (int32_t)((int64_t)span * (int64_t)el
-                                         / (int64_t)f->dur_us);
-        fade_apply(f->n, (uint8_t)at);
-    }
+    return tw_of(n, SURF_TW_OPACITY) != NULL;
 }
 
 uint8_t surf_node_opacity(const surf_node *n)
@@ -987,6 +1114,13 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
     surf_damage_subtree(n);
 }
 
+void surf_sprite_set_xform(surf_node *n, int32_t scale_q16, uint8_t rot,
+                           uint8_t mirror)
+{
+    surf_tween_drop(n, SURF_TW_SCALE);   /* a direct write wins */
+    xform_apply(n, scale_q16, rot, mirror);
+}
+
 /* SPRITES AND FILMSTRIPS BOTH, and that is the whole of this change.
  * It used to return for anything that was not a SPRITE — so scaling an
  * animation did nothing at all, silently, and read back as 1.0 — which
@@ -994,8 +1128,10 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
  * the picture never moves. A filmstrip is a sprite that picks its
  * source from a frame index; there was never a reason it could not be
  * scaled, only a type test that said so. */
-void surf_sprite_set_xform(surf_node *n, int32_t scale_q16, uint8_t rot,
-                           uint8_t mirror)
+/* The transform write, cancelling nothing — what a running SCALE tween
+ * calls. The public setter below kills that tween first. */
+static void xform_apply(surf_node *n, int32_t scale_q16, uint8_t rot,
+                        uint8_t mirror)
 {
     surf_xform *xf = surf_node_xform(n);
     if (!xf || scale_q16 <= 0)

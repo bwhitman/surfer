@@ -894,6 +894,118 @@ static mp_obj_t node_key(mp_obj_t self_in, mp_obj_t k)
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_key_obj, node_key);
 
+/* spr.tween("x_pos", 300, 1000, ease="out")
+ *
+ * THE PROPERTY IS A NAME, and it has to be. `spr.tween(spr.x_pos, ...)`
+ * is the obvious spelling and cannot work: `spr.x_pos` evaluates to an
+ * INTEGER before tween is called, and Python has no way to hand over
+ * the slot it came out of. A string is what QPropertyAnimation and
+ * Cocoa's keyPath take, for exactly this reason.
+ *
+ * `to` is in the property's OWN units — pixels for x_pos/y_pos, 0..1 for
+ * opacity, a multiplier for scale — and the Q16 the C side wants is
+ * this function's business, not the caller's. `start` overrides where it
+ * begins; by default it is wherever the property is now.
+ *
+ * There is no "rot": the PPA turns in quarter turns, so a smooth rotate
+ * is not a thing this hardware can do and pretending otherwise would
+ * give a four-frame flip-book. Naming it raises with that sentence.
+ */
+static const char *const TW_NAMES[] = {"opacity", "x_pos", "y_pos", "scale"};
+
+static int tw_prop(mp_obj_t o)
+{
+    const char *want = mp_obj_str_get_str(o);
+    for (int i = 0; i < SURF_TW_NPROPS; i++)
+        if (!strcmp(want, TW_NAMES[i]))
+            return i;
+    if (!strcmp(want, "rot"))
+        mp_raise_ValueError(MP_ERROR_TEXT(
+            "rot cannot tween - the PPA turns in quarter turns only, so a "
+            "smooth rotate would be four frames. Set .rot directly"));
+    mp_raise_ValueError(MP_ERROR_TEXT(
+        "tween takes 'opacity', 'x_pos', 'y_pos' or 'scale'"));
+    return 0;
+}
+
+/* the property's own unit <-> the Q16 the tween interpolates */
+static int32_t tw_to_q16(int prop, mp_obj_t v)
+{
+    if (prop == SURF_TW_OPACITY) {
+        mp_float_t f = mp_obj_get_float(v);
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        return (int32_t)(f * 255 * 65536 + (mp_float_t)0.5);
+    }
+    if (prop == SURF_TW_SCALE)
+        return (int32_t)(mp_obj_get_float(v) * SURF_ONE);
+    return (int32_t)(mp_obj_get_int(v)) << 16;   /* x_pos / y_pos: pixels */
+}
+
+static uint8_t tw_ease(mp_obj_t o)
+{
+    if (o == MP_OBJ_NULL || o == mp_const_none)
+        return SURF_EASE_LINEAR;
+    const char *e = mp_obj_str_get_str(o);
+    if (!strcmp(e, "linear")) return SURF_EASE_LINEAR;
+    if (!strcmp(e, "in"))     return SURF_EASE_IN;
+    if (!strcmp(e, "out"))    return SURF_EASE_OUT;
+    if (!strcmp(e, "in_out")) return SURF_EASE_IN_OUT;
+    mp_raise_ValueError(MP_ERROR_TEXT(
+        "ease is 'linear', 'in', 'out' or 'in_out'"));
+    return SURF_EASE_LINEAR;
+}
+
+static mp_obj_t node_tween(size_t n_args, const mp_obj_t *pos,
+                           mp_map_t *kw)
+{
+    enum { ARG_prop, ARG_to, ARG_ms, ARG_ease, ARG_start };
+    static const mp_arg_t spec[] = {
+        {MP_QSTR_prop,  MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL}},
+        {MP_QSTR_to,    MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL}},
+        {MP_QSTR_ms,    MP_ARG_INT, {.u_int = 250}},
+        {MP_QSTR_ease,  MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL}},
+        {MP_QSTR_start, MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL}},
+    };
+    mp_arg_val_t a[MP_ARRAY_SIZE(spec)];
+    mp_arg_parse_all(n_args - 1, pos + 1, kw, MP_ARRAY_SIZE(spec), spec, a);
+    surf_node *n = node_of(pos[0]);
+    int prop = tw_prop(a[ARG_prop].u_obj);
+    /* `start` is applied first and WITHOUT cancelling, which is the
+     * whole reason it exists: writing it through the public setter
+     * would kill the tween we are about to make. */
+    if (a[ARG_start].u_obj != MP_OBJ_NULL && a[ARG_start].u_obj != mp_const_none)
+        surf_node_tween(n, (uint8_t)prop, tw_to_q16(prop, a[ARG_start].u_obj),
+                        0, SURF_EASE_LINEAR);
+    if (!surf_node_tween(n, (uint8_t)prop, tw_to_q16(prop, a[ARG_to].u_obj),
+                         (int32_t)a[ARG_ms].u_int, tw_ease(a[ARG_ease].u_obj)))
+        mp_raise_msg(&mp_type_TypeError,
+                     MP_ERROR_TEXT("this node has no such property to tween "
+                                   "- a group has a position but no opacity "
+                                   "or scale"));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(node_tween_obj, 3, node_tween);
+
+/* n.tween_cancel() stops everything on the node; n.tween_cancel("x_pos")
+ * one property. Whatever it had reached is where it stays. */
+static mp_obj_t node_tween_cancel(size_t n_args, const mp_obj_t *args)
+{
+    surf_node_tween_cancel(node_of(args[0]),
+                           n_args > 1 ? tw_prop(args[1]) : -1);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_tween_cancel_obj, 1, 2,
+                                           node_tween_cancel);
+
+static mp_obj_t node_tweening(size_t n_args, const mp_obj_t *args)
+{
+    return mp_obj_new_bool(surf_node_tweening(
+        node_of(args[0]), n_args > 1 ? tw_prop(args[1]) : -1));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_tweening_obj, 1, 2,
+                                           node_tweening);
+
 /* spr.fade_out(ms=250) / fade_in(ms=250) / fade_to(0.4, ms=250)
  *
  * ms is milliseconds of WALL time, driven by surf_tick — so a fade keeps
@@ -944,6 +1056,9 @@ static mp_obj_t node_fade_cancel(mp_obj_t self_in)
 static MP_DEFINE_CONST_FUN_OBJ_1(node_fade_cancel_obj, node_fade_cancel);
 
 static const mp_rom_map_elem_t node_locals_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_tween), MP_ROM_PTR(&node_tween_obj)},
+    {MP_ROM_QSTR(MP_QSTR_tween_cancel), MP_ROM_PTR(&node_tween_cancel_obj)},
+    {MP_ROM_QSTR(MP_QSTR_tweening), MP_ROM_PTR(&node_tweening_obj)},
     {MP_ROM_QSTR(MP_QSTR_fade_out), MP_ROM_PTR(&node_fade_out_obj)},
     {MP_ROM_QSTR(MP_QSTR_fade_in), MP_ROM_PTR(&node_fade_in_obj)},
     {MP_ROM_QSTR(MP_QSTR_fade_to), MP_ROM_PTR(&node_fade_to_obj)},

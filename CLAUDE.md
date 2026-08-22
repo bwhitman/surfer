@@ -483,6 +483,57 @@ transparency rather than a limitation of this implementation, and the
 device's answer for a whole-screen fade is still the one the P4 shares
 with a SNES: `INIDISP`-style, at the panel, not per node.
 
+### ...and ANY property tweens, not just opacity
+
+```python
+spr.tween("x_pos", 300, 1000, ease="out")
+spr.tween("scale", 2.0, 400, ease="in_out")
+spr.tween("opacity", 0.0, 300)      # what fade_out is
+spr.tween_cancel("x_pos")           # or tween_cancel() for all of them
+spr.tweening("x_pos")               # or tweening() for any
+```
+
+**THE PROPERTY IS A NAME, AND IT HAS TO BE.** `spr.tween(spr.x_pos, ...)`
+is the spelling everybody reaches for first and it cannot work: `spr.x_pos`
+evaluates to the INTEGER 40 before `tween` is called, and Python has no
+way to hand over the slot it came out of. A string is what
+QPropertyAnimation takes and what Cocoa's keyPath is, for exactly this
+reason.
+
+**KEYED BY (node, prop), NOT BY NODE.** A dying enemy drifts up AND
+fades, which is two tweens on one sprite; keying by node alone makes the
+second replace the first, and the shape of that bug is a sprite that
+fades perfectly and never moves. Starting a second tween on the SAME
+property still replaces it, which is what reversing a fade mid-flight
+means. A direct write cancels only ITS OWN property's tween —
+`set_pos` kills an X or Y tween and leaves a fade running.
+
+**VALUES ARE Q16 WHATEVER THE PROPERTY IS**, so the tick interpolates
+one type and only `tw_write` knows the difference: opacity 0..255, x/y
+in pixels, scale the Q16 the transform already used. The binding
+converts from the property's own units, so a caller says `0.4` for
+opacity and `300` for x_pos and never sees a fixed-point number.
+
+**THERE IS NO ROT TWEEN, and that is the PPA rather than an omission.**
+`surf_sprite_set_xform` refuses anything that is not a quarter turn
+because that is what the hardware rotates in — so a "smooth" rotate
+could only ever be a four-frame flip-book. Naming it raises with that
+sentence rather than serving it badly.
+
+**EASING ARRIVED WITH MOTION AND NOT WITH FADE**, deliberately. A fade
+does not need a curve; a slide does — ease-out is the whole difference
+between cheap and polished. Linear, in, out, in_out, quadratic, in fixed
+point. Every curve lands EXACTLY on the target, which the test checks
+per curve, because an ease that arrives at 0.998 is a sprite that never
+quite gets there.
+
+**...AND A VALUE NO NODE CARRIES TWEENS IN PYTHON**, not here:
+`self.ui.tween(a, b, ms, fn)` in tulip5 walks a number and calls `fn(v)`,
+on the app's own timers. The split is the one `after`/`every` already
+make against task.py — node properties run in C (free, no Python per
+frame, survives backgrounding), an app's own angle or volume runs in
+Python where being general is cheap and freezing with the app is right.
+
 ### ...and it fades OVER TIME, without the app holding a clock
 
 ```python

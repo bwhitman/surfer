@@ -441,10 +441,10 @@ static void test_fade_edges(void)
  * arrives at 0 either way. */
 static void test_table_full(void)
 {
-    fresh(64, 64, SURF_MAX_FADES + 8);
+    fresh(64, 64, SURF_MAX_TWEENS + 8);
     mock_now_us_val = 0;
-    surf_node *held[SURF_MAX_FADES];
-    for (int i = 0; i < SURF_MAX_FADES; i++) {
+    surf_node *held[SURF_MAX_TWEENS];
+    for (int i = 0; i < SURF_MAX_TWEENS; i++) {
         held[i] = surf_sprite_new(&argb, 0, 0);
         surf_node_add(surf_screen(), held[i]);
         OK(surf_node_fade_to(held[i], 0, 1000));
@@ -455,7 +455,7 @@ static void test_table_full(void)
     OK(!surf_node_fading(extra));            /* no slot... */
     OK(surf_node_opacity(extra) == 0);       /* ...but it arrived */
 
-    for (int i = 0; i < SURF_MAX_FADES; i++)
+    for (int i = 0; i < SURF_MAX_TWEENS; i++)
         surf_node_destroy(held[i]);
     surf_node_destroy(extra);
 }
@@ -475,15 +475,179 @@ static void test_counter_returns_to_zero(void)
         mock_advance_us(60000);
         surf_tick();
     }
-    OK(surf_g.nfades == 0);
+    OK(surf_g.ntweens == 0);
     surf_node_fade_to(spr, 128, 50);
-    OK(surf_g.nfades == 1);
+    OK(surf_g.ntweens == 1);
     surf_node_destroy(spr);
-    OK(surf_g.nfades == 0);
+    OK(surf_g.ntweens == 0);
+}
+
+/* ---- tweens: any property, and SEVERAL AT ONCE ---- */
+
+/* THE POINT OF KEYING BY (node, prop). A dying enemy drifts up AND
+ * fades; keyed by node alone the second would replace the first, and
+ * the bug is a sprite that fades perfectly and never moves. */
+static void test_two_at_once(void)
+{
+    fresh(200, 200, 32);
+    mock_now_us_val = 0;
+    surf_node *spr = surf_sprite_new(&argb, 10, 100);
+    surf_node_add(surf_screen(), spr);
+
+    OK(surf_node_tween(spr, SURF_TW_Y, 20 << 16, 100, SURF_EASE_LINEAR));
+    OK(surf_node_tween(spr, SURF_TW_OPACITY, 0, 100, SURF_EASE_LINEAR));
+    OK(surf_node_tweening(spr, SURF_TW_Y));
+    OK(surf_node_tweening(spr, SURF_TW_OPACITY));
+    OK(surf_node_tweening(spr, -1));          /* any */
+
+    mock_advance_us(50000);
+    surf_tick();
+    OK(surf_node_pos(spr).y < 100 && surf_node_pos(spr).y > 20);
+    uint8_t mid = surf_node_opacity(spr);
+    OK(mid > 110 && mid < 145);
+
+    mock_advance_us(60000);
+    surf_tick();
+    OK(surf_node_pos(spr).y == 20);           /* both land exactly */
+    OK(surf_node_opacity(spr) == 0);
+    OK(!surf_node_tweening(spr, -1));
+    surf_node_destroy(spr);
+}
+
+static void test_position_tween(void)
+{
+    fresh(200, 200, 32);
+    mock_now_us_val = 0;
+    surf_node *spr = surf_sprite_new(&argb, 0, 0);
+    surf_node_add(surf_screen(), spr);
+    OK(surf_node_tween(spr, SURF_TW_X, 100 << 16, 100, SURF_EASE_LINEAR));
+    mock_advance_us(50000);
+    surf_tick();
+    int16_t at = surf_node_pos(spr).x;
+    OK(at > 40 && at < 60);                   /* ~50 */
+    mock_advance_us(60000);
+    surf_tick();
+    OK(surf_node_pos(spr).x == 100);
+    /* a GROUP has a position, so it may tween one — unlike opacity */
+    surf_node *g = surf_group_new(0, 0);
+    surf_node_add(surf_screen(), g);
+    OK(surf_node_tween(g, SURF_TW_X, 50 << 16, 100, SURF_EASE_LINEAR));
+    surf_node_destroy(g);
+    surf_node_destroy(spr);
+}
+
+static void test_scale_tween(void)
+{
+    fresh(200, 200, 32);
+    mock_now_us_val = 0;
+    surf_node *spr = surf_sprite_new(&argb, 0, 0);
+    surf_node_add(surf_screen(), spr);
+    OK(surf_node_tween(spr, SURF_TW_SCALE, SURF_ONE * 2, 100,
+                       SURF_EASE_LINEAR));
+    mock_advance_us(50000);
+    surf_tick();
+    int32_t at = surf_sprite_scale(spr);
+    OK(at > SURF_ONE && at < SURF_ONE * 2);
+    mock_advance_us(60000);
+    surf_tick();
+    OK(surf_sprite_scale(spr) == SURF_ONE * 2);
+    /* a group cannot scale, so it cannot tween one */
+    surf_node *g = surf_group_new(0, 0);
+    OK(!surf_node_tween(g, SURF_TW_SCALE, SURF_ONE * 2, 100, 0));
+    OK(!surf_node_tween(g, SURF_TW_OPACITY, 0, 100, 0));
+    surf_node_destroy(g);
+    surf_node_destroy(spr);
+}
+
+/* A DIRECT WRITE WINS, per property. set_pos kills an X or Y tween and
+ * leaves a fade alone — the two are independent now, and a cancel that
+ * took everything would stop a fade because something moved. */
+static void test_direct_write_per_property(void)
+{
+    fresh(200, 200, 32);
+    mock_now_us_val = 0;
+    surf_node *spr = surf_sprite_new(&argb, 0, 0);
+    surf_node_add(surf_screen(), spr);
+    surf_node_tween(spr, SURF_TW_X, 100 << 16, 200, SURF_EASE_LINEAR);
+    surf_node_tween(spr, SURF_TW_OPACITY, 0, 200, SURF_EASE_LINEAR);
+    mock_advance_us(20000);
+    surf_tick();
+
+    surf_node_set_pos(spr, 7, 7);
+    OK(!surf_node_tweening(spr, SURF_TW_X));
+    OK(surf_node_tweening(spr, SURF_TW_OPACITY));   /* untouched */
+    mock_advance_us(50000);
+    surf_tick();
+    OK(surf_node_pos(spr).x == 7);                  /* did not resume */
+
+    surf_sprite_set_xform(spr, SURF_ONE, 0, 0);
+    OK(surf_node_tweening(spr, SURF_TW_OPACITY));   /* still untouched */
+    surf_node_destroy(spr);
+}
+
+/* Easing bends the curve and STILL lands exactly. Out is ahead of
+ * linear at the half way point, in is behind it. */
+static void test_easing(void)
+{
+    fresh(200, 200, 32);
+    int16_t at[4];
+    for (int e = 0; e < 4; e++) {
+        mock_now_us_val = 0;
+        surf_node *spr = surf_sprite_new(&argb, 0, 0);
+        surf_node_add(surf_screen(), spr);
+        surf_node_tween(spr, SURF_TW_X, 1000 << 16, 100, (uint8_t)e);
+        mock_advance_us(50000);
+        surf_tick();
+        at[e] = surf_node_pos(spr).x;
+        mock_advance_us(60000);
+        surf_tick();
+        OK(surf_node_pos(spr).x == 1000);        /* every curve lands */
+        surf_node_destroy(spr);
+    }
+    OK(at[SURF_EASE_IN] < at[SURF_EASE_LINEAR]);
+    OK(at[SURF_EASE_OUT] > at[SURF_EASE_LINEAR]);
+    /* in-out passes through the middle like linear does */
+    OK(at[SURF_EASE_IN_OUT] > 450 && at[SURF_EASE_IN_OUT] < 550);
+}
+
+/* Destroying a node drops EVERY tween on it, not just one — the slots
+ * hold raw pointers into a pool that RECYCLES. */
+static void test_destroy_drops_all(void)
+{
+    fresh(200, 200, 32);
+    mock_now_us_val = 0;
+    surf_node *spr = surf_sprite_new(&argb, 0, 0);
+    surf_node_add(surf_screen(), spr);
+    surf_node_tween(spr, SURF_TW_X, 100 << 16, 500, 0);
+    surf_node_tween(spr, SURF_TW_Y, 100 << 16, 500, 0);
+    surf_node_tween(spr, SURF_TW_OPACITY, 0, 500, 0);
+    OK(surf_g.ntweens == 3);
+    surf_node_destroy(spr);
+    OK(surf_g.ntweens == 0);
+}
+
+/* There is no ROT tween, and that is the PPA rather than an omission:
+ * it turns in quarter turns, so a smooth rotate could only ever be a
+ * four-frame flip-book. Refused rather than served badly. */
+static void test_no_rot_tween(void)
+{
+    fresh(200, 200, 32);
+    surf_node *spr = surf_sprite_new(&argb, 0, 0);
+    surf_node_add(surf_screen(), spr);
+    OK(!surf_node_tween(spr, SURF_TW_NPROPS, 0, 100, 0));
+    OK(!surf_node_tween(spr, 99, 0, 100, 0));
+    surf_node_destroy(spr);
 }
 
 void run_opacity_tests(void)
 {
+    test_two_at_once();
+    test_position_tween();
+    test_scale_tween();
+    test_direct_write_per_property();
+    test_easing();
+    test_destroy_drops_all();
+    test_no_rot_tween();
     test_zero_paints_nothing();
     test_fade_runs();
     test_direct_write_cancels();
