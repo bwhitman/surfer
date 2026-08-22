@@ -60,6 +60,10 @@ struct surf_node {
     uint8_t    flags;
     int16_t    x, y;   /* offset in parent */
     int16_t    w, h;   /* rect: size; sprite: src size; group: clip size */
+    /* 255 = opaque, the default set by surf_node_alloc. Free: on both a
+     * 32- and a 64-bit build this byte lands in the padding before
+     * `parent`, so the pool does not grow. */
+    uint8_t    opa;
     surf_node *parent;
     surf_node *first, *last;  /* children; last is painted frontmost */
     surf_node *prev, *next;   /* siblings; next doubles as free-list link */
@@ -212,6 +216,21 @@ typedef struct {
     int16_t     down_x, down_y;
 } surf_contact;
 
+/* A running opacity tween. A SIDE TABLE and not a field on the node,
+ * because the state is 16 bytes and almost no node ever fades — on
+ * tulip's 4096-node pool that would be 64 KB of PSRAM to serve the
+ * handful of sprites fading at any moment. Fixed size, allocated with
+ * surf_g (DESIGN.md: pools sized at init, the frame path never
+ * allocates); a full table degrades to setting the end value at once,
+ * which is a fade nobody sees rather than a fade that does not happen. */
+#define SURF_MAX_FADES 32
+typedef struct {
+    surf_node *n;        /* NULL = free slot */
+    uint64_t   t0_us;
+    uint32_t   dur_us;
+    uint8_t    from, to;
+} surf_fade;
+
 typedef struct {
     const surf_hal *hal;
     int16_t         w, h;
@@ -219,6 +238,8 @@ typedef struct {
     surf_node      *pool;
     int             pool_cap;
     int             playing;   /* filmstrips with fps != 0 (node.c) */
+    surf_fade       fades[SURF_MAX_FADES];
+    int             nfades;    /* active slots; 0 skips the whole tick */
     surf_node      *free_list;
     surf_node      *root;
     /* One of these per finger. Capture is PER CONTACT, so three fingers
@@ -306,8 +327,15 @@ bool surf_tlayout_next(surf_tlayout *it, surf_tglyph *out);
 
 surf_image surf_glyph_image(const surf_image *base, const surf_font *base_font,
                             const surf_font *from);
+/* opa: the LABEL's node opacity. textinput and textgrid pass 255 — their
+ * backgrounds and carets are hal->fill, which has no opacity, so a
+ * half-faded glyph over a full-strength background would be worse than
+ * no fade at all (see surf_node_set_opacity). */
+void surf_fade_tick(void);
+void surf_fade_drop(surf_node *n);   /* node teardown + a direct opacity write */
+
 void surf_glyph_blit(const surf_image *img, const surf_glyph *g,
-                     int16_t dx, int16_t dy, surf_rect vis);
+                     int16_t dx, int16_t dy, surf_rect vis, uint8_t opa);
 void surf_text_paint(const surf_paint_ent *e);       /* label */
 void surf_textinput_paint(const surf_paint_ent *e);
 void surf_textgrid_paint(const surf_paint_ent *e);

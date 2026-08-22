@@ -9,6 +9,12 @@ static int paint_n;
 
 static bool node_opaque(const surf_node *n)
 {
+    /* A faded node covers NOTHING: the occlusion early-out must keep
+     * walking past it, or everything it was hiding is simply not painted
+     * and shows through as whatever the framebuffer last held. This one
+     * line is the whole correctness cost of node opacity. */
+    if (n->opa != 255)
+        return false;
     switch (n->type) {
     case SURF_NODE_RECT:      return true;
     case SURF_NODE_SPRITE:    return n->u.sprite.img->opaque;
@@ -48,22 +54,32 @@ static bool collect(surf_node *n, int16_t px, int16_t py, surf_rect clip, surf_r
     if (surf_rect_empty(vis))
         return false;
 
+    /* Fully faded: nothing to paint and nothing covered, so it never
+     * reaches the paint list. Free, and it also keeps opa 0 away from
+     * the hals — the PPA documents fg_alpha_scale_ratio as exclusive of
+     * zero, so a blend op that could never draw anything is one that
+     * might be REJECTED on the device and silently fine on a laptop. */
+    if (n->opa == 0)
+        return false;
+
     surf_g.plist[paint_n++] = (surf_paint_ent){n, ax, ay, vis};
     return node_opaque(n) && surf_rect_covers(bounds, dr);
 }
 
-static void image_op(const surf_image *img, surf_rect src, surf_point dst)
+static void image_op(const surf_image *img, surf_rect src, surf_point dst,
+                     uint8_t opa)
 {
-    if (img->opaque)
+    if (img->opaque && opa == 255)
         surf_g.hal->blit(img, src, dst);
     else
-        surf_g.hal->blend(img, src, dst, 255);
+        surf_g.hal->blend(img, src, dst, opa);
 }
 
 /* Blit src repeatedly across dst, each tile clipped to vis. This is how
  * 9-patch edges/centers stretch without scale_blit (cut from the v1 frame
  * path, DESIGN.md §5.4). */
-static void tile_blit(const surf_image *img, surf_rect src, surf_rect dst, surf_rect vis)
+static void tile_blit(const surf_image *img, surf_rect src, surf_rect dst,
+                      surf_rect vis, uint8_t opa)
 {
     if (surf_rect_empty(src) || surf_rect_empty(dst))
         return;
@@ -79,7 +95,7 @@ static void tile_blit(const surf_image *img, surf_rect src, surf_rect dst, surf_
             surf_rect s = {
                 (int16_t)(src.x + (v.x - x)), (int16_t)(src.y + (v.y - y)), v.w, v.h,
             };
-            image_op(img, s, (surf_point){v.x, v.y});
+            image_op(img, s, (surf_point){v.x, v.y}, opa);
         }
     }
 }
@@ -101,14 +117,17 @@ static void paint_ninepatch(const surf_paint_ent *e)
             surf_rect d = {(int16_t)dx[rx], (int16_t)dy[ry],
                            (int16_t)(dx[rx + 1] - dx[rx]), (int16_t)(dy[ry + 1] - dy[ry])};
             /* the stretched centre, when it is one flat colour, is ONE
-             * fill rather than one op per source tile (see mid_is_solid) */
-            if (n->u.nine.solid[ry][rx]) {
+             * fill rather than one op per source tile (see mid_is_solid).
+             * Not while faded: region_is_solid only says yes to a fully
+             * opaque block, so the fill would paint that colour at full
+             * strength through the fade. Tiling costs ops and is right. */
+            if (n->u.nine.solid[ry][rx] && n->opa == 255) {
                 surf_rect v = surf_rect_intersect(d, e->vis);
                 if (!surf_rect_empty(v))
                     surf_g.hal->fill(v, n->u.nine.solid_col[ry][rx]);
                 continue;
             }
-            tile_blit(img, s, d, e->vis);
+            tile_blit(img, s, d, e->vis, n->opa);
         }
     }
 }
@@ -130,14 +149,14 @@ static void paint(const surf_paint_ent *e)
             surf_g.hal->xform_blend(n->u.sprite.img, n->u.sprite.src,
                                     (surf_rect){e->ax, e->ay, n->w, n->h},
                                     e->vis, n->u.sprite.xf.rot,
-                                    n->u.sprite.xf.mirror);
+                                    n->u.sprite.xf.mirror, n->opa);
             return;
         }
         image_op(n->u.sprite.img, (surf_rect){
                      (int16_t)(n->u.sprite.src.x + (e->vis.x - e->ax)),
                      (int16_t)(n->u.sprite.src.y + (e->vis.y - e->ay)),
                      e->vis.w, e->vis.h,
-                 }, (surf_point){e->vis.x, e->vis.y});
+                 }, (surf_point){e->vis.x, e->vis.y}, n->opa);
         return;
     case SURF_NODE_LAYER: {
         /* wrap-scrolling strip: vis maps to <=2 source segments */
@@ -153,7 +172,7 @@ static void paint(const surf_paint_ent *e)
             image_op(strip, (surf_rect){
                          (int16_t)sx, (int16_t)(e->vis.y - e->ay),
                          (int16_t)seg, e->vis.h,
-                     }, (surf_point){dx, e->vis.y});
+                     }, (surf_point){dx, e->vis.y}, n->opa);
             dx = (int16_t)(dx + seg);
             remaining -= seg;
             sx = 0;
@@ -177,14 +196,14 @@ static void paint(const surf_paint_ent *e)
                                                 n->u.strip.fw, n->u.strip.fh},
                                     (surf_rect){e->ax, e->ay, n->w, n->h},
                                     e->vis, n->u.strip.xf.rot,
-                                    n->u.strip.xf.mirror);
+                                    n->u.strip.xf.mirror, n->opa);
             return;
         }
         image_op(n->u.strip.img, (surf_rect){
                      (int16_t)(fx + (e->vis.x - e->ax)),
                      (int16_t)(fy + (e->vis.y - e->ay)),
                      e->vis.w, e->vis.h,
-                 }, (surf_point){e->vis.x, e->vis.y});
+                 }, (surf_point){e->vis.x, e->vis.y}, n->opa);
         return;
     }
     case SURF_NODE_NINEPATCH:

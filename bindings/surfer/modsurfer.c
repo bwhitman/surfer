@@ -894,7 +894,60 @@ static mp_obj_t node_key(mp_obj_t self_in, mp_obj_t k)
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(node_key_obj, node_key);
 
+/* spr.fade_out(ms=250) / fade_in(ms=250) / fade_to(0.4, ms=250)
+ *
+ * ms is milliseconds of WALL time, driven by surf_tick — so a fade keeps
+ * running through frames the app itself is not being called for, and
+ * finishes rather than freezing half way. Writing .opacity directly
+ * cancels a running fade; so does destroying the node.
+ *
+ * A node that cannot fade RAISES, the same as .opacity does, and for the
+ * same reason: `group.fade_out()` doing nothing at all is a bug nobody
+ * can see. */
+static mp_obj_t node_fade_common(size_t n_args, const mp_obj_t *args,
+                                 mp_float_t to, int arg_ms)
+{
+    mp_int_t ms = n_args > (size_t)arg_ms ? mp_obj_get_int(args[arg_ms]) : 250;
+    if (to < 0) to = 0;
+    if (to > 1) to = 1;
+    if (!surf_node_fade_to(node_of(args[0]), (uint8_t)(to * 255 + (mp_float_t)0.5),
+                           (int32_t)ms))
+        mp_raise_msg(&mp_type_TypeError,
+                     MP_ERROR_TEXT("only a sprite, filmstrip, ninepatch, "
+                                   "layer or label can fade - a group "
+                                   "cannot; fade the children"));
+    return mp_const_none;
+}
+static mp_obj_t node_fade_out(size_t n_args, const mp_obj_t *args)
+{
+    return node_fade_common(n_args, args, 0, 1);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_fade_out_obj, 1, 2, node_fade_out);
+
+static mp_obj_t node_fade_in(size_t n_args, const mp_obj_t *args)
+{
+    return node_fade_common(n_args, args, 1, 1);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_fade_in_obj, 1, 2, node_fade_in);
+
+static mp_obj_t node_fade_to(size_t n_args, const mp_obj_t *args)
+{
+    return node_fade_common(n_args, args, mp_obj_get_float(args[1]), 2);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(node_fade_to_obj, 2, 3, node_fade_to);
+
+static mp_obj_t node_fade_cancel(mp_obj_t self_in)
+{
+    surf_node_fade_cancel(node_of(self_in));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(node_fade_cancel_obj, node_fade_cancel);
+
 static const mp_rom_map_elem_t node_locals_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_fade_out), MP_ROM_PTR(&node_fade_out_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fade_in), MP_ROM_PTR(&node_fade_in_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fade_to), MP_ROM_PTR(&node_fade_to_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fade_cancel), MP_ROM_PTR(&node_fade_cancel_obj)},
     {MP_ROM_QSTR(MP_QSTR_add), MP_ROM_PTR(&node_add_obj)},
     {MP_ROM_QSTR(MP_QSTR_damage), MP_ROM_PTR(&node_damage_obj)},
     {MP_ROM_QSTR(MP_QSTR_hits), MP_ROM_PTR(&node_hits_obj)},
@@ -1189,6 +1242,41 @@ static void node_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
                               surf_sprite_rot(o->node), m);
         hb_dbg_sync(o);
         dest[0] = MP_OBJ_NULL;
+        return;
+    }
+    /* .opacity: 0.0 gone .. 1.0 solid, over everything this node draws.
+     *
+     * A FLOAT and not 0..255, because what a caller has in its hand is a
+     * fade's `t` — and an int would be ambiguous exactly where it hurts
+     * (is `opacity = 1` solid, or 1/255 of it?).
+     *
+     * Writing to a node that cannot fade RAISES, the way .rot does: a
+     * group, a rect and a textgrid have no opacity, and a silent no-op
+     * on the wrong node type is this repo's most expensive recurring
+     * bug. Reads stay lenient and answer 1.0, so generic code asking a
+     * node what it is gets an answer. */
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_opacity) {
+        dest[0] = mp_obj_new_float((mp_float_t)surf_node_opacity(o->node) /
+                                   (mp_float_t)255);
+        return;
+    }
+    if (dest[0] != MP_OBJ_NULL && attr == MP_QSTR_opacity) {
+        mp_float_t f = mp_obj_get_float(dest[1]);
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        if (!surf_node_set_opacity(o->node, (uint8_t)(f * 255 + (mp_float_t)0.5)))
+            mp_raise_msg(&mp_type_TypeError,
+                         MP_ERROR_TEXT("only a sprite, filmstrip, ninepatch, "
+                                       "layer or label has opacity - a group "
+                                       "cannot (it would need an offscreen "
+                                       "target); fade the children"));
+        dest[0] = MP_OBJ_NULL;
+        return;
+    }
+    /* .fading: is a tween running right now. Read-only — fade_to() and
+     * fade_cancel() are the verbs. */
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_fading) {
+        dest[0] = mp_obj_new_bool(surf_node_fading(o->node));
         return;
     }
     if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_hitboxes) {

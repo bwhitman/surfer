@@ -509,7 +509,7 @@ void surf_textinput_paint(const surf_paint_ent *e)
             if (g && g->w > 0)
                 surf_glyph_blit(&n->u.input.img, g,
                                 (int16_t)(e->ax + pen + g->xoff - sx),
-                                (int16_t)(e->ay + base + g->yoff), e->vis);
+                                (int16_t)(e->ay + base + g->yoff), e->vis, 255);
             if (g)
                 pen = (int16_t)(pen + g->adv + surf_font_kern(f, prev, m));
             prev = m;
@@ -542,7 +542,7 @@ void surf_textinput_paint(const surf_paint_ent *e)
                 surf_glyph_image(&n->u.input.img, f, tg.font);
             surf_glyph_blit(&im, tg.g,
                             (int16_t)(e->ax + tg.x - sx),
-                            (int16_t)(e->ay + tg.y - sy), e->vis);
+                            (int16_t)(e->ay + tg.y - sy), e->vis, 255);
         }
     }
 

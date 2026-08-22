@@ -56,6 +56,7 @@ typedef struct {
     void (*blit)(const surf_image *src, surf_rect src_r, surf_point dst);
     void (*blend)(const surf_image *src, surf_rect src_r, surf_point dst, uint8_t opa);
     void (*scale_blit)(const surf_image *src, surf_rect src_r, surf_rect dst_r);
+    /* shipped as xform_blend(..., rot, mirror, opa) — see §2.2a */
     void (*present)(const surf_rect *dirty, int n);   // flush rects to panel
     void (*wait_idle)(void);                          // fence on PPA/DMA queue
     uint64_t (*now_us)(void);
@@ -93,6 +94,42 @@ these; users mostly never see them):
 
 Node property writes mark the node's old and new screen rects dirty. That's the
 entire invalidation model.
+
+**Node opacity (§2.2a).** Every node that draws a PICTURE — sprite,
+filmstrip, ninepatch, layer, label — carries one alpha multiplier over
+everything it draws, 255 by default. It is not a new mechanism: the hal's
+`blend` has taken an `opa` since this sketch was written and the
+compositor simply never passed anything but 255, so on the P4 it is the
+PPA blend unit's own `fg_alpha_scale_ratio` and costs nothing extra.
+`xform_blend` gained the same parameter, because a scaled sprite and an
+unscaled one must fade alike.
+
+Three things it deliberately is NOT:
+
+- **not on a group.** Fading a group means compositing it whole and
+  blending the result once, which is an offscreen render target — §1 says
+  we composite straight into the framebuffer, so overlapping children
+  would each blend separately and the overlap would come out wrong.
+  Refused, not approximated.
+- **not on a rect or a textgrid.** Those are `hal->fill`, which has no
+  opacity; a blended fill is a hal op that does not exist yet. Refused
+  rather than silently ignored.
+- **not a hit-test property.** A fade must not change what a finger or a
+  collision does halfway through; `hidden` is still what removes a node
+  from both.
+
+What it costs is stated where it is spent: a translucent node is no
+longer opaque, so it stops terminating the front-to-back walk in step 3
+below and everything under it is painted; and it turns off `band_shift`
+streaming, because a shifted band already holds this node composited over
+what was behind it and re-blending it would blend twice. A fully faded
+node (opa 0) is dropped in the walk and never reaches the hal at all.
+
+Opacity also TWEENS (`surf_node_fade_to(n, to, ms)`), driven from
+`surf_tick` beside the filmstrip advance. State is a fixed side table of
+32 slots in `surf_g` rather than a field on every node — 16 bytes x a
+4096-node pool to serve a handful of fading sprites is not a trade worth
+making — gated on a counter so it costs one comparison when idle.
 
 **Tree semantics (the LVGL feature worth keeping):** subtrees detach and
 reattach losslessly. `node.detach()` removes a subtree from the render tree but

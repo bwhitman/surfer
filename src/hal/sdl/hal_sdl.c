@@ -399,8 +399,11 @@ static void h_blend(const surf_image *src, surf_rect sr, surf_point dst, uint8_t
 }
 
 static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
-                          surf_rect vis, uint8_t rot, uint8_t mirror)
+                          surf_rect vis, uint8_t rot, uint8_t mirror,
+                          uint8_t opa)
 {
+    if (opa == 0)
+        return;
     /* nearest-neighbor inverse mapping; rot = quarter turns CCW and
      * mirror flips the source before rotation, matching the P4 PPA's
      * SRM engine. dst_r is the post-rotation footprint; W0/H0 is the
@@ -431,17 +434,25 @@ static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
             if (src->format == SURF_FMT_ARGB8888) {
                 uint32_t p = *(const uint32_t *)((const uint8_t *)src->pixels +
                                                  sy * src->stride + sx * 4);
-                *d = blend_px(*d, p, p >> 24);
+                *d = blend_px(*d, p, (p >> 24) * opa / 255);
             } else if (src->format == SURF_FMT_RGB565) {
-                *d = *(const uint16_t *)((const uint8_t *)src->pixels +
-                                         sy * src->stride + sx * 2);
+                uint16_t p = *(const uint16_t *)((const uint8_t *)src->pixels +
+                                                 sy * src->stride + sx * 2);
+                if (opa == 255) {
+                    *d = p;
+                } else {  /* 565 carries no alpha; only opa applies */
+                    uint32_t rgb = ((uint32_t)((p >> 8) & 0xf8) << 16) |
+                                   ((uint32_t)((p >> 3) & 0xfc) << 8) |
+                                   (uint32_t)((p << 3) & 0xf8);
+                    *d = blend_px(*d, rgb, opa);
+                }
             } else {  /* A8: alpha from image, color from tint */
                 surf_color t = src->tint;
                 uint32_t rgb = ((uint32_t)((t >> 8) & 0xf8) << 16) |
                                ((uint32_t)((t >> 3) & 0xfc) << 8) |
                                (uint32_t)((t << 3) & 0xf8);
                 uint8_t a = *((const uint8_t *)src->pixels + sy * src->stride + sx);
-                *d = blend_px(*d, rgb, a);
+                *d = blend_px(*d, rgb, (uint32_t)a * opa / 255);
             }
         }
     }

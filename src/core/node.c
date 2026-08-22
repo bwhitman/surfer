@@ -15,6 +15,7 @@ surf_node *surf_node_alloc(uint8_t type)
     surf_g.free_list = n->next;
     memset(n, 0, sizeof *n);
     n->type = type;
+    n->opa = 255;
     return n;
 }
 #define node_alloc surf_node_alloc
@@ -68,6 +69,11 @@ static void node_free(surf_node *n)
     if (n->type == SURF_NODE_FILMSTRIP && n->u.strip.fps_q16
         && !n->u.strip.paused)
         surf_g.playing--;
+    /* A tween outliving its node is a write through a freed pointer every
+     * frame. Gated on the counter, so surf_init's 4096 node_free calls
+     * cost one comparison each rather than a table scan. */
+    if (surf_g.nfades > 0)
+        surf_fade_drop(n);
     n->type = SURF_NODE_FREE;
     n->next = surf_g.free_list;
     surf_g.free_list = n;
@@ -133,6 +139,7 @@ void surf_tick(void)
         surf_input_dispatch(&t);
     surf_scroll_tick();  /* momentum + spring-back (DESIGN.md §2.3 step 1) */
     surf_filmstrip_tick();  /* playing animations advance themselves */
+    surf_fade_tick();       /* ...and so do opacity tweens */
     surf_compose();
     if (surf_g.frame_div > 0 && surf_g.hal->wait_frame)
         surf_g.hal->wait_frame(surf_g.frame_div);
@@ -515,6 +522,146 @@ void surf_rect_set_color(surf_node *n, surf_color c)
     surf_damage_subtree(n);
 }
 
+/* Which nodes carry an opacity: the ones painted through hal->blend.
+ * See surf_node_set_opacity's note in surfer.h for why a rect and a
+ * textgrid (hal->fill) and a group (no render target) are not on it. */
+bool surf_node_can_fade(const surf_node *n)
+{
+    if (!n)
+        return false;
+    switch (n->type) {
+    case SURF_NODE_SPRITE:
+    case SURF_NODE_FILMSTRIP:
+    case SURF_NODE_NINEPATCH:
+    case SURF_NODE_LAYER:
+    case SURF_NODE_TEXT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The write itself, without touching any tween — what surf_fade_tick
+ * calls sixty times a second. */
+static void fade_apply(surf_node *n, uint8_t opa)
+{
+    if (n->opa == opa)
+        return;
+    /* Crossing 255 in either direction changes whether this node COVERS
+     * what is under it, and the compositor's occlusion early-out is
+     * decided per dirty rect at paint time — so the damage has to be the
+     * subtree either way and the layers below get repainted with it. */
+    n->opa = opa;
+    surf_damage_subtree(n);
+}
+
+bool surf_node_set_opacity(surf_node *n, uint8_t opa)
+{
+    if (!surf_node_can_fade(n))
+        return false;
+    /* A DIRECT WRITE WINS. Without this a running fade would overwrite it
+     * on the very next tick, so `spr.opacity = 1` in the middle of a
+     * fade-out would appear to do nothing at all — the shape of silent
+     * failure this API spent a whole section avoiding. */
+    surf_fade_drop(n);
+    fade_apply(n, opa);
+    return true;
+}
+
+/* ---- fades: opacity over time, driven by surf_tick ---- */
+
+static surf_fade *fade_of(const surf_node *n)
+{
+    if (surf_g.nfades <= 0)
+        return NULL;
+    for (int i = 0; i < SURF_MAX_FADES; i++)
+        if (surf_g.fades[i].n == n)
+            return &surf_g.fades[i];
+    return NULL;
+}
+
+void surf_fade_drop(surf_node *n)
+{
+    surf_fade *f = fade_of(n);
+    if (!f)
+        return;
+    f->n = NULL;
+    surf_g.nfades--;
+}
+
+void surf_node_fade_cancel(surf_node *n)
+{
+    surf_fade_drop(n);
+}
+
+bool surf_node_fading(const surf_node *n)
+{
+    return fade_of(n) != NULL;
+}
+
+bool surf_node_fade_to(surf_node *n, uint8_t to, int32_t ms)
+{
+    if (!surf_node_can_fade(n))
+        return false;
+    surf_fade_drop(n);                 /* a new fade replaces the old one */
+    /* Nothing to animate: no duration, no distance, or no clock to
+     * measure with. Land on the value rather than refusing — a caller
+     * asking to end up at `to` should end up at `to`. */
+    if (ms <= 0 || n->opa == to || !surf_g.hal || !surf_g.hal->now_us) {
+        fade_apply(n, to);
+        return true;
+    }
+    for (int i = 0; i < SURF_MAX_FADES; i++) {
+        surf_fade *f = &surf_g.fades[i];
+        if (f->n)
+            continue;
+        f->n = n;
+        f->from = n->opa;
+        f->to = to;
+        f->t0_us = surf_g.hal->now_us();
+        f->dur_us = (uint32_t)ms * 1000u;
+        surf_g.nfades++;
+        return true;
+    }
+    fade_apply(n, to);                 /* table full: instant, not ignored */
+    return true;
+}
+
+void surf_fade_tick(void)
+{
+    if (surf_g.nfades <= 0 || !surf_g.hal || !surf_g.hal->now_us)
+        return;
+    uint64_t now = surf_g.hal->now_us();
+    for (int i = 0; i < SURF_MAX_FADES; i++) {
+        surf_fade *f = &surf_g.fades[i];
+        if (!f->n)
+            continue;
+        uint64_t el = now - f->t0_us;
+        if (el >= f->dur_us) {
+            surf_node *n = f->n;
+            uint8_t to = f->to;
+            f->n = NULL;               /* clear BEFORE applying: the write
+                                        * damages, and a half-freed slot
+                                        * seen from a damage path would be
+                                        * a fade that never ends */
+            surf_g.nfades--;
+            fade_apply(n, to);
+            continue;
+        }
+        /* Integer lerp, no float: DESIGN.md's habit, and the numbers are
+         * tiny — 255 * 4e6 us fits int64 with room to spare. */
+        int32_t span = (int32_t)f->to - (int32_t)f->from;
+        int32_t at = f->from + (int32_t)((int64_t)span * (int64_t)el
+                                         / (int64_t)f->dur_us);
+        fade_apply(f->n, (uint8_t)at);
+    }
+}
+
+uint8_t surf_node_opacity(const surf_node *n)
+{
+    return n ? n->opa : 255;
+}
+
 void surf_rect_set_size(surf_node *n, int16_t w, int16_t h)
 {
     if (!n || n->type != SURF_NODE_RECT || (n->w == w && n->h == h))
@@ -774,7 +921,7 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
          * when streaming can't continue. */
         if (n->u.sprite.pan_shifted) {
             bool alive = n->u.sprite.fast_pan && surf_g.hal->band_shift &&
-                         surf_node_attached(n) &&
+                         n->opa == 255 && surf_node_attached(n) &&
                          !surf_node_effectively_hidden(n);
             if (alive) {
                 int16_t zx, zy;
@@ -789,8 +936,11 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
     }
 
     int16_t ax, ay;
+    /* opa < 255 rules out streaming: a band shift moves pixels that are
+     * ALREADY the composite of this node over what was behind it, and
+     * blending the node again over its own result blends twice. */
     bool can_fast = pan_only && n->u.sprite.fast_pan && surf_g.hal->band_shift &&
-                    n->u.sprite.img->opaque &&
+                    n->u.sprite.img->opaque && n->opa == 255 &&
                     n->u.sprite.xf.scale_q16 == SURF_ONE && n->u.sprite.xf.rot == 0 &&
                     n->u.sprite.xf.mirror == 0 && surf_node_attached(n) &&
                     !surf_node_effectively_hidden(n) &&
@@ -1118,7 +1268,7 @@ void surf_layer_set_offset(surf_node *n, int32_t off_q16)
          * (same rule and same measured reason as sprite fast pan). */
         if (n->u.layer.shifted) {
             bool alive = n->u.layer.fast && surf_g.hal->band_shift &&
-                         surf_node_attached(n) &&
+                         n->opa == 255 && surf_node_attached(n) &&
                          !surf_node_effectively_hidden(n);
             if (alive) {
                 int16_t zx, zy;
@@ -1141,7 +1291,8 @@ void surf_layer_set_offset(surf_node *n, int32_t off_q16)
     surf_rect band = {ax, ay, n->w, n->h};
     surf_rect on = surf_rect_intersect(band, (surf_rect){0, 0, surf_g.w, surf_g.h});
     bool can_fast = n->u.layer.fast && surf_g.hal->band_shift &&
-                    n->u.layer.strip->opaque && surf_node_attached(n) &&
+                    n->u.layer.strip->opaque && n->opa == 255 &&
+                    surf_node_attached(n) &&
                     !surf_node_effectively_hidden(n) &&
                     on.w == band.w && on.h == band.h &&
                     dx > -band.w && dx < band.w;

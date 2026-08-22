@@ -128,7 +128,7 @@ surf_image surf_glyph_image(const surf_image *base, const surf_font *base_font,
 
 /* shared by label and textinput paint: one glyph, clipped to vis */
 void surf_glyph_blit(const surf_image *img, const surf_glyph *g,
-                     int16_t dx, int16_t dy, surf_rect vis)
+                     int16_t dx, int16_t dy, surf_rect vis, uint8_t opa)
 {
     surf_rect dst = {dx, dy, g->w, g->h};
     surf_rect v = surf_rect_intersect(dst, vis);
@@ -137,7 +137,7 @@ void surf_glyph_blit(const surf_image *img, const surf_glyph *g,
     surf_rect src = {
         (int16_t)(g->x + (v.x - dx)), (int16_t)(g->y + (v.y - dy)), v.w, v.h,
     };
-    surf_g.hal->blend(img, src, (surf_point){v.x, v.y}, 255);
+    surf_g.hal->blend(img, src, (surf_point){v.x, v.y}, opa);
 }
 
 void surf_text_paint(const surf_paint_ent *e)
@@ -154,7 +154,8 @@ void surf_text_paint(const surf_paint_ent *e)
             continue;  /* spaces advance the pen, nothing to blit */
         surf_image im = surf_glyph_image(&n->u.text.img, n->u.text.font, tg.font);
         surf_glyph_blit(&im, tg.g,
-                        (int16_t)(e->ax + tg.x), (int16_t)(e->ay + tg.y), e->vis);
+                        (int16_t)(e->ax + tg.x), (int16_t)(e->ay + tg.y),
+                        e->vis, n->opa);
     }
 }
 

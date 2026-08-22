@@ -395,6 +395,167 @@ the frame's own cell**, and that going back to 1:1 returns to the plain
 blit — a fast path lost to a node that merely COULD be transformed is a
 cost nobody would notice until the panel.
 
+## A node can FADE, and the parameter was there all along
+
+`node.opacity` (`surf_node_set_opacity`, 0..255 in C, 0.0..1.0 from
+MicroPython) is one alpha multiplier over everything a node draws.
+
+**It is not a new mechanism — it is a parameter nothing ever set.**
+`hal->blend` has taken an `opa` since the hal was first sketched, and the
+compositor called it with a hardcoded 255 in the one place it is reached:
+
+```c
+surf_g.hal->blend(img, src, dst, 255);       /* compose.c, before */
+```
+
+Both backends already honoured it end to end — the SDL loop multiplies it
+into every one of its three format paths, and on the P4 it is the PPA
+blend unit's own `fg_alpha_scale_ratio`. So the feature cost a byte on
+the node and threading it through `paint()`, and on the device the fade
+is done by the same hardware op that was already running.
+
+**`xform_blend` had to grow the parameter, and that is the one real API
+change.** It is `blend` with a transform in front of it, and a fade that
+worked on a sprite and silently stopped working the moment somebody set
+`.scale` is exactly the kind of half-working this repo pays for twice.
+On the P4 it costs nothing: that function already ends in an `h_blend`
+of its scratch buffer, so the opacity just rides it — and an OPAQUE
+source now takes the blend path rather than the blit when faded, because
+`h_blit` has nowhere to put an opacity.
+
+**WHICH NODES, and the line is drawn by how they are painted.** Anything
+that reaches the screen through `hal->blend`: sprite, filmstrip,
+ninepatch, layer, and label (its glyphs are A8 blends, so it was one
+argument). A rect, a textgrid and a textinput's chrome are `hal->fill`,
+which has no opacity — a blended fill is a hal op that does not exist,
+and adding one is a bigger decision than this was. `surf_node_can_fade()`
+is the question.
+
+**A GROUP IS REFUSED, permanently.** Fading a group means compositing it
+whole and then blending the result once, which needs an offscreen render
+target; blending each child separately is a different picture, and two
+overlapping children show through each other where they overlap. surfer
+composites straight into the framebuffer by construction (DESIGN.md §1),
+so the honest answer is "fade the children" and not a plausible-looking
+approximation.
+
+**A REFUSAL RAISES.** `group.opacity = 0.5` is a TypeError naming what
+can fade and what to do instead, following `.rot`'s precedent three
+sections up — and for its reason, which is written down in tulip5's own
+notes as an afternoon lost to a kitty that would not turn. A silent
+no-op on the wrong node type is the most expensive recurring bug in this
+codebase. Reads stay lenient and answer 1.0.
+
+**IT IS VISUAL ONLY.** `surf_hit_test`, `surf_node_overlaps` and the ink
+test all ignore it, so a fade cannot change what a finger or a collision
+does halfway through. `hidden` still takes a node out of both.
+
+**THREE THINGS IT TURNS OFF, and every one of them is a correctness bug
+that leaves a plausible picture** — which is why `tests/test_opacity.c`
+exists and why each guard was verified by breaking it on purpose:
+
+- **the occlusion early-out.** A faded node covers nothing, so
+  `node_opaque()` returns false for it and the front-to-back walk keeps
+  going. Miss this and everything the node was hiding is simply not
+  painted: not a wrong colour, a HOLE showing whatever the framebuffer
+  last held.
+- **`band_shift` streaming**, for a fast-panning sprite and for a layer.
+  A shifted band holds pixels that are ALREADY this node composited over
+  what was behind it; blending the node again over its own result blends
+  twice. Both fall back to repainting and both come back at 255.
+- **the 9-patch's solid-centre fill.** `region_is_solid` only says yes to
+  a fully opaque block, so that one-op shortcut would paint the centre at
+  full strength straight through the fade. Faded, the centre tiles.
+
+**opa 0 never reaches the hal.** `collect()` drops the node outright —
+free, and it keeps a zero away from the PPA, which documents
+`fg_alpha_scale_ratio` as exclusive of zero. That is the shape of bug
+this repo keeps meeting: fine on a laptop, an error return on the panel.
+
+**And the byte is free.** `opa` lands in the padding before `parent` on
+both a 32- and a 64-bit build — `sizeof(surf_node)` is 136 before and
+after — so the node pool does not grow.
+
+**What it COSTS is the occlusion loss, and it is real.** Fading a 64px
+sprite is nothing; fading a full-screen backdrop means everything under
+it is composited every frame it is faded. That is inherent to
+transparency rather than a limitation of this implementation, and the
+device's answer for a whole-screen fade is still the one the P4 shares
+with a SNES: `INIDISP`-style, at the panel, not per node.
+
+### ...and it fades OVER TIME, without the app holding a clock
+
+```python
+spr.fade_out(300)          # to 0 over 300 ms
+spr.fade_in(300)
+spr.fade_to(0.4, 200)
+spr.opacity = 0.4          # still the manual control, and it CANCELS a fade
+spr.fading                 # is one running
+```
+
+`surf_tick` drives it, beside the filmstrip's own advance and for the
+same reasons: the app writes one line and never touches it again, and
+the fade **keeps running through frames the app is not being called
+for** — so a tulip5 app backgrounded mid-fade comes back finished
+rather than frozen half way.
+
+**THE STATE IS A SIDE TABLE, NOT A FIELD ON THE NODE.** A tween is 16
+bytes and almost no node ever fades; on tulip's 4096-node pool that
+would be 64 KB of PSRAM to serve the handful of sprites fading at any
+moment. 32 slots allocated with `surf_g` — DESIGN.md's rule that pools
+are sized at init and the frame path never allocates — and the tick is
+gated on a counter exactly the way `surf_filmstrip_tick` is, so it costs
+one comparison when nothing is fading.
+
+**IT LIVES IN `node.c` AND NOT IN A `fade.c`, and that is a build fact
+rather than taste.** surfer's own Makefile globs `src/core/*.c`, so a new
+file is picked up for the desktop and the web — and **tulip5's
+`micropython.cmake` LISTS the core sources by name**, so the same file
+would compile everywhere except the device and link with an undefined
+symbol at the very end of a ten-minute build. That is this repo's
+worked-on-the-mac shape with a new mechanism behind it.
+
+Five decisions, four of which are things that fail silently:
+
+- **A DIRECT `.opacity` WRITE CANCELS THE FADE.** Without it the tween
+  overwrites the write on the next tick, so `spr.opacity = 1` in the
+  middle of a fade-out appears to do nothing — the exact silent no-op
+  the opacity section above spends a paragraph refusing.
+- **A DESTROYED NODE DROPS ITS FADE**, in `node_free`. A slot holds a raw
+  pointer into the node pool and the pool RECYCLES, so a fade outliving
+  its node does not merely write through freed memory — it writes into
+  whatever node was allocated next, every frame, invisibly. The test
+  destroys a fading node, allocates another, and watches the new one
+  stay put.
+- **A late fade lands EXACTLY on its target**, and the slot is cleared
+  BEFORE the last write: the write damages, and a half-freed slot seen
+  from a damage path would be a fade that never ends.
+- **A full table is INSTANT, not ignored.** A caller that asked to end up
+  at 0 ends up at 0; what it loses is the animation, which is the only
+  part that can be dropped without lying. Same for `ms <= 0`.
+- **It does NOT hide the node at the end.** Opacity 0 already paints
+  nothing and never reaches the hal, so auto-hiding buys nothing — and it
+  would silently change hit testing, which the opacity note promises it
+  never does.
+
+Linear, deliberately. A fade is the one tween where an ease buys nothing
+anybody can see, and easing curves are a menu that never stops growing.
+
+**AND THE BAKED-FRAMES VERSION WAS MEASURED AND REJECTED**, because it is
+the obvious idea and somebody will have it again. Pre-baking N
+alpha-scaled copies of the image at load and swapping them with
+`set_image` buys **nothing**: measured on a 128x128 sprite over the same
+scene, 8.396 ms/frame against 8.335 for `node.opacity` — 1.01x, inside
+the noise — for **704 KB** of extra image memory. The reason is
+structural rather than incidental: a pre-faded ARGB copy is not opaque
+and a node at opa < 255 is not opaque, so both take the identical
+compositor path, both lose the occlusion early-out and both blend
+instead of blit. The prebake dodges not one cost. It was the right
+answer only while the alternative was a per-pixel Python loop, and it
+stopped being one the moment the hal's own `opa` was wired up. Where a
+load-time bake DOES earn its keep is COLOUR — a red ship in green —
+which node opacity cannot do and A8 tint cannot do for multi-colour art.
+
 ## A sprite's picture is NOT fixed at birth any more
 
 `surf_sprite_new(const surf_image *img, ...)` took the image and nothing

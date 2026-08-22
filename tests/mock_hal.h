@@ -24,6 +24,7 @@ typedef struct {
     surf_rect  vis;    /* xform only */
     uint8_t    rot;    /* xform only */
     uint8_t    mirror; /* xform only */
+    uint8_t    opa;    /* blend + xform: the node opacity that reached the hal */
     int        nrects;
 } mock_op;
 

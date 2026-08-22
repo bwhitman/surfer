@@ -268,6 +268,8 @@ static void test_frame_lock(void)
         OK(ops[i].op != 'W');
 }
 
+void run_opacity_tests(void);
+
 int main(void)
 {
     test_rect_ops();
@@ -287,6 +289,7 @@ int main(void)
     run_ink_tests();
     run_hitbox_tests();
     run_pad_tests();
+    run_opacity_tests();
     test_frame_lock();
     surf_deinit();
 

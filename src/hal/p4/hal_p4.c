@@ -311,7 +311,16 @@ static void h_blend(const surf_image *src, surf_rect sr, surf_point dst, uint8_t
         },
         .bg_alpha_update_mode = PPA_ALPHA_FIX_VALUE,
         .bg_alpha_fix_val = 0xff,
-        .fg_alpha_update_mode = opa == 255 ? PPA_ALPHA_NO_CHANGE : PPA_ALPHA_SCALE,
+        /* RGB565 carries NO source alpha, so there is nothing for
+         * ALPHA_SCALE to scale — it is FIX_VALUE or the fade does
+         * nothing. ARGB and A8 have real per-pixel alpha and must be
+         * SCALEd, or a node opacity would flatten the art's own
+         * transparency to a constant and square off every sprite. */
+        .fg_alpha_update_mode =
+            opa == 255            ? PPA_ALPHA_NO_CHANGE
+            : src->format == SURF_FMT_RGB565 ? PPA_ALPHA_FIX_VALUE
+                                             : PPA_ALPHA_SCALE,
+        .fg_alpha_fix_val = opa,
         .fg_alpha_scale_ratio = (float)opa / 255.0f,
         /* A8 (glyph atlases): alpha from the data, color from the tint */
         .fg_fix_rgb_val = {
@@ -338,8 +347,11 @@ static void *h_alloc_image(size_t bytes);
 static void h_free_image(void *p);
 
 static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
-                          surf_rect vis, uint8_t rot, uint8_t mirror)
+                          surf_rect vis, uint8_t rot, uint8_t mirror,
+                          uint8_t opa)
 {
+    if (opa == 0)
+        return;
     int bpp = bytespp(src);
     int32_t stride = ((int32_t)dst_r.w * bpp + P4_ALIGN - 1) & ~(P4_ALIGN - 1);
     size_t need = (size_t)stride * dst_r.h;
@@ -418,7 +430,10 @@ static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
         .opaque = src->opaque,
         .tint = src->tint,
     };
-    if (src->opaque)
+    /* opa < 255 forces the blend engine even for an opaque source: the
+     * PPA's fg_alpha_scale_ratio is where the fade actually happens, and
+     * h_blit has no such field. Same two ops either way. */
+    if (src->opaque && opa == 255)
         h_blit(&scratch,
                (surf_rect){(int16_t)(vis.x - dst_r.x), (int16_t)(vis.y - dst_r.y),
                            vis.w, vis.h},
@@ -427,7 +442,7 @@ static void h_xform_blend(const surf_image *src, surf_rect sr, surf_rect dst_r,
         h_blend(&scratch,
                 (surf_rect){(int16_t)(vis.x - dst_r.x), (int16_t)(vis.y - dst_r.y),
                             vis.w, vis.h},
-                (surf_point){vis.x, vis.y}, 255);
+                (surf_point){vis.x, vis.y}, opa);
 }
 
 static bool fbcpy_done(esp_async_fbcpy_handle_t mcp, esp_async_fbcpy_event_data_t *ev,

@@ -177,10 +177,15 @@ typedef struct {
     /* Draw src_r scaled into dst_r, mirrored (bit0 = x, bit1 = y, applied
      * to the source before rotation) and rotated by `rot` quarter turns
      * CCW (matching the P4 PPA's SRM engine), alpha-blended unless the
-     * image is opaque; only the `vis` sub-rect of dst_r must be written.
-     * dst_r is the post-rotation footprint. */
+     * image is opaque AND opa is 255; only the `vis` sub-rect of dst_r
+     * must be written. dst_r is the post-rotation footprint.
+     *
+     * `opa` scales the whole draw the way it does in `blend` above — the
+     * two are one op with and without a transform, so a parameter on one
+     * and not the other made node opacity work on an untransformed
+     * sprite and silently do nothing the moment somebody scaled it. */
     void (*xform_blend)(const surf_image *src, surf_rect src_r, surf_rect dst_r,
-                        surf_rect vis, uint8_t rot, uint8_t mirror);
+                        surf_rect vis, uint8_t rot, uint8_t mirror, uint8_t opa);
     void (*present)(const surf_rect *dirty, int n);
     void (*wait_idle)(void);
     uint64_t (*now_us)(void);
@@ -466,6 +471,69 @@ void surf_node_damage(surf_node *n);   /* force a repaint (e.g. after retint) */
  * over the intersection of two boxes that already touch. */
 bool surf_node_overlaps(const surf_node *a, const surf_node *b);
 void surf_node_set_hidden(surf_node *n, bool hidden);
+
+/* OPACITY — one alpha multiplier over everything a node draws.
+ *
+ * 255 is the default and costs nothing: the compositor takes exactly the
+ * paths it always did. Below that the node's draw becomes a blend scaled
+ * by `opa`, which on the P4 is the PPA blend unit's own
+ * fg_alpha_scale_ratio and on SDL is a multiply already in the loop — so
+ * this is a parameter the hal had all along and nothing above ever set.
+ *
+ * WHICH NODES, and the line is not arbitrary: a node that draws a
+ * PICTURE, i.e. everything painted through hal->blend. Sprite,
+ * filmstrip, ninepatch, layer and label. A rect, a textgrid and a
+ * textinput's chrome are hal->fill, which has no opacity — a blended
+ * fill is a hal op that does not exist, and inventing one is a bigger
+ * change than this. surf_node_can_fade() is the question; setting it on
+ * anything else is REFUSED (false) rather than quietly ignored, and the
+ * MicroPython binding raises. That is the .rot-on-a-group lesson: a
+ * silent no-op on the wrong node type costs somebody an afternoon.
+ *
+ * A GROUP IS REFUSED, and permanently rather than pending work. Fading a
+ * group means compositing it whole and then blending the result once,
+ * which needs an offscreen render target; blending each child separately
+ * is a different picture — two overlapping children both show through
+ * each other, and the overlap comes out wrong. surfer composites
+ * straight into the framebuffer by construction (DESIGN.md §1), so the
+ * honest answer is to fade the children.
+ *
+ * IT IS VISUAL ONLY. Hit testing, surf_node_overlaps and the ink test
+ * ignore it, so a fade cannot change what a finger or a collision does
+ * halfway through. `hidden` is still the way to take a node out of both.
+ *
+ * WHAT IT COSTS: a translucent node is not opaque, so it stops covering
+ * what is behind it — the compositor's occlusion early-out no longer
+ * stops at it, and everything underneath is painted too. It also turns
+ * OFF band_shift streaming for a fast-panning sprite or layer (a shifted
+ * band holds an already-composited result; re-blending it would blend
+ * twice). Both come back the moment it returns to 255. Fading a
+ * full-screen backdrop is therefore a real bill; fading a 64px sprite is
+ * not. */
+bool surf_node_can_fade(const surf_node *n);
+bool surf_node_set_opacity(surf_node *n, uint8_t opa);  /* false: wrong type */
+uint8_t surf_node_opacity(const surf_node *n);          /* 255 where unsupported */
+
+/* ...AND OVER TIME. surf_tick drives the tween, so the app writes one
+ * line and never touches it again — no per-frame clock arithmetic, and
+ * it keeps running through frames the app itself is not being called
+ * for. Same machinery as a playing filmstrip and ticked beside it.
+ *
+ * Linear, deliberately: a fade is the one tween where an ease buys
+ * nothing anybody can see, and easing curves are a menu that never
+ * stops growing.
+ *
+ * A DIRECT surf_node_set_opacity() CANCELS a running fade — otherwise
+ * the tween would overwrite it on the next tick and the write would look
+ * like it did nothing. Starting a fade replaces any fade already on that
+ * node, destroying a node cancels its fade, and ms <= 0 lands on the end
+ * value at once. It does NOT hide the node at the end: opacity 0 already
+ * paints nothing and never reaches the hal, and auto-hiding would
+ * silently change hit testing, which the opacity note above promises it
+ * never does. */
+bool surf_node_fade_to(surf_node *n, uint8_t to, int32_t ms);
+void surf_node_fade_cancel(surf_node *n);
+bool surf_node_fading(const surf_node *n);
 void surf_rect_set_color(surf_node *n, surf_color c);
 void surf_rect_set_size(surf_node *n, int16_t w, int16_t h);
 void surf_sprite_set_src(surf_node *n, surf_rect src);

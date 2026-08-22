@@ -601,7 +601,7 @@ void surf_textgrid_paint(const surf_paint_ent *e)
                     ? (int16_t)(cy + (ch - cg.g->adv) / 2 + cg.g->adv + cg.g->yoff)
                     : (int16_t)(cy + n->u.grid.font->ascent + cg.g->yoff);
                 surf_glyph_blit(&img, cg.g, (int16_t)(pen + cg.g->xoff), gy,
-                                e->vis);
+                                e->vis, 255);
             }
         }
     }
