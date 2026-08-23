@@ -2358,11 +2358,43 @@ static mp_obj_t widget_set_label(mp_obj_t self_in, mp_obj_t idx, mp_obj_t text)
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(widget_set_label_obj, widget_set_label);
 
+/* tabs.set_face(i, color) / tabs.set_dim(i, color) — ONE tab's two
+ * tints, for a strip whose pages each carry their own paper: the
+ * bright face is that page's background (the join rule, per tab) and
+ * the dim one a darker shade of it, so an unselected tab still says
+ * which page it opens. `.color` keeps its old meaning — every face at
+ * once. */
+static mp_obj_t widget_tab_face(mp_obj_t self_in, mp_obj_t idx,
+                                mp_obj_t col)
+{
+    surfer_widget_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (o->kind != W_TABS)
+        mp_raise_TypeError(MP_ERROR_TEXT("not a tabs widget"));
+    surf_tabs_set_face_at(o->w, mp_obj_get_int(idx),
+                          (surf_color)mp_obj_get_int(col));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(widget_tab_face_obj, widget_tab_face);
+
+static mp_obj_t widget_tab_dim(mp_obj_t self_in, mp_obj_t idx,
+                               mp_obj_t col)
+{
+    surfer_widget_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (o->kind != W_TABS)
+        mp_raise_TypeError(MP_ERROR_TEXT("not a tabs widget"));
+    surf_tabs_set_dim_at(o->w, mp_obj_get_int(idx),
+                         (surf_color)mp_obj_get_int(col));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(widget_tab_dim_obj, widget_tab_dim);
+
 static const mp_rom_map_elem_t widget_locals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_detach), MP_ROM_PTR(&widget_detach_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_range), MP_ROM_PTR(&widget_set_range_obj)},
     {MP_ROM_QSTR(MP_QSTR_page), MP_ROM_PTR(&widget_page_obj)},
     {MP_ROM_QSTR(MP_QSTR_set_label), MP_ROM_PTR(&widget_set_label_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_face), MP_ROM_PTR(&widget_tab_face_obj)},
+    {MP_ROM_QSTR(MP_QSTR_set_dim), MP_ROM_PTR(&widget_tab_dim_obj)},
 };
 static MP_DEFINE_CONST_DICT(widget_locals_dict, widget_locals_table);
 

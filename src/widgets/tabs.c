@@ -44,7 +44,14 @@
 struct surf_tabs {
     surf_node  *root;      /* the whole thing: strip + pages */
     surf_node  *strip;     /* the tabs */
-    surf_image  on, off;   /* our own tints over shared pixels (knob.c) */
+    surf_image *ons, *offs; /* PER TAB: our own tints over shared pixels
+                             * (knob.c's trick). One struct per tab and
+                             * per state rather than one per state,
+                             * because a strip over pages that disagree
+                             * about their paper wants each tab dressed
+                             * in its own two colours — see
+                             * surf_tabs_set_face_at / _dim_at. A
+                             * struct costs bytes and no pixels. */
     surf_node **up;        /* per tab: the dim face and the bright one */
     surf_node **down;
     surf_node **label;     /* ...and the two legends that go with them */
@@ -145,16 +152,12 @@ surf_tabs *surf_tabs_new(surf_node *parent, int16_t x, int16_t y,
     t->label = calloc((size_t)count, sizeof *t->label);
     t->label_on = calloc((size_t)count, sizeof *t->label_on);
     t->page = calloc((size_t)count, sizeof *t->page);
+    t->ons = calloc((size_t)count, sizeof *t->ons);
+    t->offs = calloc((size_t)count, sizeof *t->offs);
     t->root = surf_group_new(x, y);
     t->strip = surf_group_new(0, 0);
-    /* our own copies of the style's image struct: shared pixels, our own
-       tint, one per state — the same arrangement every A8 widget uses */
-    t->on = *style->patch;
-    t->on.tint = style->face ? style->face : SURF_RGB(47, 51, 62);
-    t->off = *style->patch;
-    t->off.tint = style->dim ? style->dim : SURF_RGB(30, 33, 40);
     if (!t->up || !t->down || !t->label || !t->label_on || !t->page ||
-        !t->root || !t->strip) {
+        !t->ons || !t->offs || !t->root || !t->strip) {
         surf_tabs_destroy(t);
         return NULL;
     }
@@ -168,12 +171,19 @@ surf_tabs *surf_tabs_new(surf_node *parent, int16_t x, int16_t y,
     for (int32_t i = 0; i < count; i++) {
         int16_t tx = (int16_t)(i * t->tab_w);
         const char *lab = labels && labels[i] ? labels[i] : "";
+        /* this tab's own copies of the style's image struct: shared
+           pixels, its own tint, one per state — the same arrangement
+           every A8 widget uses, one level finer */
+        t->ons[i] = *style->patch;
+        t->ons[i].tint = style->face ? style->face : SURF_RGB(47, 51, 62);
+        t->offs[i] = *style->patch;
+        t->offs[i].tint = style->dim ? style->dim : SURF_RGB(30, 33, 40);
         /* the SIDE insets keep the corner curve unstretched; the bottom
            inset is 2, because there is nothing down there to preserve */
-        t->up[i] = surf_ninepatch_new(&t->off, tx, 0, t->tab_w, tab_h,
+        t->up[i] = surf_ninepatch_new(&t->offs[i], tx, 0, t->tab_w, tab_h,
                                       style->inset_side, style->inset_top,
                                       style->inset_side, style->inset_bottom);
-        t->down[i] = surf_ninepatch_new(&t->on, tx, 0, t->tab_w, tab_h,
+        t->down[i] = surf_ninepatch_new(&t->ons[i], tx, 0, t->tab_w, tab_h,
                                         style->inset_side, style->inset_top,
                                         style->inset_side, style->inset_bottom);
         t->label[i] = surf_text_new(style->font, lab, tx, 0, style->text);
@@ -221,6 +231,8 @@ void surf_tabs_destroy(surf_tabs *t)
     free(t->label);
     free(t->label_on);
     free(t->page);
+    free(t->ons);
+    free(t->offs);
     free(t);
 }
 
@@ -257,20 +269,56 @@ void surf_tabs_set_label(surf_tabs *t, int32_t i, const char *label)
  * because the common case is moving the face alone and "leave the other"
  * has no spare value to say it with: 0 is black, which is a colour
  * somebody will want. The sprites already point at these images, so a
- * repaint is the whole update. */
+ * repaint is the whole update. These two move EVERY tab — the whole
+ * strip's meaning of the words, kept — and the _at pair below moves
+ * one. */
 void surf_tabs_set_face(surf_tabs *t, surf_color c)
 {
-    if (!t || t->on.tint == c)
+    if (!t)
         return;
-    t->on.tint = c;
-    surf_node_damage(t->strip);
+    bool moved = false;
+    for (int32_t i = 0; i < t->count; i++)
+        if (t->ons[i].tint != c) {
+            t->ons[i].tint = c;
+            moved = true;
+        }
+    if (moved)
+        surf_node_damage(t->strip);
 }
 
 void surf_tabs_set_dim(surf_tabs *t, surf_color c)
 {
-    if (!t || t->off.tint == c)
+    if (!t)
         return;
-    t->off.tint = c;
+    bool moved = false;
+    for (int32_t i = 0; i < t->count; i++)
+        if (t->offs[i].tint != c) {
+            t->offs[i].tint = c;
+            moved = true;
+        }
+    if (moved)
+        surf_node_damage(t->strip);
+}
+
+/* ...and ONE tab's two colours, for a strip whose pages disagree about
+ * their paper: the bright face should be THAT page's background (the
+ * join rule, applied per tab — and it makes the press feedback show
+ * the colour you are about to get), the dim one a darker shade of the
+ * same, so an unselected tab still says which page it opens. Out of
+ * range is ignored, set_label's rule. */
+void surf_tabs_set_face_at(surf_tabs *t, int32_t i, surf_color c)
+{
+    if (!t || i < 0 || i >= t->count || t->ons[i].tint == c)
+        return;
+    t->ons[i].tint = c;
+    surf_node_damage(t->strip);
+}
+
+void surf_tabs_set_dim_at(surf_tabs *t, int32_t i, surf_color c)
+{
+    if (!t || i < 0 || i >= t->count || t->offs[i].tint == c)
+        return;
+    t->offs[i].tint = c;
     surf_node_damage(t->strip);
 }
 

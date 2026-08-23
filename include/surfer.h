@@ -1115,6 +1115,12 @@ void       surf_tabs_set_index(surf_tabs *t, int32_t idx);  /* no cb */
 void       surf_tabs_set_label(surf_tabs *t, int32_t i, const char *label);
 void       surf_tabs_set_face(surf_tabs *t, surf_color c);  /* the current tab */
 void       surf_tabs_set_dim(surf_tabs *t, surf_color c);   /* all the others */
+/* ...and per tab, for a strip whose pages each carry their own paper:
+ * tab i's bright face (that page's background) and its dim one (a
+ * darker shade of the same, so an unselected tab still says which
+ * page it opens). */
+void       surf_tabs_set_face_at(surf_tabs *t, int32_t i, surf_color c);
+void       surf_tabs_set_dim_at(surf_tabs *t, int32_t i, surf_color c);
 void       surf_tabs_on_change(surf_tabs *t, surf_index_cb cb, void *user);
 
 /* Radio: N options, exactly one chosen, in a column or a row. The

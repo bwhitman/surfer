@@ -921,11 +921,21 @@ fill and nothing else ever has to know it exists.
   page below was the same object.
 - **A8, so the colours are the CALLER'S.** `style->face` is meant to be
   the page background and `style->dim` is every other tab; the widget
-  keeps two copies of the image struct with two tints, which is the
-  knob's trick for the knob's reason — a tint is a palette register on
-  the P4, so the second colour costs no asset and no pixels.
-  `surf_tabs_set_face` / `set_dim` move them for a caller whose theme
-  changes underneath.
+  keeps tinted copies of the image struct, which is the knob's trick
+  for the knob's reason — a tint is a palette register on the P4, so
+  another colour costs no asset and no pixels. `surf_tabs_set_face` /
+  `set_dim` move the whole strip for a caller whose theme changes
+  underneath — and the copies are PER TAB now (a struct per tab per
+  state, bytes and no pixels), so `surf_tabs_set_face_at` / `set_dim_at`
+  dress one tab in its own pair. That is for a strip whose pages each
+  carry their own paper (tulip5's world app: grey files, blue chat,
+  green games): the bright face is that page's background, so the join
+  rule holds on every page with nothing chasing the selection — and
+  press feedback shows the colour you are about to get — while the dim
+  one is a darker shade of the same, so an unselected tab still says
+  which page it opens. Bound as `tabs.set_face(i, c)` /
+  `tabs.set_dim(i, c)`, beside `set_label`'s per-tab shape; `.color`
+  keeps its old meaning, every face at once.
 - **Two labels per tab, one hidden.** A label's colour is baked when the
   node is made (`set_color` is a silent no-op on text), and the current
   tab has to read louder than the rest — so the bright one and the dim
