@@ -51,6 +51,28 @@ void surf_dirty_reset(surf_dirty *d, surf_rect clip)
 
 void surf_dirty_add(surf_dirty *d, surf_rect r)
 {
+    /* EVEN-ALIGN BOTH AXES, and this is a hardware bug's fence, not
+     * tidiness: the P4's SRM engine WEDGES on odd-width blocks — the
+     * op is accepted by IDF's driver and never completes, which is the
+     * exact stuck-transaction its own TODO admits it cannot recover
+     * (ppa_dead's whole story, hal_p4.c). Measured on a P4X rev 3.2:
+     * a sprite moving 3px a frame (odd-width damage every frame) kills
+     * the engine inside a dozen ops; the same sprite at 2px a frame
+     * runs forever. The dirty rect is the one place every block the
+     * compositor hands the PPA descends from, and GROWING a damage
+     * rect is always correct — everything intersecting it repaints —
+     * where aligning individual ops in the hal would paint 1px stripes
+     * of background over sprites that are not repainting this frame.
+     * Evenness survives the clip below because every screen here has
+     * even dimensions and the clip starts at 0. Costs at most one
+     * extra pixel column and row per rect. */
+    {
+        int x1 = r.x + r.w, y1 = r.y + r.h;
+        r.x &= (int16_t)~1;
+        r.y &= (int16_t)~1;
+        r.w = (int16_t)(((x1 - r.x) + 1) & ~1);
+        r.h = (int16_t)(((y1 - r.y) + 1) & ~1);
+    }
     r = surf_rect_intersect(r, d->clip);
     if (surf_rect_empty(r))
         return;

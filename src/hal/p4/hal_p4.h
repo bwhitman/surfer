@@ -62,8 +62,13 @@ void surf_hal_p4_fb_invalidate(void);
 
 /* DMA2D copies that gave up waiting for completion. Zero on a healthy
  * machine; non-zero means the compositor took the timeout path that
- * stops a lost completion becoming a frozen screen. */
+ * stops a lost completion becoming a frozen screen.
+ *   fbcpy_dead  latched by the first timeout, one-way, ppa_dead's rule:
+ *               the two share the 2D-DMA, so a wedged PPA op takes the
+ *               copies with it, and without this every later frame paid
+ *               three full timeouts — 300 ms a frame, for ever. */
 extern uint32_t surf_hal_p4_fbcpy_timeouts;
+extern bool     surf_hal_p4_fbcpy_dead;
 
 /* The same accounting for the PPA. A wedged engine never gives its
  * completion back, so before these existed the compositor simply stopped
@@ -76,5 +81,11 @@ extern uint32_t surf_hal_p4_ppa_timeouts;
 extern uint32_t surf_hal_p4_ppa_errors;
 extern uint32_t surf_hal_p4_ppa_skipped;
 extern bool     surf_hal_p4_ppa_dead;
+
+/* Post-mortem for the latch: the last op submitted before the timeout
+ * (see the array's layout note in hal_p4.c). last_op is live; wedge_op
+ * is the snapshot the timeout took, all-zero until it fires. */
+extern uint32_t surf_hal_p4_last_op[14];
+extern uint32_t surf_hal_p4_wedge_op[14];
 
 #endif /* SURF_HAL_P4_H */

@@ -142,6 +142,34 @@ uint32_t surf_hal_p4_ppa_errors;
 uint32_t surf_hal_p4_ppa_skipped;
 bool     surf_hal_p4_ppa_dead;
 
+/* THE OP THAT WEDGED THE ENGINE, for the post-mortem the latch's own
+ * comment asks for. Every submit wrapper notes its op's geometry here;
+ * the timeout path snapshots it. [0]=kind (0 fill / 1 srm / 2 blend),
+ * [1]=in buffer, [2..3]=in pic w/h, [4..5]=block w/h, [6..7]=in
+ * offsets, [8..9]=out offsets, [10]=in color mode, [11..12]=per-kind
+ * extras (srm: scale_x*1024, rot|mirror bits; blend: alpha mode, fix
+ * val), [13]=ops submitted so far. */
+uint32_t surf_hal_p4_last_op[14];
+uint32_t surf_hal_p4_wedge_op[14];
+
+static void op_note(uint32_t kind, const void *in_buf,
+                    uint32_t in_pw, uint32_t in_ph,
+                    uint32_t bw, uint32_t bh,
+                    uint32_t in_ox, uint32_t in_oy,
+                    uint32_t out_ox, uint32_t out_oy,
+                    uint32_t cm_in, uint32_t x1, uint32_t x2)
+{
+    uint32_t *o = surf_hal_p4_last_op;
+    o[0] = kind;
+    o[1] = (uint32_t)(uintptr_t)in_buf;
+    o[2] = in_pw;  o[3] = in_ph;
+    o[4] = bw;     o[5] = bh;
+    o[6] = in_ox;  o[7] = in_oy;
+    o[8] = out_ox; o[9] = out_oy;
+    o[10] = cm_in; o[11] = x1; o[12] = x2;
+    o[13]++;
+}
+
 static bool ppa_done(ppa_client_handle_t c, ppa_event_data_t *ev, void *arg)
 {
     (void)c; (void)ev; (void)arg;
@@ -172,22 +200,43 @@ static void ppa_end(esp_err_t submitted)
         return;
     surf_hal_p4_ppa_timeouts++;
     surf_hal_p4_ppa_dead = true;
+    memcpy(surf_hal_p4_wedge_op, surf_hal_p4_last_op,
+           sizeof(surf_hal_p4_wedge_op));
 }
 
 static void ppa_fill_sync(const ppa_fill_oper_config_t *op)
 {
+    op_note(0, op->out.buffer, op->out.pic_w, op->out.pic_h,
+            op->fill_block_w, op->fill_block_h, 0, 0,
+            op->out.block_offset_x, op->out.block_offset_y,
+            (uint32_t)op->out.fill_cm, 0, 0);
     if (ppa_begin())
         ppa_end(ppa_do_fill(S.fill_cl, op));
 }
 
 static void ppa_srm_sync(const ppa_srm_oper_config_t *op)
 {
+    op_note(1, op->in.buffer, op->in.pic_w, op->in.pic_h,
+            op->in.block_w, op->in.block_h,
+            op->in.block_offset_x, op->in.block_offset_y,
+            op->out.block_offset_x, op->out.block_offset_y,
+            (uint32_t)op->in.srm_cm,
+            (uint32_t)(op->scale_x * 1024.0f),
+            (uint32_t)op->rotation_angle |
+                ((uint32_t)op->mirror_x << 8) |
+                ((uint32_t)op->mirror_y << 9));
     if (ppa_begin())
         ppa_end(ppa_do_scale_rotate_mirror(S.srm_cl, op));
 }
 
 static void ppa_blend_sync(const ppa_blend_oper_config_t *op)
 {
+    op_note(2, op->in_fg.buffer, op->in_fg.pic_w, op->in_fg.pic_h,
+            op->in_fg.block_w, op->in_fg.block_h,
+            op->in_fg.block_offset_x, op->in_fg.block_offset_y,
+            op->out.block_offset_x, op->out.block_offset_y,
+            (uint32_t)op->in_fg.blend_cm,
+            (uint32_t)op->fg_alpha_update_mode, op->fg_alpha_fix_val);
     if (ppa_begin())
         ppa_end(ppa_do_blend(S.blend_cl, op));
 }
@@ -480,22 +529,54 @@ static bool fbcpy_done(esp_async_fbcpy_handle_t mcp, esp_async_fbcpy_event_data_
  * Found while chasing a different freeze (a mirrored sprite wedging the
  * PPA SRM path) — this is NOT that bug and does not fix it. It is a
  * latent hazard on its own and is fixed here on its own merits.
+ *
+ * ...AND THEN IT LATCHES, because bounding the wait was only half of
+ * it. `ppa_dead` gives up after the first timeout and skips every later
+ * op; this path did not, and that asymmetry is a whole bug on its own:
+ * the two share the 2D-DMA, so a wedged PPA transaction that never
+ * leaves the engine's queue takes the COPIES down with it, and an
+ * unlatched copy pays its full timeout for ever.
+ *
+ * Measured on a P4 with a real app, the frame it happens on and every
+ * frame after:
+ *
+ *   frame 276  compose 502 ms  ppa_timeouts 0->1  ppa_dead 0->1  fbcpy 3
+ *   frame 277  compose 302 ms  ppa_skipped +14/f  fbcpy_timeouts +3/f
+ *   frame 296  compose 302 ms  ...unchanged, for ever
+ *
+ * and the arithmetic is exactly this function: THREE copies a frame at
+ * 100 ms each is the 300 ms, and the first frame's 502 is that plus the
+ * one 200 ms PPA timeout that started it. The picture was frozen either
+ * way; what the missing latch bought was a machine at 3 fps instead of
+ * a machine that still answers — which defeats the whole point stated
+ * above ppa_dead, "not to fix a wedge, but to turn a dead board into a
+ * frozen picture you can ask questions of". One of the two paths
+ * honoured that and the other quietly did not.
+ *
+ * ONE timeout latches, ppa_dead's rule and for ppa_dead's reason: there
+ * is no API to reset a stalled 2D-DMA engine, so a second attempt is
+ * 100 ms spent to learn what the first one already proved. A copy that
+ * has not landed in 100 ms is not a busy machine, it is a lost
+ * completion.
  */
 #define FBCPY_TIMEOUT_MS 100
 
 /* copies that gave up waiting; 0 on a healthy machine */
 uint32_t surf_hal_p4_fbcpy_timeouts;
+bool     surf_hal_p4_fbcpy_dead;
 
 static void fbcpy_sync(const esp_async_fbcpy_trans_desc_t *t)
 {
-    if (!S.fbcpy)
+    if (!S.fbcpy || surf_hal_p4_fbcpy_dead)
         return;
     xSemaphoreTake(S.fbcpy_sem, 0);          /* discard any stale give */
     if (esp_async_fbcpy(S.fbcpy, (esp_async_fbcpy_trans_desc_t *)t,
                         fbcpy_done, S.fbcpy_sem) != ESP_OK)
         return;
-    if (xSemaphoreTake(S.fbcpy_sem, pdMS_TO_TICKS(FBCPY_TIMEOUT_MS)) != pdTRUE)
+    if (xSemaphoreTake(S.fbcpy_sem, pdMS_TO_TICKS(FBCPY_TIMEOUT_MS)) != pdTRUE) {
         surf_hal_p4_fbcpy_timeouts++;
+        surf_hal_p4_fbcpy_dead = true;
+    }
 }
 
 /* The end-of-frame ISR is when the DPI DMA latches the most recently
