@@ -81,10 +81,15 @@ src/text/               atlas text, wrap, textinput logic
 src/hal/sdl/  src/hal/p4/  src/hal/web/
 bindings/surfer/modsurfer.c
 tools/surfpack.py       asset + font atlas packer
-assets/                 source art; assets/kenney/lib/ is the CC0 sprite
-                        library — 40k Kenney sprites with lib/index.tsv
-                        (path → description → WxH) for finding art by
-                        grepping descriptions instead of looking at pixels
+assets/                 source art. The Kenney sprite LIBRARY that
+                        lived at assets/kenney/lib/ (40k sprites, 182 MB)
+                        moved to its own repo, shorepine/kenney — the
+                        FULL kenney.nl dump now, 3D kits included, built
+                        by that repo's tools/build_tree.py (this repo's
+                        tools/kenney_index.py was its ancestor). surfer
+                        is a UI library and the art it keeps is only
+                        what its own examples bake (assets/kenney/*.png,
+                        five Space Shooter sprites)
 ports/esp32p4/          ESP-IDF project wrapping the p4 hal
 demos/
 ```
@@ -186,8 +191,8 @@ is just node damage — the compositor repaints what it uncovers. MP API:
 so the GC can't free pixels in use), `surfer.sprite(img, x, y)` with
 `.scale` (float) and `.rot` (degrees, multiples of 90). Demo:
 `import space` in tulip mode (examples/space.py + space_assets.py —
-Kenney CC0 art baked to bytes by tools/pngwrap.py; source PNGs in
-assets/kenney/). Frozen into web + SURFER_P4. Verified: unix shot,
+Kenney CC0 art baked to bytes by tools/pngwrap.py; the five source
+PNGs live in assets/kenney/). Frozen into web + SURFER_P4. Verified: unix shot,
 web (anim delta + frame dump), P4 runs it without PPA errors
 (on-panel eyeball pending).
 
