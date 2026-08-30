@@ -269,6 +269,7 @@ static void test_frame_lock(void)
 }
 
 void run_opacity_tests(void);
+void run_mesh_tests(void);   /* tests/test_mesh.c */
 
 int main(void)
 {
@@ -290,6 +291,7 @@ int main(void)
     run_hitbox_tests();
     run_pad_tests();
     run_opacity_tests();
+    run_mesh_tests();
     test_frame_lock();
     surf_deinit();
 

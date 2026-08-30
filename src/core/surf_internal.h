@@ -296,6 +296,7 @@ const uint32_t *surf_ink(const surf_image *img, int32_t *words_per_row);
 void surf_ink_dirty(const surf_image *img);  /* pixels changed: rebuild lazily */
 void surf_ink_drop(const surf_image *img);   /* image destroyed */
 void surf_ink_reset(void);                   /* surf_deinit: drop everything */
+void surf_mesh_reset(void);                  /* surf_deinit: render scratch */
 /* own HIDDEN flag or any ancestor's — what a hal-shift gate must ask */
 bool      surf_node_effectively_hidden(const surf_node *n);
 surf_rect surf_node_subtree_bounds(const surf_node *n, int16_t px, int16_t py);

@@ -771,6 +771,65 @@ faithful to the pixels it is given — a colour that went in through
 call widens 5 bits to 8 by shifting, and the encoder does not invent the
 missing three bits back.
 
+## A low-poly glTF model renders into an Image
+
+`surfer.mesh(glb_bytes[, tex_png])` → Mesh; `m.render(img, rx, ry, rz,
+size[, cx, cy[, cull]])`, `.tris`, `.destroy()`. C API:
+`surf_mesh_from_glb` / `surf_mesh_render` / `surf_mesh_tris` /
+`surf_mesh_destroy` (src/core/mesh.c). This is the software-renderer
+case the Image buffer and `surf_image_flush` were built for, so it obeys
+their contract exactly: the caller renders on its OWN call (an app's
+frame, never the compose path), flushes once after the last write, and
+damages the sprite showing the image — and the sprite's `.scale` does
+the enlarging, which on the P4 is the PPA's SRM block and free. Like
+fill/poly/lines, render does NOT flush for you.
+
+**The loader is the design.** A .glb is parsed by a self-contained
+jsmn-shaped tokenizer (no new dependency — the JSON is offsets into the
+chunk, never copies), node transforms are FLATTENED at load, and every
+triangle gets ONE color: the material's baseColorFactor times its
+baseColorTexture sampled at the face's **UV centroid**. That sample is
+exact, not approximate, because of what low-poly art is — Kenney's kits
+keep every face inside one flat region of a 512x512 palette texture
+(measured: a coin's u coordinate is a single constant) — so the texture
+is decoded once, read per face, and FREED. What survives a load is ~20
+bytes a triangle and no sampler in the inner loop. Face normals are
+computed from the world-space triangles, so the NORMAL and TANGENT
+accessors are never read — which is also why tulip5's baker strips them
+and halves the shipped bytes. COLOR_0 (float/u8/u16) works where a
+model has no texture; a texture referenced by URI (Kenney keeps one
+colormap.png beside its models) is supplied as `tex_png`. Everything
+read out of the bin chunk is BOUNDS-CHECKED and a hostile index drops
+its triangle: these are bytes off a network.
+
+**Depth interpolates 1/(CAM − z), and that is correctness, not
+preference**: it is the one depth that is affine in screen space under
+perspective, so intersecting geometry (a wheel through a car body)
+sorts per pixel and exactly. The rasterizer is a scanline fill against
+a u16 z-buffer — per pixel it is a shift, a compare and two stores —
+into RGB565 or ARGB8888, and the z-buffer and projected-vertex scratch
+are shared statics grown on demand and freed by `surf_mesh_reset()`
+from `surf_deinit`, the ink table's lifecycle. Float math and malloc
+are fine here for shape.c's reason.
+
+**`cull` is an argument because the files lie about it.** UnityGLTF
+stamps `doubleSided: true` on everything, and honoring that (cull=-1,
+the default) draws every back face into the z-test. Measured on the
+desktop at 160x160, 550 tris: 35 µs culled, 77 µs both sides — the same
+picture for 2.2x the cost on a closed model. cull=1 forces the cheap
+answer; 0 forces two-sided (a flag's cloth, a leaf card). Back faces
+that do draw are lit from their own side, so two-sided art shades
+rather than going black. glTF front faces are CCW and the projection's
+y flip makes them clockwise on screen — negative signed area — which is
+the sign the cull tests and `tests/test_mesh.c` pins with a cube whose
+every face is a different color.
+
+The model is centered and normalized to radius 1 at load, so `size` is
+simply the radius in PIXELS wherever the file's units came from, and
+`rx/ry/rz` are degrees — ry spins, rx tilts, rz rolls, a turntable's
+order. Loading is the expensive half (~1 ms on the desktop for a 550-tri
+model); do it once, at build time.
+
 ## A key event carries CTRL, and the tuple is four long
 
 `surfer.keys()` is `(kind, text, shift, ctrl)`. It was three, and the

@@ -120,6 +120,7 @@ void surf_deinit(void)
      * images whose addresses malloc will hand out again — a stale entry
      * would then answer for a picture it has never seen */
     surf_ink_reset();
+    surf_mesh_reset();
     free(surf_g.pool);
     free(surf_g.plist);
     memset(&surf_g, 0, sizeof surf_g);

@@ -186,6 +186,12 @@ extern const mp_obj_type_t surfer_pad_type;
 
 typedef struct {
     mp_obj_base_t base;
+    surf_mesh *m;       /* NULL after destroy() */
+} surfer_mesh_obj_t;
+extern const mp_obj_type_t surfer_mesh_type;
+
+typedef struct {
+    mp_obj_base_t base;
     surf_font *font;    /* NULL after destroy() */
     bool owned;         /* false for built-ins: shared, never freed */
 } surfer_font_obj_t;
@@ -2106,6 +2112,82 @@ MP_DEFINE_CONST_OBJ_TYPE(surfer_image_type, MP_QSTR_Image, MP_TYPE_FLAG_NONE,
                          attr, image_attr, buffer, image_get_buffer,
                          locals_dict, &image_locals_dict);
 
+/* ---- Mesh: a low-poly .glb, software-rendered into an Image ---- */
+
+static surf_mesh *mesh_of(mp_obj_t o)
+{
+    if (!mp_obj_is_type(o, &surfer_mesh_type))
+        mp_raise_TypeError(MP_ERROR_TEXT("expected surfer Mesh"));
+    surfer_mesh_obj_t *mo = MP_OBJ_TO_PTR(o);
+    if (!mo->m)
+        mp_raise_ValueError(MP_ERROR_TEXT("mesh destroyed"));
+    return mo->m;
+}
+
+/* m.render(img, rx, ry, rz, size[, cx, cy[, cull]])
+ *
+ * Flat-shades the model into the image: rotations in degrees (ry spins,
+ * rx tilts, rz rolls), size the model's radius in PIXELS, centered at
+ * (cx, cy) — the image's own middle when omitted. cull None honors each
+ * material's doubleSided flag, True always culls back faces (cheaper,
+ * right for a closed model), False draws both sides.
+ *
+ * Like fill/poly/lines this does NOT flush: clear, render, then
+ * img.flush() once and damage the sprite. Render small and let the
+ * sprite's .scale enlarge it — that is the PPA on the device, and free. */
+static mp_obj_t mesh_render(size_t n_args, const mp_obj_t *args)
+{
+    surf_mesh *m = mesh_of(args[0]);
+    surf_image *dst = image_of(args[1]);
+    float cx = n_args > 6 ? (float)mp_obj_get_float(args[6])
+                          : (float)dst->w / 2.0f;
+    float cy = n_args > 7 ? (float)mp_obj_get_float(args[7])
+                          : (float)dst->h / 2.0f;
+    int cull = -1;
+    if (n_args > 8 && args[8] != mp_const_none)
+        cull = mp_obj_is_true(args[8]) ? 1 : 0;
+    if (!surf_mesh_render(m, dst,
+                          (float)mp_obj_get_float(args[2]),
+                          (float)mp_obj_get_float(args[3]),
+                          (float)mp_obj_get_float(args[4]),
+                          (float)mp_obj_get_float(args[5]),
+                          cx, cy, cull))
+        mp_raise_ValueError(MP_ERROR_TEXT("render needs an RGB565 or ARGB image"));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mesh_render_obj, 6, 9, mesh_render);
+
+static mp_obj_t mesh_destroy(mp_obj_t self_in)
+{
+    surfer_mesh_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (o->m) {
+        surf_mesh_destroy(o->m);
+        o->m = NULL;
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mesh_destroy_obj, mesh_destroy);
+
+static const mp_rom_map_elem_t mesh_locals_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_render), MP_ROM_PTR(&mesh_render_obj)},
+    {MP_ROM_QSTR(MP_QSTR_destroy), MP_ROM_PTR(&mesh_destroy_obj)},
+};
+static MP_DEFINE_CONST_DICT(mesh_locals_dict, mesh_locals_table);
+
+static void mesh_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest)
+{
+    surfer_mesh_obj_t *o = MP_OBJ_TO_PTR(self_in);
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_tris) {
+        dest[0] = MP_OBJ_NEW_SMALL_INT(surf_mesh_tris(o->m));
+        return;
+    }
+    if (dest[0] == MP_OBJ_NULL)
+        dest[1] = MP_OBJ_SENTINEL;
+}
+
+MP_DEFINE_CONST_OBJ_TYPE(surfer_mesh_type, MP_QSTR_Mesh, MP_TYPE_FLAG_NONE,
+                         attr, mesh_attr, locals_dict, &mesh_locals_dict);
+
 /* ---- Widget ---- */
 
 static void widget_cb(int32_t value, void *user)
@@ -3009,6 +3091,33 @@ static mp_obj_t mod_image_new(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_new_obj, 2, 4, mod_image_new);
 
+/* surfer.mesh(glb_bytes[, tex_png_bytes]) -> Mesh
+ *
+ * Loads a glTF 2 binary (.glb): triangles, node transforms flattened,
+ * one flat color per face — the material's baseColorFactor times its
+ * texture sampled at the face's UV centroid (exact for palette-textured
+ * low-poly art) or the COLOR_0 centroid. A texture the file references
+ * by URI (Kenney keeps one colormap.png beside its models) comes from
+ * the second argument; an embedded texture needs nothing. The model is
+ * centered and normalized, so render's size is its radius in pixels.
+ * Loading is the expensive half — do it once, at build time. */
+static mp_obj_t mod_mesh(size_t n_args, const mp_obj_t *args)
+{
+    mp_buffer_info_t glb, tex = {0};
+    mp_get_buffer_raise(args[0], &glb, MP_BUFFER_READ);
+    if (n_args > 1 && args[1] != mp_const_none)
+        mp_get_buffer_raise(args[1], &tex, MP_BUFFER_READ);
+    char err[64];
+    surf_mesh *m = surf_mesh_from_glb(glb.buf, glb.len, tex.buf, tex.len,
+                                      err, sizeof err);
+    if (!m)
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("glb: %s"), err);
+    surfer_mesh_obj_t *o = mp_obj_malloc(surfer_mesh_obj_t, &surfer_mesh_type);
+    o->m = m;
+    return MP_OBJ_FROM_PTR(o);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_mesh_obj, 1, 2, mod_mesh);
+
 /* surfer.image_scale(dst, src) -> True if the HARDWARE did it
  *
  * Scales the whole of src into the whole of dst. Down then up is a blur,
@@ -3888,6 +3997,7 @@ static const mp_rom_map_elem_t surfer_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_image), MP_ROM_PTR(&mod_image_obj)},
     {MP_ROM_QSTR(MP_QSTR_image_new), MP_ROM_PTR(&mod_image_new_obj)},
     {MP_ROM_QSTR(MP_QSTR_image_scale), MP_ROM_PTR(&mod_image_scale_obj)},
+    {MP_ROM_QSTR(MP_QSTR_mesh), MP_ROM_PTR(&mod_mesh_obj)},
     {MP_ROM_QSTR(MP_QSTR_layer), MP_ROM_PTR(&mod_layer_obj)},
     {MP_ROM_QSTR(MP_QSTR_fb_read), MP_ROM_PTR(&mod_fb_read_obj)},
     {MP_ROM_QSTR(MP_QSTR_fb_image), MP_ROM_PTR(&mod_fb_image_obj)},

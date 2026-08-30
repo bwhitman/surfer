@@ -151,6 +151,38 @@ void surf_image_ellipse(surf_image *dst, int32_t cx_q16, int32_t cy_q16,
 void surf_image_bezier(surf_image *dst, const int32_t xy_q16[8],
                        int32_t width_q16, const surf_paint *paint);  /* cubic */
 
+/* ---- 3D: low-poly glTF meshes, software-rendered into an image ----
+ *
+ * surf_mesh_from_glb loads a .glb (glTF 2 binary): mode-4 triangles,
+ * float positions, node transforms flattened, and ONE flat color per
+ * triangle — material baseColorFactor times either the baseColorTexture
+ * sampled at the face's UV centroid (exact for palette-textured low-poly
+ * art) or the COLOR_0 centroid. The texture is read at load and freed;
+ * a texture the file references by URI (Kenney keeps one colormap.png
+ * beside its models) comes from tex_png/tex_len, NULL for none. The
+ * model is centered and normalized so render's size_px is simply its
+ * radius in pixels. On failure returns NULL with the reason in err.
+ *
+ * surf_mesh_render is the software-renderer case surf_image_flush
+ * documents: a z-buffered flat-shaded rasterize into an RGB565 or
+ * ARGB8888 image, on the CALLER's event — never the compose path. Like
+ * fill/blit/poly it does NOT flush; flush once after the last write and
+ * before damaging the node. Rotations are degrees (ry spins, rx tilts,
+ * rz rolls); cx/cy place the model's center in dst pixels. cull: -1
+ * honors each material's doubleSided flag, 1 always culls back faces
+ * (cheaper, right for closed models), 0 draws both sides. Render SMALL
+ * and let the sprite's .scale do the enlarging — that is the PPA's SRM
+ * on the device, and free. */
+typedef struct surf_mesh surf_mesh;
+surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
+                              const void *tex_png, size_t tex_len,
+                              char *err, size_t errcap);
+void surf_mesh_destroy(surf_mesh *m);
+int  surf_mesh_tris(const surf_mesh *m);
+bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
+                      float rx_deg, float ry_deg, float rz_deg,
+                      float size_px, float cx, float cy, int cull);
+
 typedef enum {
     SURF_TOUCH_DOWN = 0,
     SURF_TOUCH_MOVE = 1,
