@@ -43,10 +43,13 @@ static void test_dirty_coalesce(void)
     surf_dirty d;
     surf_dirty_reset(&d, (surf_rect){0, 0, 400, 400});
 
+    /* every add is even-aligned first (the P4's SRM wedge, rect.c):
+     * x/y round down to even, the far edge rounds up — so (5,5,10,10)
+     * enters as (4,4,12,12) and the union reaches 16, not 15 */
     surf_dirty_add(&d, (surf_rect){0, 0, 10, 10});
     surf_dirty_add(&d, (surf_rect){5, 5, 10, 10});
     OK(d.n == 1);
-    OK(rect_eq(d.r[0], (surf_rect){0, 0, 15, 15}));
+    OK(rect_eq(d.r[0], (surf_rect){0, 0, 16, 16}));
 
     surf_dirty_add(&d, (surf_rect){100, 100, 10, 10});
     OK(d.n == 2);
@@ -59,7 +62,7 @@ static void test_dirty_coalesce(void)
     /* clipped to screen; fully offscreen is dropped */
     surf_dirty_reset(&d, (surf_rect){0, 0, 400, 400});
     surf_dirty_add(&d, (surf_rect){-5, -5, 10, 10});
-    OK(d.n == 1 && rect_eq(d.r[0], (surf_rect){0, 0, 5, 5}));
+    OK(d.n == 1 && rect_eq(d.r[0], (surf_rect){0, 0, 6, 6}));
     surf_dirty_add(&d, (surf_rect){500, 500, 10, 10});
     OK(d.n == 1);
 
@@ -70,8 +73,8 @@ static void test_dirty_coalesce(void)
     OK(d.n == SURF_MAX_DIRTY);
     surf_dirty_add(&d, (surf_rect){690, 0, 5, 5});
     OK(d.n == 1);
-    OK(rect_eq(d.r[0], (surf_rect){0, 0, 695,
-                                   (int16_t)((SURF_MAX_DIRTY - 1) * 20 + 5)}));
+    OK(rect_eq(d.r[0], (surf_rect){0, 0, 696,
+                                   (int16_t)((SURF_MAX_DIRTY - 1) * 20 + 6)}));
 }
 
 static void test_damage_on_writes(void)
@@ -193,18 +196,22 @@ static void test_compose(void)
     OK(nops == 2);
     OK(ops[0].op == 'F' && ops[0].c == 7);
 
-    /* alpha sprite over the rect: rect painted first, then blend, no bg */
+    /* alpha sprite over the rect: rect painted first, then blend, no bg.
+     * The fill covers the even-aligned dirty rect, not the sprite's own */
     surf_node *sp = surf_sprite_new(&alpha_img, 5, 5);
     surf_node_add(surf_screen(), sp);
     nops = 0;
     surf_tick();
     OK(nops == 3);
-    OK(ops[0].op == 'F' && ops[0].c == 7 && rect_eq(ops[0].r, (surf_rect){5, 5, 10, 10}));
+    OK(ops[0].op == 'F' && ops[0].c == 7 && rect_eq(ops[0].r, (surf_rect){4, 4, 12, 12}));
     OK(ops[1].op == 'A' && ops[1].imgv.pixels == alpha_img.pixels);
     OK(ops[1].dst.x == 5 && ops[1].dst.y == 5);
 
-    /* opaque sprite fully covering the dirty rect stops the walk below it */
-    surf_node *op_sp = surf_sprite_new(&opaque_img, 5, 5);
+    /* opaque sprite fully covering the dirty rect stops the walk below
+     * it — at (4,4) so its 10x10 damage is already even-aligned and the
+     * sprite covers it exactly; at an odd position the aligned dirty
+     * rect outgrows the sprite and the early-out cannot fire */
+    surf_node *op_sp = surf_sprite_new(&opaque_img, 4, 4);
     surf_node_add(surf_screen(), op_sp);
     nops = 0;
     surf_tick();
@@ -212,7 +219,7 @@ static void test_compose(void)
     OK(ops[0].op == 'B' && ops[0].imgv.pixels == opaque_img.pixels);
 
     /* partial overlap: sprite clipped to the dirty rect, src offset shifts */
-    surf_node_set_pos(op_sp, 95, 45);  /* damages old {5,5,10,10} + new {95,45,5,5} */
+    surf_node_set_pos(op_sp, 95, 45);  /* damages old {4,4,10,10} + new {95,45,5,5} */
     nops = 0;
     surf_tick();
     bool found_clipped = false;

@@ -184,7 +184,8 @@ void run_layer_tests(void)
     OK(seg0.x == 100 && seg0.w == 156);
     OK(seg1.x == 0 && seg1.w == 44);
 
-    /* fast path: +3px → band_shift(-3), one 3px sliver at the right */
+    /* fast path: +3px → band_shift(-3), one sliver at the right —
+     * even-aligned by surf_dirty_add to 4px starting at 196 */
     surf_layer_set_fast_scroll(l, true);
     surf_tick();
     nops = 0;
@@ -197,7 +198,7 @@ void run_layer_tests(void)
             OK(rect_eq(ops[i].r, (surf_rect){0, 10, 200, 32}));
             OK(ops[i].dst.x == -3 && ops[i].dst.y == 0);
         }
-        if (ops[i].op == 'B' && ops[i].dst.x == 197)
+        if (ops[i].op == 'B' && ops[i].dst.x == 196 && ops[i].src.w == 4)
             saw_sliver = true;
     }
     OK(saw_shift && saw_sliver);
@@ -259,10 +260,14 @@ void run_layer_tests(void)
     for (int i = 0; i < nops; i++) {
         if (ops[i].op == 'S' && ops[i].dst.x == -3 && ops[i].dst.y == -2)
             pan_shift = true;
-        if (ops[i].op == 'B' && ops[i].dst.x == 197 && ops[i].src.w == 3)
+        /* the L's slivers arrive even-aligned (surf_dirty_add): the
+         * vertical one is 4 wide from 196, the horizontal one stops at
+         * its edge — and the two must NOT have merged into one
+         * full-band blit, which is what an unaligned odd dx would do */
+        if (ops[i].op == 'B' && ops[i].dst.x == 196 && ops[i].src.w == 4)
             svert = true;
         if (ops[i].op == 'B' && ops[i].dst.y == 98 && ops[i].src.h == 2 &&
-            ops[i].src.w == 197)
+            ops[i].src.w == 196)
             shorz = true;
         if (ops[i].op == 'F' && ops[i].c == 0x4321)
             hero_redraw = true;

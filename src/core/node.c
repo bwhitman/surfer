@@ -1090,16 +1090,32 @@ void surf_sprite_set_src(surf_node *n, surf_rect src)
             int16_t ady = (int16_t)(dy < 0 ? -dy : dy);
             /* disjoint L: the vertical sliver owns the corner — touching
              * rects don't coalesce, overlapping ones would merge the L
-             * into a full-band repaint */
-            if (adx)
+             * into a full-band repaint. surf_dirty_add even-aligns every
+             * rect (the P4's SRM wedge), so the vertical sliver is
+             * aligned HERE and the horizontal one stops at its aligned
+             * edge — an odd dx handed down raw would widen the vertical
+             * sliver into the horizontal one and coalesce the L into
+             * the very full-band repaint this path exists to avoid */
+            int16_t vx0 = band.x, vx1 = band.x;
+            if (adx) {
+                vx0 = dx > 0 ? (int16_t)(band.x + band.w - adx) : band.x;
+                vx1 = (int16_t)((vx0 + adx + 1) & ~1);
+                vx0 &= (int16_t)~1;
                 surf_dirty_add(&surf_g.dirty, (surf_rect){
-                    dx > 0 ? (int16_t)(band.x + band.w - adx) : band.x,
-                    band.y, adx, band.h});
-            if (ady)
-                surf_dirty_add(&surf_g.dirty, (surf_rect){
-                    dx > 0 ? band.x : (int16_t)(band.x + adx),
-                    dy > 0 ? (int16_t)(band.y + band.h - ady) : band.y,
-                    (int16_t)(band.w - adx), ady});
+                    vx0, band.y, (int16_t)(vx1 - vx0), band.h});
+            }
+            if (ady) {
+                int16_t hx0 = band.x, hx1 = (int16_t)(band.x + band.w);
+                if (adx) {
+                    if (dx > 0) hx1 = vx0;
+                    else        hx0 = vx1;
+                }
+                if (hx1 > hx0)
+                    surf_dirty_add(&surf_g.dirty, (surf_rect){
+                        hx0,
+                        dy > 0 ? (int16_t)(band.y + band.h - ady) : band.y,
+                        (int16_t)(hx1 - hx0), ady});
+            }
             /* everything painted over the band was smeared by the
              * shift — including overlays in another branch of the tree,
              * which is where a host's chrome lives */
