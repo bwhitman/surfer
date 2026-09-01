@@ -10,15 +10,27 @@
  * Kenney's starter-kit GLBs, UnityGLTF export): GLB container, meshes of
  * mode-4 triangles, float POSITION, u8/u16/u32 indices, node TRS or
  * matrix transforms flattened at load, materials with baseColorFactor
- * and/or a baseColorTexture, optional COLOR_0. Every triangle gets ONE
- * color, sampled at its UV centroid AT LOAD — flat-shaded low-poly art
- * keeps each face inside one flat region of a palette texture, so the
- * centroid is exact and the texture is FREED after load: what survives
- * is ~20 bytes a triangle, not a sampler in the inner loop.
+ * and/or a baseColorTexture, optional COLOR_0. By default every
+ * triangle gets ONE color, sampled at its UV centroid AT LOAD —
+ * flat-shaded low-poly art keeps each face inside one flat region of a
+ * palette texture, so the centroid is exact and the texture is FREED
+ * after load: what survives is ~20 bytes a triangle, not a sampler in
+ * the inner loop. SURF_MESH_TEXTURED is the other bargain, for art
+ * whose detail lives INSIDE a face (a painted model, not a palette):
+ * the decoded textures stay resident, per-corner UVs survive, and the
+ * rasterizer samples per pixel — nearest texel, affine UV, which at
+ * MESH_CAM's mild perspective is under a texel of error on low-poly
+ * faces. A face with no texture renders flat either way.
  *
  * Rendering is a z-buffered scanline fill, flat color per face, one
- * directional light. Depth interpolates 1/(D - z), which is affine in
- * screen space under perspective, so intersecting geometry (a wheel
+ * directional light. The light factor is gamma-lifted before it
+ * multiplies the color: the bytes are sRGB-encoded, and sRGB is near
+ * enough a pure 2.2 power that correcting the FACTOR equals lighting
+ * in linear — encode(decode(c)*l) == c * l^(1/2.2). Without that a
+ * mid-lit face darkens perceptually about twice what the light says,
+ * which is why every model here used to read darker than the same file
+ * in any correct viewer. Depth interpolates 1/(D - z), which is affine
+ * in screen space under perspective, so intersecting geometry (a wheel
  * through a car body) sorts per pixel and correctly. Float math and
  * malloc are fine here for shape.c's reason: this runs on the caller's
  * event, and the P4 has an FPU. The per-pixel loop is a shift, a
@@ -342,15 +354,22 @@ struct surf_mesh {
     float    *vtx;    /* 3 floats per vertex: centered, radius-1 model */
     int       nvtx;
     uint16_t *idx;    /* 3 per triangle */
-    uint8_t  *clr;    /* 3 bytes per triangle, base RGB */
+    uint8_t  *clr;    /* 3 bytes per triangle: base RGB — the flat sample,
+                         or the baseColorFactor for a per-pixel face */
     int8_t   *nrm;    /* 3 per triangle, face normal * 127 */
     uint8_t  *side;   /* 1 per triangle: bit0 = material was doubleSided */
     int       ntri;
+    /* SURF_MESH_TEXTURED only; NULL/0 on a flat-shaded load */
+    float    *tuv;    /* 6 per triangle: u,v per corner, transform applied */
+    int16_t  *tmap;   /* 1 per triangle: index into timg, -1 = flat face */
+    surf_image **timg;/* resident decoded textures, owned by the mesh */
+    int       ntimg;
 };
 
 typedef struct {
     struct surf_mesh m;
     int vcap, tcap;
+    bool textured;
 } mbuild;
 
 static bool mb_room(mbuild *b, int verts, int tris)
@@ -379,6 +398,15 @@ static bool mb_room(mbuild *b, int verts, int tris)
         if (sd) b->m.side = sd;
         if (!sd)
             return false;
+        if (b->textured) {
+            float *uv = realloc(b->m.tuv, (size_t)cap * 6 * sizeof(float));
+            int16_t *tm = uv ? realloc(b->m.tmap,
+                                       (size_t)cap * sizeof(int16_t)) : NULL;
+            if (uv) b->m.tuv = uv;
+            if (tm) b->m.tmap = tm;
+            if (!tm)
+                return false;
+        }
         b->tcap = cap;
     }
     return true;
@@ -458,6 +486,12 @@ void surf_mesh_destroy(surf_mesh *m)
     free(m->clr);
     free(m->nrm);
     free(m->side);
+    free(m->tuv);
+    free(m->tmap);
+    for (int i = 0; i < m->ntimg; i++)
+        if (m->timg && m->timg[i])
+            surf_image_destroy(m->timg[i]);
+    free(m->timg);
     free(m);
 }
 
@@ -569,7 +603,27 @@ static bool flatten_node(const gctx *g, int nodes, int meshes, int accessors,
                 b->m.nrm[ti * 3 + 2] = (int8_t)(n[2] / nl * 127.0f);
 
                 float rgb[3] = {1, 1, 1};
-                if (timg) {
+                if (b->textured) {
+                    b->m.tmap[ti] = -1;
+                    memset(&b->m.tuv[(size_t)ti * 6], 0, 6 * sizeof(float));
+                }
+                if (timg && b->textured) {
+                    /* per-pixel face: keep the corner UVs (texture
+                     * transform applied HERE, so render needs no
+                     * material) and leave rgb the baseColorFactor */
+                    float uv0[2], uv1[2], uv2[2];
+                    acc_vec2f(&uv, (int)i0, uv0);
+                    acc_vec2f(&uv, (int)i1, uv1);
+                    acc_vec2f(&uv, (int)i2, uv2);
+                    float *tp = &b->m.tuv[(size_t)ti * 6];
+                    tp[0] = mat->uo + uv0[0] * mat->us;
+                    tp[1] = mat->vo + uv0[1] * mat->vs;
+                    tp[2] = mat->uo + uv1[0] * mat->us;
+                    tp[3] = mat->vo + uv1[1] * mat->vs;
+                    tp[4] = mat->uo + uv2[0] * mat->us;
+                    tp[5] = mat->vo + uv2[1] * mat->vs;
+                    b->m.tmap[ti] = (int16_t)mat->image;
+                } else if (timg) {
                     float uv0[2], uv1[2], uv2[2];
                     acc_vec2f(&uv, (int)i0, uv0);
                     acc_vec2f(&uv, (int)i1, uv1);
@@ -617,9 +671,20 @@ static uint32_t rd32(const uint8_t *p)
     return v;
 }
 
+static void mesh_free_fields(struct surf_mesh *m)
+{
+    free(m->vtx);
+    free(m->idx);
+    free(m->clr);
+    free(m->nrm);
+    free(m->side);
+    free(m->tuv);
+    free(m->tmap);
+}
+
 surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
                               const void *tex_png, size_t tex_len,
-                              char *err, size_t ecap)
+                              unsigned flags, char *err, size_t ecap)
 {
     mesh_err(err, ecap, "");
     const uint8_t *d = glb;
@@ -718,6 +783,7 @@ surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
 
     mbuild b;
     memset(&b, 0, sizeof b);
+    b.textured = (flags & SURF_MESH_TEXTURED) != 0;
     bool ok = true;
 
     /* default scene's roots; a file with no scene walks every node */
@@ -733,10 +799,6 @@ surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
                           &b, mats, nmat, timgs, 0, err, ecap);
     }
 
-    for (int i = 0; i < nimg; i++)
-        if (timgs && timgs[i])
-            surf_image_destroy(timgs[i]);
-    free(timgs);
     free(mats);
     free(toks);
 
@@ -744,12 +806,19 @@ surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
         mesh_err(err, ecap, "no triangles");
         ok = false;
     }
+    /* a textured load OWNS its textures from here; every other outcome
+     * frees them — the flat sample already took what it needed */
+    if (ok && b.textured) {
+        b.m.timg = timgs;
+        b.m.ntimg = timgs ? nimg : 0;
+    } else {
+        for (int i = 0; i < nimg; i++)
+            if (timgs && timgs[i])
+                surf_image_destroy(timgs[i]);
+        free(timgs);
+    }
     if (!ok) {
-        free(b.m.vtx);
-        free(b.m.idx);
-        free(b.m.clr);
-        free(b.m.nrm);
-        free(b.m.side);
+        mesh_free_fields(&b.m);
         return NULL;
     }
 
@@ -783,11 +852,11 @@ surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
     surf_mesh *m = malloc(sizeof *m);
     if (!m) {
         mesh_err(err, ecap, "out of memory");
-        free(b.m.vtx);
-        free(b.m.idx);
-        free(b.m.clr);
-        free(b.m.nrm);
-        free(b.m.side);
+        for (int i = 0; i < b.m.ntimg; i++)
+            if (b.m.timg[i])
+                surf_image_destroy(b.m.timg[i]);
+        free(b.m.timg);
+        mesh_free_fields(&b.m);
         return NULL;
     }
     *m = b.m;
@@ -817,6 +886,13 @@ void surf_mesh_reset(void)
  * 3D, far enough that a radius-1 model projects near size_px. */
 #define MESH_CAM 3.0f
 
+/* Lambert factor -> the sRGB-space multiplier that equals lighting in
+ * LINEAR (see the header comment): 256 * l^(1/2.2), l in 128ths.
+ * Constant data computed on first use — nothing for surf_mesh_reset to
+ * free, and a table beats a powf per face on the device's FPU. */
+static uint16_t lit_gamma[129];
+static bool lit_gamma_ready;
+
 bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
                       float rx_deg, float ry_deg, float rz_deg,
                       float size_px, float cx, float cy, int cull)
@@ -842,6 +918,13 @@ bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
     }
     memset(ms.z, 0, (size_t)w * h * sizeof(uint16_t));
     surf_ink_dirty(dst);
+
+    if (!lit_gamma_ready) {
+        for (int i = 0; i <= 128; i++)
+            lit_gamma[i] = (uint16_t)(powf((float)i / 128.0f, 1.0f / 2.2f) *
+                                      256.0f + 0.5f);
+        lit_gamma_ready = true;
+    }
 
     /* R = Rz * Rx * Ry: ry spins the model, rx tilts it toward the
      * viewer, rz rolls the result — the order a turntable wants */
@@ -911,7 +994,8 @@ bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
         float diff = vx * lx + vy * ly + vz * lz;
         if (diff < 0)
             diff = 0;
-        int lit = (int)((0.35f + 0.65f * diff) * 256.0f);
+        float l = 0.35f + 0.65f * diff;
+        int lit = lit_gamma[(int)(l * 128.0f + 0.5f)];
         int r = (m->clr[t * 3] * lit) >> 8;
         int gg = (m->clr[t * 3 + 1] * lit) >> 8;
         int bb = (m->clr[t * 3 + 2] * lit) >> 8;
@@ -921,6 +1005,11 @@ bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
         uint16_t c16 = SURF_RGB(r, gg, bb);
         uint32_t c32 = 0xff000000u | ((uint32_t)r << 16) |
                        ((uint32_t)gg << 8) | (uint32_t)bb;
+        /* a textured face carries the lit baseColorFactor into the
+         * pixel loop as multipliers over the texel it samples there */
+        const surf_image *tx = (m->tmap && m->timg && m->tmap[t] >= 0)
+                                   ? m->timg[m->tmap[t]] : NULL;
+        const float *tp = tx ? &m->tuv[(size_t)t * 6] : NULL;
 
         float miny = p0[1] < p1[1] ? (p0[1] < p2[1] ? p0[1] : p2[1])
                                    : (p1[1] < p2[1] ? p1[1] : p2[1]);
@@ -936,17 +1025,29 @@ bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
         /* per-edge inverse slopes once, then each row is mul-adds */
         const float *ev[3][2] = {{p0, p1}, {p1, p2}, {p2, p0}};
         float exy[3], edy[3], exd[3];      /* dx/dy, dd/dy per edge */
+        float exu[3] = {0}, exv[3] = {0};  /* du/dy, dv/dy — textured only */
+        const float *euv[3][2] = {{0}};
+        if (tx) {
+            euv[0][0] = tp;     euv[0][1] = tp + 2;
+            euv[1][0] = tp + 2; euv[1][1] = tp + 4;
+            euv[2][0] = tp + 4; euv[2][1] = tp;
+        }
         for (int e = 0; e < 3; e++) {
             float dy = ev[e][1][1] - ev[e][0][1];
             float inv = fabsf(dy) > 1e-9f ? 1.0f / dy : 0.0f;
             exy[e] = (ev[e][1][0] - ev[e][0][0]) * inv;
             edy[e] = dy;
             exd[e] = (ev[e][1][2] - ev[e][0][2]) * inv;
+            if (tx) {
+                exu[e] = (euv[e][1][0] - euv[e][0][0]) * inv;
+                exv[e] = (euv[e][1][1] - euv[e][0][1]) * inv;
+            }
         }
 
         for (int iy = y0i; iy <= y1i; iy++) {
             float yc = (float)iy + 0.5f;
             float xl = 1e30f, xr = -1e30f, dl = 0, dr = 0;
+            float ul = 0, vlq = 0, ur = 0, vrq = 0;
             for (int e = 0; e < 3; e++) {
                 float ya = ev[e][0][1], yb = ev[e][1][1];
                 if (edy[e] == 0.0f)
@@ -955,8 +1056,13 @@ bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
                     continue;
                 float x = ev[e][0][0] + (yc - ya) * exy[e];
                 float dd = ev[e][0][2] + (yc - ya) * exd[e];
-                if (x < xl) { xl = x; dl = dd; }
-                if (x > xr) { xr = x; dr = dd; }
+                float eu = 0, ew = 0;
+                if (tx) {
+                    eu = euv[e][0][0] + (yc - ya) * exu[e];
+                    ew = euv[e][0][1] + (yc - ya) * exv[e];
+                }
+                if (x < xl) { xl = x; dl = dd; ul = eu; vlq = ew; }
+                if (x > xr) { xr = x; dr = dd; ur = eu; vrq = ew; }
             }
             if (xr < xl)
                 continue;
@@ -967,14 +1073,49 @@ bool surf_mesh_render(const surf_mesh *m, surf_image *dst,
             if (x1i < x0i)
                 continue;
             float span = xr - xl;
-            float ddx = span > 1e-9f ? (dr - dl) / span : 0.0f;
-            float dep = dl + ((float)x0i + 0.5f - xl) * ddx;
+            float sinv = span > 1e-9f ? 1.0f / span : 0.0f;
+            float ddx = (dr - dl) * sinv;
+            float pre = (float)x0i + 0.5f - xl;
+            float dep = dl + pre * ddx;
             /* q in (0, 1/(CAM-1)]: scale into u16 with headroom */
             int32_t zf = (int32_t)(dep * 65536.0f * (MESH_CAM - 1.2f) * 0.9f);
             int32_t zs = (int32_t)(ddx * 65536.0f * (MESH_CAM - 1.2f) * 0.9f);
             uint16_t *zrow = ms.z + (size_t)iy * w;
             uint8_t *row = (uint8_t *)dst->pixels + (size_t)iy * dst->stride;
-            if (dst->format == SURF_FMT_RGB565) {
+            if (tx) {
+                /* affine UV across the row, wrapped tex_sample's way;
+                 * the texel wears the face's lit baseColorFactor */
+                float dudx = (ur - ul) * sinv, dvdx = (vrq - vlq) * sinv;
+                float uu = ul + pre * dudx, vv = vlq + pre * dvdx;
+                int tw = tx->w, th = tx->h;
+                const uint8_t *tpx = tx->pixels;
+                bool wide = dst->format != SURF_FMT_RGB565;
+                for (int ix = x0i; ix <= x1i;
+                     ix++, zf += zs, uu += dudx, vv += dvdx) {
+                    uint16_t zi = (uint16_t)(zf < 0 ? 0
+                                  : zf > 65535 ? 65535 : zf);
+                    if (zi > zrow[ix]) {
+                        zrow[ix] = zi;
+                        float uw = uu - floorf(uu), vw = vv - floorf(vv);
+                        int txx = (int)(uw * tw);
+                        int tyy = (int)(vw * th);
+                        if (txx >= tw) txx = tw - 1;
+                        if (tyy >= th) tyy = th - 1;
+                        uint32_t p = *(const uint32_t *)(tpx +
+                                     (size_t)tyy * tx->stride +
+                                     (size_t)txx * 4);
+                        int pr = ((int)((p >> 16) & 0xff) * r) >> 8;
+                        int pg = ((int)((p >> 8) & 0xff) * gg) >> 8;
+                        int pb = ((int)(p & 0xff) * bb) >> 8;
+                        if (wide)
+                            ((uint32_t *)row)[ix] = 0xff000000u |
+                                ((uint32_t)pr << 16) | ((uint32_t)pg << 8) |
+                                (uint32_t)pb;
+                        else
+                            ((uint16_t *)row)[ix] = SURF_RGB(pr, pg, pb);
+                    }
+                }
+            } else if (dst->format == SURF_FMT_RGB565) {
                 uint16_t *px = (uint16_t *)row;
                 for (int ix = x0i; ix <= x1i; ix++, zf += zs) {
                     uint16_t zi = (uint16_t)(zf < 0 ? 0

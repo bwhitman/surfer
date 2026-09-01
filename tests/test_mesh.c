@@ -106,6 +106,69 @@ static size_t build_cube_glb(uint8_t *out, size_t cap, bool with_colors)
     return need;
 }
 
+/* one quad (two triangles) facing +z, UVs spanning the whole texture,
+ * material wearing baseColorTexture 0 whose image is an external URI —
+ * so the texture arrives through tex_png. Flat sampling collapses each
+ * triangle to its centroid's texel; a texture whose quadrants differ is
+ * exactly the art SURF_MESH_TEXTURED exists for. */
+static size_t build_quad_glb(uint8_t *out, size_t cap)
+{
+    /* corners CCW from +z; v grows downward so screen and texture
+     * quadrants line up at rot 0 */
+    static const float P[4][3] = {{-1, -1, 0}, {1, -1, 0},
+                                  {1, 1, 0}, {-1, 1, 0}};
+    static const float U[4][2] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+    static const uint16_t I[6] = {0, 1, 2, 0, 2, 3};
+    uint8_t bin[4 * 12 + 4 * 8 + 6 * 2];
+    for (int i = 0; i < 4; i++)
+        for (int a = 0; a < 3; a++)
+            put_f(bin + (size_t)i * 12 + a * 4, P[i][a]);
+    for (int i = 0; i < 4; i++)
+        for (int a = 0; a < 2; a++)
+            put_f(bin + 48 + (size_t)i * 8 + a * 4, U[i][a]);
+    for (int i = 0; i < 6; i++)
+        put_u16(bin + 80 + (size_t)i * 2, I[i]);
+    int binlen = (int)sizeof bin;
+
+    char json[1024];
+    int jl = snprintf(json, sizeof json,
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+        "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":"
+        "{\"POSITION\":0,\"TEXCOORD_0\":1},\"indices\":2,\"material\":0}]}],"
+        "\"materials\":[{\"pbrMetallicRoughness\":"
+        "{\"baseColorTexture\":{\"index\":0}}}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"images\":[{\"uri\":\"colormap.png\"}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},"
+        "{\"bufferView\":2,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},"
+        "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":32},"
+        "{\"buffer\":0,\"byteOffset\":80,\"byteLength\":12}],"
+        "\"buffers\":[{\"byteLength\":%d}]}", binlen);
+    while (jl % 4)
+        json[jl++] = ' ';
+    int binpad = (4 - binlen % 4) % 4;
+    size_t need = 12 + 8 + (size_t)jl + 8 + (size_t)binlen + binpad;
+    if (need > cap)
+        return 0;
+    put_u32(out, 0x46546c67u);
+    put_u32(out + 4, 2);
+    put_u32(out + 8, (uint32_t)need);
+    put_u32(out + 12, (uint32_t)jl);
+    put_u32(out + 16, 0x4e4f534au);
+    memcpy(out + 20, json, (size_t)jl);
+    uint8_t *bc = out + 20 + jl;
+    put_u32(bc, (uint32_t)(binlen + binpad));
+    put_u32(bc + 4, 0x004e4942u);
+    memcpy(bc + 8, bin, (size_t)binlen);
+    memset(bc + 8 + binlen, 0, (size_t)binpad);
+    return need;
+}
+
 /* which of the six face colors a lit 565 pixel came from: channel
  * presence survives the lighting, so compare on >0 per channel */
 static int face_of(uint16_t p)
@@ -129,7 +192,7 @@ void run_mesh_tests(void)
     OK(n > 0);
 
     char err[64] = "";
-    surf_mesh *m = surf_mesh_from_glb(glb, n, NULL, 0, err, sizeof err);
+    surf_mesh *m = surf_mesh_from_glb(glb, n, NULL, 0, 0, err, sizeof err);
     OK(m != NULL);
     if (!m) {
         printf("  load: %s\n", err);
@@ -185,25 +248,88 @@ void run_mesh_tests(void)
     surf_image_destroy(ia);
     surf_mesh_destroy(m);
 
-    /* no COLOR_0: every face renders the material's white, lit */
+    /* no COLOR_0: every face renders the material's white, lit — and
+     * lit in LINEAR: the front face's Lambert factor is 0.857, which a
+     * gamma-space multiply darkens white to 218 (r5 27) and the
+     * gamma-lifted multiply to 238 (r5 29). Pinning 29 is what holds
+     * the sRGB fix in place. */
     n = build_cube_glb(glb, sizeof glb, false);
-    m = surf_mesh_from_glb(glb, n, NULL, 0, err, sizeof err);
+    m = surf_mesh_from_glb(glb, n, NULL, 0, 0, err, sizeof err);
     OK(m != NULL);
     if (m) {
         surf_image_fill(im, (surf_rect){0, 0, 64, 64}, 0);
         OK(surf_mesh_render(m, im, 0, 0, 0, 24, 32, 32, 1));
         uint16_t p = px565(im, 32, 32);
-        OK(((p >> 11) & 0x1f) > 20 && ((p >> 5) & 0x3f) > 40 &&
-           (p & 0x1f) > 20);
+        OK(((p >> 11) & 0x1f) >= 29 && ((p >> 5) & 0x3f) >= 59 &&
+           (p & 0x1f) >= 29);
         surf_mesh_destroy(m);
     }
 
+    /* TEXTURED: the same quad and quadrant texture, loaded both ways.
+     * Flat can only put the two centroid texels on screen; textured
+     * must land all four quadrant colors inside what the flat load
+     * calls one face — and pure green and pure blue are colors the
+     * flat load cannot produce at all here, which is what proves the
+     * sampling is really per pixel. */
+    surf_image *qt = surf_image_new(2, 2, SURF_FMT_ARGB8888);
+    OK(qt != NULL);
+    if (qt) {
+        surf_image_fill(qt, (surf_rect){0, 0, 1, 1}, 0xF800);   /* red */
+        surf_image_fill(qt, (surf_rect){1, 0, 1, 1}, 0x07E0);   /* green */
+        surf_image_fill(qt, (surf_rect){0, 1, 1, 1}, 0x001F);   /* blue */
+        surf_image_fill(qt, (surf_rect){1, 1, 1, 1}, 0xFFFF);   /* white */
+    }
+    size_t pnglen = 0;
+    void *png = qt ? surf_image_to_png(qt, &pnglen) : NULL;
+    OK(png != NULL);
+    uint8_t qglb[4096];
+    size_t qn = build_quad_glb(qglb, sizeof qglb);
+    OK(qn > 0);
+    if (png && qn) {
+        surf_mesh *mf = surf_mesh_from_glb(qglb, qn, png, pnglen, 0,
+                                           err, sizeof err);
+        OK(mf != NULL);
+        surf_image_fill(im, (surf_rect){0, 0, 64, 64}, 0);
+        OK(surf_mesh_render(mf, im, 0, 0, 0, 24, 32, 32, 1));
+        uint16_t fc[4] = {px565(im, 24, 24), px565(im, 40, 24),
+                          px565(im, 24, 40), px565(im, 40, 40)};
+        int fdistinct = 1;
+        for (int i = 1; i < 4; i++) {
+            bool seen = false;
+            for (int j = 0; j < i; j++)
+                seen = seen || fc[j] == fc[i];
+            fdistinct += seen ? 0 : 1;
+        }
+        OK(fdistinct <= 2);              /* two triangles, two texels */
+        surf_mesh_destroy(mf);
+
+        surf_mesh *mt = surf_mesh_from_glb(qglb, qn, png, pnglen,
+                                           SURF_MESH_TEXTURED,
+                                           err, sizeof err);
+        OK(mt != NULL);
+        surf_image_fill(im, (surf_rect){0, 0, 64, 64}, 0);
+        OK(surf_mesh_render(mt, im, 0, 0, 0, 24, 32, 32, 1));
+        uint16_t tl = px565(im, 24, 24), tr = px565(im, 40, 24);
+        uint16_t bl = px565(im, 24, 40), br = px565(im, 40, 40);
+        OK(((tl >> 11) & 0x1f) > 0 && ((tl >> 5) & 0x3f) == 0 &&
+           (tl & 0x1f) == 0);                                /* red */
+        OK(((tr >> 11) & 0x1f) == 0 && ((tr >> 5) & 0x3f) > 0 &&
+           (tr & 0x1f) == 0);                                /* green */
+        OK(((bl >> 11) & 0x1f) == 0 && ((bl >> 5) & 0x3f) == 0 &&
+           (bl & 0x1f) > 0);                                 /* blue */
+        OK(((br >> 11) & 0x1f) > 0 && ((br >> 5) & 0x3f) > 0 &&
+           (br & 0x1f) > 0);                                 /* white */
+        surf_mesh_destroy(mt);
+    }
+    surf_image_png_free(png);
+    surf_image_destroy(qt);
+
     /* refusals: junk, truncation, and a truncated bin chunk must all
      * come back NULL with a reason rather than reading anything */
-    OK(surf_mesh_from_glb("hello", 5, NULL, 0, err, sizeof err) == NULL);
+    OK(surf_mesh_from_glb("hello", 5, NULL, 0, 0, err, sizeof err) == NULL);
     OK(err[0] != 0);
     n = build_cube_glb(glb, sizeof glb, true);
-    OK(surf_mesh_from_glb(glb, n / 2, NULL, 0, err, sizeof err) == NULL);
+    OK(surf_mesh_from_glb(glb, n / 2, NULL, 0, 0, err, sizeof err) == NULL);
 
     surf_image_destroy(im);
     printf("mesh tests done\n");

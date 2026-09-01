@@ -154,14 +154,23 @@ void surf_image_bezier(surf_image *dst, const int32_t xy_q16[8],
 /* ---- 3D: low-poly glTF meshes, software-rendered into an image ----
  *
  * surf_mesh_from_glb loads a .glb (glTF 2 binary): mode-4 triangles,
- * float positions, node transforms flattened, and ONE flat color per
- * triangle — material baseColorFactor times either the baseColorTexture
- * sampled at the face's UV centroid (exact for palette-textured low-poly
- * art) or the COLOR_0 centroid. The texture is read at load and freed;
- * a texture the file references by URI (Kenney keeps one colormap.png
- * beside its models) comes from tex_png/tex_len, NULL for none. The
- * model is centered and normalized so render's size_px is simply its
- * radius in pixels. On failure returns NULL with the reason in err.
+ * float positions, node transforms flattened, and by default ONE flat
+ * color per triangle — material baseColorFactor times either the
+ * baseColorTexture sampled at the face's UV centroid (exact for
+ * palette-textured low-poly art) or the COLOR_0 centroid. The texture
+ * is read at load and freed; a texture the file references by URI
+ * (Kenney keeps one colormap.png beside its models) comes from
+ * tex_png/tex_len, NULL for none. The model is centered and normalized
+ * so render's size_px is simply its radius in pixels. On failure
+ * returns NULL with the reason in err.
+ *
+ * SURF_MESH_TEXTURED in flags keeps the decoded textures RESIDENT and
+ * samples them per PIXEL at render (nearest texel, affine UV) instead
+ * of once per face at load — for art whose detail lives inside a face
+ * (a painted model, not a palette), where the centroid sample collapses
+ * every face to one color. It costs the texture's memory for the
+ * mesh's lifetime and a sampler in the inner loop; a face with no
+ * texture still renders flat, so the flag is safe on any model.
  *
  * surf_mesh_render is the software-renderer case surf_image_flush
  * documents: a z-buffered flat-shaded rasterize into an RGB565 or
@@ -174,9 +183,10 @@ void surf_image_bezier(surf_image *dst, const int32_t xy_q16[8],
  * and let the sprite's .scale do the enlarging — that is the PPA's SRM
  * on the device, and free. */
 typedef struct surf_mesh surf_mesh;
+#define SURF_MESH_TEXTURED 1u   /* keep textures, sample per pixel */
 surf_mesh *surf_mesh_from_glb(const void *glb, size_t len,
                               const void *tex_png, size_t tex_len,
-                              char *err, size_t errcap);
+                              unsigned flags, char *err, size_t errcap);
 void surf_mesh_destroy(surf_mesh *m);
 int  surf_mesh_tris(const surf_mesh *m);
 bool surf_mesh_render(const surf_mesh *m, surf_image *dst,

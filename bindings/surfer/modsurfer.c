@@ -3091,7 +3091,7 @@ static mp_obj_t mod_image_new(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_new_obj, 2, 4, mod_image_new);
 
-/* surfer.mesh(glb_bytes[, tex_png_bytes]) -> Mesh
+/* surfer.mesh(glb_bytes[, tex_png_bytes[, textured]]) -> Mesh
  *
  * Loads a glTF 2 binary (.glb): triangles, node transforms flattened,
  * one flat color per face — the material's baseColorFactor times its
@@ -3100,23 +3100,31 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_image_new_obj, 2, 4, mod_image_ne
  * by URI (Kenney keeps one colormap.png beside its models) comes from
  * the second argument; an embedded texture needs nothing. The model is
  * centered and normalized, so render's size is its radius in pixels.
- * Loading is the expensive half — do it once, at build time. */
+ * Loading is the expensive half — do it once, at build time.
+ *
+ * textured=True keeps the textures resident and samples them per PIXEL
+ * at render instead of once per face at load — for painted models
+ * whose detail lives inside a face, where the centroid sample collapses
+ * every face to one color. Costs the texture's memory for the mesh's
+ * lifetime and a slower render; harmless on a model with no texture. */
 static mp_obj_t mod_mesh(size_t n_args, const mp_obj_t *args)
 {
     mp_buffer_info_t glb, tex = {0};
     mp_get_buffer_raise(args[0], &glb, MP_BUFFER_READ);
     if (n_args > 1 && args[1] != mp_const_none)
         mp_get_buffer_raise(args[1], &tex, MP_BUFFER_READ);
+    unsigned flags = (n_args > 2 && mp_obj_is_true(args[2]))
+                         ? SURF_MESH_TEXTURED : 0;
     char err[64];
     surf_mesh *m = surf_mesh_from_glb(glb.buf, glb.len, tex.buf, tex.len,
-                                      err, sizeof err);
+                                      flags, err, sizeof err);
     if (!m)
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("glb: %s"), err);
     surfer_mesh_obj_t *o = mp_obj_malloc(surfer_mesh_obj_t, &surfer_mesh_type);
     o->m = m;
     return MP_OBJ_FROM_PTR(o);
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_mesh_obj, 1, 2, mod_mesh);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_mesh_obj, 1, 3, mod_mesh);
 
 /* surfer.image_scale(dst, src) -> True if the HARDWARE did it
  *

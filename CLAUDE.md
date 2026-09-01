@@ -778,8 +778,8 @@ missing three bits back.
 
 ## A low-poly glTF model renders into an Image
 
-`surfer.mesh(glb_bytes[, tex_png])` → Mesh; `m.render(img, rx, ry, rz,
-size[, cx, cy[, cull]])`, `.tris`, `.destroy()`. C API:
+`surfer.mesh(glb_bytes[, tex_png[, textured]])` → Mesh; `m.render(img,
+rx, ry, rz, size[, cx, cy[, cull]])`, `.tris`, `.destroy()`. C API:
 `surf_mesh_from_glb` / `surf_mesh_render` / `surf_mesh_tris` /
 `surf_mesh_destroy` (src/core/mesh.c). This is the software-renderer
 case the Image buffer and `surf_image_flush` were built for, so it obeys
@@ -798,7 +798,30 @@ exact, not approximate, because of what low-poly art is — Kenney's kits
 keep every face inside one flat region of a 512x512 palette texture
 (measured: a coin's u coordinate is a single constant) — so the texture
 is decoded once, read per face, and FREED. What survives a load is ~20
-bytes a triangle and no sampler in the inner loop. Face normals are
+bytes a triangle and no sampler in the inner loop.
+
+**`textured` (SURF_MESH_TEXTURED) is the other bargain**, for painted
+models whose detail lives INSIDE a face — bigball's lucky cat carries
+its eyes, whiskers and the kanji on its coin as texels, and the
+centroid sample collapses every face to one color, which is how those
+models shipped faceless. Under the flag the decoded textures stay
+resident, per-corner UVs survive the load (texture transform already
+applied), and the rasterizer samples per pixel — nearest texel, affine
+UV, which at MESH_CAM's mild perspective is under a texel of error on
+low-poly faces. A face with no texture renders flat either way, so the
+flag is safe on any model; what it costs is the texture's memory for
+the mesh's lifetime and a sampler in the inner loop (the lucky cat at
+480px measures 325 µs against 233 flat on the desktop).
+
+**The light factor is gamma-lifted before it multiplies the color**
+(`lit_gamma`, a 129-entry table over `l^(1/2.2)`), because the color
+bytes are sRGB-encoded and sRGB is near enough a pure 2.2 power that
+correcting the FACTOR equals lighting in linear:
+`encode(decode(c)*l) == c * l^(1/2.2)`. Multiplying the bytes raw
+darkened a 0.6-lit face perceptually like a linear 0.33 — reported as
+every model rendering darker than the same file in a web viewer, and
+the tests/test_mesh.c white-face check pins the lifted value (r5 29,
+not the gamma-space 27) so it cannot quietly regress. Face normals are
 computed from the world-space triangles, so the NORMAL and TANGENT
 accessors are never read — which is also why tulip5's baker strips them
 and halves the shipped bytes. COLOR_0 (float/u8/u16) works where a
